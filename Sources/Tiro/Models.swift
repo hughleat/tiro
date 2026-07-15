@@ -28,7 +28,12 @@ struct HistoryEntry: Codable {
     let transcription_seconds: Double
     let text: String
     let raw_text: String?
+    let corrected_text: String?
+    let origin_bundle_id: String?
+    let origin_app_name: String?
     let audio_available: Bool
+
+    var displayText: String { corrected_text ?? text }
 
     private let audio_file: String?
 
@@ -40,6 +45,11 @@ struct HistoryEntry: Codable {
         case transcription_seconds
         case text
         case raw_text
+        case corrected_text
+        case origin_bundle_id
+        case origin_bundle
+        case origin_app_name
+        case origin_name
         case audio_available
     }
 
@@ -50,6 +60,12 @@ struct HistoryEntry: Codable {
         transcription_seconds = try values.decodeIfPresent(Double.self, forKey: .transcription_seconds) ?? 0
         text = try values.decodeIfPresent(String.self, forKey: .text) ?? ""
         raw_text = try values.decodeIfPresent(String.self, forKey: .raw_text)
+        corrected_text = try values.decodeIfPresent(String.self, forKey: .corrected_text)
+        origin_bundle_id = try values.decodeIfPresent(String.self, forKey: .origin_bundle_id)
+            ?? values.decodeIfPresent(String.self, forKey: .origin_bundle)
+        let encodedOriginName = try values.decodeIfPresent(String.self, forKey: .origin_app_name)
+            ?? values.decodeIfPresent(String.self, forKey: .origin_name)
+        origin_app_name = encodedOriginName?.removingPercentEncoding ?? encodedOriginName
         audio_file = try values.decodeIfPresent(String.self, forKey: .audio_file)
         audio_available = try values.decodeIfPresent(Bool.self, forKey: .audio_available)
             ?? !(audio_file ?? "").isEmpty
@@ -66,6 +82,9 @@ struct HistoryEntry: Codable {
         try values.encode(transcription_seconds, forKey: .transcription_seconds)
         try values.encode(text, forKey: .text)
         try values.encodeIfPresent(raw_text, forKey: .raw_text)
+        try values.encodeIfPresent(corrected_text, forKey: .corrected_text)
+        try values.encodeIfPresent(origin_bundle_id, forKey: .origin_bundle_id)
+        try values.encodeIfPresent(origin_app_name, forKey: .origin_app_name)
         try values.encode(audio_available, forKey: .audio_available)
         try values.encodeIfPresent(audio_file, forKey: .audio_file)
     }
@@ -128,12 +147,70 @@ private struct VocabularyDocument: Codable {
     let entries: [VocabularyEntry]
 }
 
-struct VocabularyEntry: Codable {
+struct VocabularyEntry: Codable, Equatable {
     var spoken: String
     var written: String
 
     static func normalized(_ text: String) -> String {
         text.folding(options: .caseInsensitive, locale: nil)
+    }
+}
+
+struct VocabularyProfilesDocument: Codable, Equatable {
+    var version: Int
+    var profiles: [VocabularyProfile]
+
+    init(version: Int = 1, profiles: [VocabularyProfile] = []) {
+        self.version = version
+        self.profiles = profiles
+    }
+}
+
+struct VocabularyProfile: Codable, Equatable {
+    var bundle_id: String
+    var name: String
+    var entries: [VocabularyEntry]
+
+    var displayBundleID: String { bundle_id.removingPercentEncoding ?? bundle_id }
+    var displayName: String { name.removingPercentEncoding ?? name }
+}
+
+struct VocabularySuggestion: Decodable {
+    let id: String
+    let spoken: String
+    let written: String
+    let origin_bundle_id: String?
+    let origin_app_name: String?
+    let count: Int
+
+    var displayBundleID: String? {
+        origin_bundle_id.flatMap { $0.removingPercentEncoding ?? $0 }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case spoken
+        case written
+        case bundle_id
+        case origin_bundle_id
+        case origin_app_name
+        case name
+        case origin_name
+        case count
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        spoken = try values.decodeIfPresent(String.self, forKey: .spoken) ?? ""
+        written = try values.decodeIfPresent(String.self, forKey: .written) ?? ""
+        origin_bundle_id = try values.decodeIfPresent(String.self, forKey: .bundle_id)
+            ?? values.decodeIfPresent(String.self, forKey: .origin_bundle_id)
+        let encodedOriginName = try values.decodeIfPresent(String.self, forKey: .origin_app_name)
+            ?? values.decodeIfPresent(String.self, forKey: .name)
+            ?? values.decodeIfPresent(String.self, forKey: .origin_name)
+        origin_app_name = encodedOriginName?.removingPercentEncoding ?? encodedOriginName
+        count = try values.decodeIfPresent(Int.self, forKey: .count) ?? 1
     }
 }
 
@@ -143,6 +220,8 @@ struct TranscriptionResponse: Decodable {
     let audio_file: String
     let transcription_seconds: Double
     let text: String
+    let origin_bundle_id: String?
+    let origin_app_name: String?
 }
 
 struct ErrorResponse: Decodable {

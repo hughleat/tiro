@@ -23,6 +23,7 @@ import ApplicationServices
     private var hotkeysStarted = false
     private var isCapturingShortcut = false
     private var destinationSession: DestinationSession?
+    private var originApplication: ApplicationIdentity?
     private var shouldAutoPaste = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -177,6 +178,7 @@ import ApplicationServices
     @discardableResult
     private func startRecording() -> Bool {
         guard state == .idle else { return false }
+        originApplication = destinationTracker.captureApplicationIdentity()
         destinationSession = destinationTracker.capture()
         shouldAutoPaste = UserDefaults.standard.bool(forKey: "autoPaste")
         state = .starting
@@ -218,11 +220,18 @@ import ApplicationServices
             menuToggleItem.title = "Transcribing…"
             overlay.show(.transcribing)
             let model = DictationModel.selected
+            let originBundleID = originApplication?.bundleIdentifier
+            let originName = originApplication?.applicationName
 
             Task {
                 defer { try? FileManager.default.removeItem(at: wavURL) }
                 do {
-                    let response = try await worker.transcribe(wavURL: wavURL, model: model)
+                    let response = try await worker.transcribe(
+                        wavURL: wavURL,
+                        model: model,
+                        originBundleID: originBundleID,
+                        originName: originName
+                    )
                     await complete(response, model: model)
                 } catch {
                     await MainActor.run { presentError(error) }
@@ -237,6 +246,7 @@ import ApplicationServices
         if state == .starting {
             recordingSounds.cancelStart()
             destinationSession = nil
+            originApplication = nil
             state = .idle
             menuToggleItem.title = "Start Recording"
             return
@@ -244,6 +254,7 @@ import ApplicationServices
         guard state == .recording else { return }
         recorder.cancel()
         destinationSession = nil
+        originApplication = nil
         if UserDefaults.standard.bool(forKey: "soundFeedback") { recordingSounds.playStop() }
         state = .idle
         menuToggleItem.title = "Start Recording"
@@ -255,6 +266,7 @@ import ApplicationServices
     private func complete(_ response: TranscriptionResponse, model: DictationModel) async {
         let destination = destinationSession
         destinationSession = nil
+        originApplication = nil
         if !response.text.isEmpty {
             if shouldAutoPaste, let destination {
                 do {
@@ -282,6 +294,7 @@ import ApplicationServices
     private func presentError(_ error: Error) {
         if recorder.isRecording { recorder.cancel() }
         destinationSession = nil
+        originApplication = nil
         state = .idle
         menuToggleItem.title = "Start Recording"
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Tiro")

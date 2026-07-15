@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import difflib
 import gc
 import io
 import json
@@ -28,16 +29,23 @@ AUDIO_DIR = DATA_DIR / "audio"
 HISTORY_PATH = DATA_DIR / "history.jsonl"
 RETENTION_PATH = DATA_DIR / "retention.json"
 VOCABULARY_PATH = DATA_DIR / "vocabulary.json"
+PROFILES_PATH = DATA_DIR / "profiles.json"
+SUGGESTIONS_PATH = DATA_DIR / "suggestions.json"
 MODEL_CACHE = ROOT / ".cache" / "huggingface"
 MODEL_HUB_CACHE = MODEL_CACHE / "hub"
 SAMPLE_RATE = 16_000
 MAX_RECORDING_BYTES = 100 * 1024 * 1024
-API_VERSION = 4
+API_VERSION = 5
 MAX_JSON_BODY_BYTES = 16 * 1024
+MAX_ORIGIN_BUNDLE_ID = 255
+MAX_ORIGIN_APP_NAME = 200
+MAX_VOCABULARY_ENTRIES = 500
+MAX_PROFILES = 200
 MAX_HISTORY_LIMIT = 200
 DEFAULT_HISTORY_LIMIT = 20
 RETENTION_DAYS = {0, 7, 30, 90}
 HISTORY_ID_NAMESPACE = uuid.UUID("99bb23a4-4c7b-4d82-85aa-a33a072950f7")
+SUGGESTION_ID_NAMESPACE = uuid.UUID("ad2d6d17-a3ef-49df-bbd5-ed73ad9b81cb")
 STAGED_AUDIO_PREFIX = ".tiro-delete-"
 
 MODELS = {
@@ -62,6 +70,35 @@ _model = None
 _model_id: str | None = None
 _operation_lock = threading.Lock()
 _history_lock = threading.Lock()
+_state_lock = threading.RLock()
+
+
+def _validated_entries(value: object, *, strict: bool = False) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        if strict:
+            raise ValueError("entries must be an array")
+        return []
+    if len(value) > MAX_VOCABULARY_ENTRIES:
+        if strict:
+            raise ValueError(f"entries may contain at most {MAX_VOCABULARY_ENTRIES} rules")
+        value = value[:MAX_VOCABULARY_ENTRIES]
+    result = []
+    for entry in value:
+        valid = (
+            isinstance(entry, dict)
+            and isinstance(entry.get("spoken"), str)
+            and isinstance(entry.get("written"), str)
+            and bool(entry["spoken"].strip())
+            and bool(entry["written"].strip())
+            and len(entry["spoken"]) <= 200
+            and len(entry["written"]) <= 500
+        )
+        if not valid:
+            if strict:
+                raise ValueError("each entry needs bounded non-empty spoken and written strings")
+            continue
+        result.append({"spoken": entry["spoken"].strip(), "written": entry["written"].strip()})
+    return result
 
 
 def load_vocabulary() -> list[dict[str, str]]:
@@ -70,15 +107,103 @@ def load_vocabulary() -> list[dict[str, str]]:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return []
     entries = payload.get("entries", []) if isinstance(payload, dict) else []
-    return [
-        {"spoken": entry["spoken"].strip(), "written": entry["written"].strip()}
-        for entry in entries
-        if isinstance(entry, dict)
-        and isinstance(entry.get("spoken"), str)
-        and isinstance(entry.get("written"), str)
-        and entry["spoken"].strip()
-        and entry["written"].strip()
-    ]
+    return _validated_entries(entries)
+
+
+def _load_vocabulary_document_strict() -> tuple[dict, list[dict[str, str]]]:
+    try:
+        payload = json.loads(VOCABULARY_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        payload = {"entries": []}
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("vocabulary file is malformed; repair it before accepting") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("vocabulary file must contain an object")
+    entries = _validated_entries(payload.get("entries"), strict=True)
+    return dict(payload), entries
+
+
+def load_profiles() -> dict:
+    try:
+        payload = json.loads(PROFILES_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {"version": 1, "profiles": []}
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        return {"version": 1, "profiles": []}
+    profiles = payload.get("profiles")
+    if not isinstance(profiles, list):
+        return {"version": 1, "profiles": []}
+    valid = []
+    for profile in profiles[:MAX_PROFILES]:
+        if not isinstance(profile, dict):
+            continue
+        bundle_id = profile.get("bundle_id")
+        name = profile.get("name")
+        if (
+            not isinstance(bundle_id, str)
+            or not bundle_id.strip()
+            or len(bundle_id) > MAX_ORIGIN_BUNDLE_ID
+            or not isinstance(name, str)
+            or len(name) > MAX_ORIGIN_APP_NAME
+            or not isinstance(profile.get("entries"), list)
+        ):
+            continue
+        entries = _validated_entries(profile.get("entries"))
+        valid.append({"bundle_id": bundle_id.strip(), "name": name.strip(), "entries": entries})
+    return {"version": 1, "profiles": valid}
+
+
+def _load_profiles_strict() -> dict:
+    try:
+        payload = json.loads(PROFILES_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"version": 1, "profiles": []}
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("profiles file is malformed; repair it before accepting") from exc
+    return validate_profiles(payload)
+
+
+def validate_profiles(payload: object) -> dict:
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        raise ValueError("profiles document version must be 1")
+    profiles = payload.get("profiles")
+    if not isinstance(profiles, list) or len(profiles) > MAX_PROFILES:
+        raise ValueError(f"profiles must be an array of at most {MAX_PROFILES} items")
+    result = []
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            raise ValueError("each profile must be an object")
+        bundle_id = profile.get("bundle_id")
+        name = profile.get("name")
+        if not isinstance(bundle_id, str) or not bundle_id.strip() or len(bundle_id) > MAX_ORIGIN_BUNDLE_ID:
+            raise ValueError("bundle_id must be a bounded non-empty string")
+        if not isinstance(name, str) or len(name) > MAX_ORIGIN_APP_NAME:
+            raise ValueError("name must be a bounded string")
+        result.append({
+            "bundle_id": bundle_id.strip(),
+            "name": name.strip(),
+            "entries": _validated_entries(profile.get("entries"), strict=True),
+        })
+    return {"version": 1, "profiles": result}
+
+
+def save_profiles(payload: object) -> dict:
+    document = validate_profiles(payload)
+    with _state_lock:
+        _atomic_write(PROFILES_PATH, json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n")
+    return document
+
+
+def vocabulary_for_origin(bundle_id: str | None) -> list[dict[str, str]]:
+    global_entries = load_vocabulary()
+    if not bundle_id:
+        return global_entries
+    matching = [profile for profile in load_profiles()["profiles"] if profile["bundle_id"] == bundle_id]
+    if not matching:
+        return global_entries
+    profile_entries = matching[-1]["entries"]
+    overridden = {entry["spoken"].casefold() for entry in profile_entries}
+    return [entry for entry in global_entries if entry["spoken"].casefold() not in overridden] + profile_entries
 
 
 def apply_vocabulary(text: str, entries: list[dict[str, str]]) -> str:
@@ -98,6 +223,403 @@ def apply_vocabulary(text: str, entries: list[dict[str, str]]) -> str:
         lambda match: replacements.get(match.group(0).casefold(), match.group(0)),
         text,
     )
+
+
+def _origin_header(value: str | None, maximum: int, label: str) -> str | None:
+    if value is None or not value.strip():
+        return None
+    value = value.strip()
+    if len(value) > maximum:
+        raise ValueError(f"{label} exceeds {maximum} characters")
+    return value
+
+
+def _word_tokens(text: str) -> list[str]:
+    return re.findall(r"[^\W_]+(?:['’][^\W_]+)*", text, flags=re.UNICODE)
+
+
+def _bounded_history_origin(value: object, maximum: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    return value if value and len(value) <= maximum else ""
+
+
+def _suggestion_candidate(entry: dict, corrected_text: str) -> dict | None:
+    delivered = entry.get("text")
+    if not isinstance(delivered, str):
+        return None
+    before = _word_tokens(delivered)
+    after = _word_tokens(corrected_text)
+    if not before or not after:
+        return None
+    matcher = difflib.SequenceMatcher(
+        None, [word.casefold() for word in before], [word.casefold() for word in after]
+    )
+    changes = [opcode for opcode in matcher.get_opcodes() if opcode[0] != "equal"]
+    if len(changes) != 1 or changes[0][0] != "replace":
+        return None
+    _, old_start, old_end, new_start, new_end = changes[0]
+    old_words = before[old_start:old_end]
+    new_words = after[new_start:new_end]
+    if not (1 <= len(old_words) <= 3 and 1 <= len(new_words) <= 3):
+        return None
+    changed_words = max(len(old_words), len(new_words))
+    if changed_words > 1 and changed_words * 2 > max(len(before), len(after)):
+        return None
+    folded_old = [word.casefold() for word in old_words]
+    occurrences = sum(
+        [word.casefold() for word in before][index:index + len(folded_old)] == folded_old
+        for index in range(len(before) - len(folded_old) + 1)
+    )
+    if occurrences != 1:
+        return None
+    spoken_words = old_words
+    raw_text = entry.get("raw_text")
+    if isinstance(raw_text, str) and raw_text != delivered:
+        raw_words = _word_tokens(raw_text)
+        raw_to_delivered = difflib.SequenceMatcher(
+            None,
+            [word.casefold() for word in raw_words],
+            [word.casefold() for word in before],
+        )
+        mapped = [
+            raw_words[raw_start:raw_end]
+            for tag, raw_start, raw_end, delivered_start, delivered_end
+            in raw_to_delivered.get_opcodes()
+            if tag == "replace"
+            and delivered_start == old_start
+            and delivered_end == old_end
+            and 1 <= raw_end - raw_start <= 3
+        ]
+        if len(mapped) == 1:
+            spoken_words = mapped[0]
+    spoken = " ".join(spoken_words)
+    written = " ".join(new_words)
+    if len(spoken) > 100 or len(written) > 100:
+        return None
+    bundle_id = _bounded_history_origin(
+        entry.get("origin_bundle_id"), MAX_ORIGIN_BUNDLE_ID
+    )
+    app_name = _bounded_history_origin(
+        entry.get("origin_app_name"), MAX_ORIGIN_APP_NAME
+    )
+    return {
+        "spoken": spoken,
+        "written": written,
+        "origin_bundle_id": bundle_id,
+        "origin_app_name": app_name,
+    }
+
+
+def _candidate_is_covered(candidate: dict) -> bool:
+    spoken = candidate["spoken"].casefold()
+    written = candidate["written"].casefold()
+    return any(
+        rule["spoken"].casefold() == spoken
+        and rule["written"].casefold() == written
+        for rule in vocabulary_for_origin(candidate["origin_bundle_id"] or None)
+    )
+
+
+def _suggestion_id(candidate: dict) -> str:
+    framed = json.dumps(
+        [
+            candidate["spoken"].casefold(),
+            candidate["written"].casefold(),
+            candidate["origin_bundle_id"],
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return str(uuid.uuid5(SUGGESTION_ID_NAMESPACE, framed))
+
+
+def _load_suggestions_locked() -> dict:
+    try:
+        payload = json.loads(SUGGESTIONS_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"version": 1, "suggestions": []}
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("suggestions file is malformed; repair it before continuing") from exc
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        raise ValueError("suggestions document version must be 1")
+    suggestions = payload.get("suggestions")
+    if not isinstance(suggestions, list):
+        raise ValueError("suggestions must be an array")
+    valid = []
+    for suggestion in suggestions:
+        if not isinstance(suggestion, dict):
+            raise ValueError("each suggestion must be an object")
+        ids = suggestion.get("transcription_ids")
+        if (
+            not isinstance(suggestion.get("id"), str)
+            or not suggestion["id"]
+            or len(suggestion["id"]) > 200
+            or not isinstance(suggestion.get("spoken"), str)
+            or not suggestion["spoken"]
+            or len(suggestion["spoken"]) > 100
+            or not isinstance(suggestion.get("written"), str)
+            or not suggestion["written"]
+            or len(suggestion["written"]) > 100
+            or not isinstance(suggestion.get("origin_bundle_id"), str)
+            or len(suggestion["origin_bundle_id"]) > MAX_ORIGIN_BUNDLE_ID
+            or not isinstance(suggestion.get("origin_app_name", ""), str)
+            or len(suggestion.get("origin_app_name", "")) > MAX_ORIGIN_APP_NAME
+            or not isinstance(ids, list)
+            or len(ids) > 1000
+            or any(
+                not isinstance(value, str) or not value or len(value) > 200
+                for value in ids
+            )
+        ):
+            raise ValueError("suggestions file contains an invalid suggestion")
+        accepted = suggestion.get("accepted", False)
+        dismissed = suggestion.get("dismissed", False)
+        accepted_scope = suggestion.get("accepted_scope")
+        accepting_scope = suggestion.get("accepting_scope")
+        if (
+            not isinstance(accepted, bool)
+            or not isinstance(dismissed, bool)
+            or accepted and dismissed
+            or accepted_scope is not None and accepted_scope not in {"global", "profile"}
+            or accepting_scope is not None and accepting_scope not in {"global", "profile"}
+            or accepted and accepted_scope is None
+            or not accepted and accepted_scope is not None
+            or (accepted or dismissed) and accepting_scope is not None
+        ):
+            raise ValueError("suggestions file contains an invalid terminal decision")
+        clean_ids = list(dict.fromkeys(ids))
+        clean = dict(suggestion)
+        clean["origin_app_name"] = suggestion.get("origin_app_name", "")
+        clean["transcription_ids"] = clean_ids
+        clean["count"] = len(clean_ids)
+        valid.append(clean)
+    return {"version": 1, "suggestions": valid}
+
+
+def _save_suggestions_locked(document: dict) -> None:
+    _atomic_write(
+        SUGGESTIONS_PATH,
+        json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n",
+    )
+
+
+def _reconcile_suggestions_locked(lines: list[str]) -> dict:
+    previous = _load_suggestions_locked()
+    decisions = {
+        suggestion["id"]: suggestion
+        for suggestion in previous["suggestions"]
+        if suggestion.get("accepted")
+        or suggestion.get("dismissed")
+        or suggestion.get("accepting_scope")
+    }
+    evidence: dict[str, dict] = {}
+    for line in lines:
+        entry = _parse_history_line(line)
+        if (
+            entry is None
+            or not isinstance(entry.get("id"), str)
+            or not isinstance(entry.get("corrected_text"), str)
+        ):
+            continue
+        candidate = _suggestion_candidate(entry, entry["corrected_text"])
+        if candidate is None:
+            continue
+        suggestion_id = _suggestion_id(candidate)
+        suggestion = evidence.setdefault(
+            suggestion_id,
+            {
+                "id": suggestion_id,
+                **candidate,
+                "transcription_ids": [],
+                "accepted": False,
+                "dismissed": False,
+            },
+        )
+        suggestion["transcription_ids"].append(entry["id"])
+
+    reconciled = []
+    for suggestion in evidence.values():
+        suggestion["transcription_ids"] = list(
+            dict.fromkeys(suggestion["transcription_ids"])
+        )[:1000]
+        suggestion["count"] = len(suggestion["transcription_ids"])
+        if suggestion["id"] in decisions:
+            decision = decisions.pop(suggestion["id"])
+            suggestion["accepted"] = bool(decision.get("accepted"))
+            suggestion["dismissed"] = bool(decision.get("dismissed"))
+            if "accepted_scope" in decision:
+                suggestion["accepted_scope"] = decision["accepted_scope"]
+            if "accepting_scope" in decision:
+                suggestion["accepting_scope"] = decision["accepting_scope"]
+        reconciled.append(suggestion)
+    for decision in decisions.values():
+        decision = dict(decision)
+        decision["transcription_ids"] = []
+        decision["count"] = 0
+        reconciled.append(decision)
+    document = {"version": 1, "suggestions": reconciled}
+    _save_suggestions_locked(document)
+    return document
+
+
+def _refresh_suggestions_after_history_locked(lines: list[str]) -> None:
+    try:
+        with _state_lock:
+            _reconcile_suggestions_locked(lines)
+    except (OSError, ValueError) as exc:
+        print(f"Suggestion cache refresh deferred: {exc!r}", flush=True)
+
+
+def get_suggestions() -> list[dict]:
+    with _history_lock:
+        lines = _migrate_history_locked()
+        with _state_lock:
+            suggestions = _reconcile_suggestions_locked(lines)["suggestions"]
+    visible = []
+    for suggestion in suggestions:
+        if (
+            suggestion["count"] < 2
+            or suggestion.get("accepted")
+            or suggestion.get("dismissed")
+            or _candidate_is_covered(suggestion)
+        ):
+            continue
+        public = {
+            key: value
+            for key, value in suggestion.items()
+            if key != "transcription_ids"
+        }
+        public["origin_bundle_id"] = public["origin_bundle_id"] or None
+        public["origin_app_name"] = public.get("origin_app_name") or None
+        visible.append(public)
+    return visible
+
+
+def correct_history_entry(entry_id: str, corrected_text: str) -> bool:
+    with _history_lock:
+        lines = _migrate_history_locked()
+        updated_lines = list(lines)
+        matched = None
+        for index, line in enumerate(lines):
+            entry = _parse_history_line(line)
+            if entry is None or entry.get("id") != entry_id:
+                continue
+            matched = dict(entry)
+            matched["corrected_text"] = corrected_text
+            updated_lines[index] = _serialize_entry(matched, line)
+            break
+        if matched is None:
+            return False
+        _atomic_write(HISTORY_PATH, "".join(updated_lines))
+        _refresh_suggestions_after_history_locked(updated_lines)
+    return True
+
+
+def _replace_rule(entries: list[dict[str, str]], spoken: str, written: str) -> list[dict[str, str]]:
+    normalized = spoken.casefold()
+    replacing = any(entry["spoken"].casefold() == normalized for entry in entries)
+    if not replacing and len(entries) >= MAX_VOCABULARY_ENTRIES:
+        raise ValueError(
+            f"vocabulary capacity is {MAX_VOCABULARY_ENTRIES} rules"
+        )
+    return [entry for entry in entries if entry["spoken"].casefold() != normalized] + [
+        {"spoken": spoken, "written": written}
+    ]
+
+
+def _prepare_suggestion_acceptance(suggestion: dict, scope: str) -> tuple[Path, str]:
+    if scope == "global":
+        vocabulary, entries = _load_vocabulary_document_strict()
+        vocabulary["entries"] = _replace_rule(
+            entries, suggestion["spoken"], suggestion["written"]
+        )
+        return VOCABULARY_PATH, json.dumps(
+            vocabulary, ensure_ascii=False, separators=(",", ":")
+        ) + "\n"
+
+    bundle_id = _bounded_history_origin(
+        suggestion.get("origin_bundle_id"), MAX_ORIGIN_BUNDLE_ID
+    )
+    if not bundle_id:
+        raise ValueError("profile scope requires a valid origin bundle ID")
+    app_name = _bounded_history_origin(
+        suggestion.get("origin_app_name"), MAX_ORIGIN_APP_NAME
+    )
+    profiles = _load_profiles_strict()
+    matching_index = next(
+        (
+            index
+            for index in range(len(profiles["profiles"]) - 1, -1, -1)
+            if profiles["profiles"][index]["bundle_id"] == bundle_id
+        ),
+        None,
+    )
+    if matching_index is None:
+        if len(profiles["profiles"]) >= MAX_PROFILES:
+            raise ValueError(f"profile capacity is {MAX_PROFILES} profiles")
+        profiles["profiles"].append(
+            {"bundle_id": bundle_id, "name": app_name, "entries": []}
+        )
+        matching_index = len(profiles["profiles"]) - 1
+    profile = profiles["profiles"][matching_index]
+    profile["entries"] = _replace_rule(
+        profile["entries"], suggestion["spoken"], suggestion["written"]
+    )
+    profiles = validate_profiles(profiles)
+    return PROFILES_PATH, json.dumps(
+        profiles, ensure_ascii=False, separators=(",", ":")
+    ) + "\n"
+
+
+def accept_suggestion(suggestion_id: str, scope: str) -> str | None:
+    with _state_lock:
+        document = _load_suggestions_locked()
+        suggestion = next(
+            (item for item in document["suggestions"] if item["id"] == suggestion_id),
+            None,
+        )
+        if suggestion is None:
+            return None
+        if suggestion.get("dismissed"):
+            raise ValueError("suggestion is already dismissed")
+        if suggestion.get("accepted"):
+            return suggestion.get("accepted_scope", scope)
+        intended_scope = suggestion.get("accepting_scope") or scope
+        if not suggestion.get("accepting_scope") and suggestion["count"] < 2:
+            return None
+        target, content = _prepare_suggestion_acceptance(suggestion, intended_scope)
+        if not suggestion.get("accepting_scope"):
+            suggestion["accepting_scope"] = intended_scope
+            _save_suggestions_locked(document)
+        _atomic_write(target, content)
+        suggestion["accepted"] = True
+        suggestion["dismissed"] = False
+        suggestion["accepted_scope"] = intended_scope
+        suggestion.pop("accepting_scope", None)
+        _save_suggestions_locked(document)
+    return intended_scope
+
+
+def dismiss_suggestion(suggestion_id: str) -> bool:
+    with _state_lock:
+        document = _load_suggestions_locked()
+        suggestion = next(
+            (item for item in document["suggestions"] if item["id"] == suggestion_id),
+            None,
+        )
+        if suggestion is None:
+            return False
+        if suggestion.get("accepted"):
+            raise ValueError("suggestion is already accepted")
+        if suggestion.get("accepting_scope"):
+            raise ValueError("suggestion acceptance is already pending")
+        if suggestion.get("dismissed"):
+            return True
+        suggestion["dismissed"] = True
+        _save_suggestions_locked(document)
+    return True
 
 
 def shutdown_is_authorized(received_token: str) -> bool:
@@ -328,7 +850,13 @@ def _valid_api_history_entry(entry: dict) -> bool:
     string_fields = ("timestamp", "model", "text")
     if any(key in entry and not isinstance(entry[key], str) for key in string_fields):
         return False
-    optional_strings = ("raw_text", "audio_file")
+    optional_strings = (
+        "raw_text",
+        "audio_file",
+        "corrected_text",
+        "origin_bundle_id",
+        "origin_app_name",
+    )
     if any(
         key in entry and entry[key] is not None and not isinstance(entry[key], str)
         for key in optional_strings
@@ -357,7 +885,13 @@ def recent_history(limit: int = DEFAULT_HISTORY_LIMIT, query: str = "") -> list[
             continue
         if folded_query and not any(
             folded_query in value.casefold()
-            for key in ("text", "raw_text", "model")
+            for key in (
+                "text",
+                "raw_text",
+                "corrected_text",
+                "model",
+                "origin_app_name",
+            )
             if isinstance((value := entry.get(key)), str)
         ):
             continue
@@ -453,6 +987,7 @@ def delete_history_entry(entry_id: str) -> bool:
             return False
         staged = _commit_history_with_staged_audio([removed_entry], kept)
         _finalize_staged_audio(staged)
+        _refresh_suggestions_after_history_locked(kept)
     return True
 
 
@@ -504,6 +1039,7 @@ def apply_retention(days: int | None = None, now: datetime | None = None) -> int
         if removed:
             staged = _commit_history_with_staged_audio(removed, kept)
             _finalize_staged_audio(staged)
+            _refresh_suggestions_after_history_locked(kept)
     return len(removed)
 
 
@@ -553,6 +1089,7 @@ def set_retention(days: int, now: datetime | None = None) -> int:
             raise
         if removed:
             _finalize_staged_audio(staged)
+            _refresh_suggestions_after_history_locked(kept)
         return len(removed)
 
 
@@ -624,7 +1161,12 @@ def preload_model(model_key: str) -> dict[str, str]:
     return {"loaded_model": selected["id"]}
 
 
-def transcribe(wav_bytes: bytes, model_key: str) -> dict:
+def transcribe(
+    wav_bytes: bytes,
+    model_key: str,
+    origin_bundle_id: str | None = None,
+    origin_app_name: str | None = None,
+) -> dict:
     samples = decode_pcm_wav(wav_bytes)
 
     started = time.perf_counter()
@@ -653,8 +1195,12 @@ def transcribe(wav_bytes: bytes, model_key: str) -> dict:
         "model": selected["id"],
         "audio_file": str(audio_path.relative_to(ROOT)),
         "transcription_seconds": round(elapsed, 3),
-        "text": apply_vocabulary(raw_text, load_vocabulary()),
+        "text": apply_vocabulary(raw_text, vocabulary_for_origin(origin_bundle_id)),
     }
+    if origin_bundle_id:
+        entry["origin_bundle_id"] = origin_bundle_id
+    if origin_app_name:
+        entry["origin_app_name"] = origin_app_name
     if entry["text"] != raw_text:
         entry["raw_text"] = raw_text
     with _history_lock:
@@ -760,6 +1306,21 @@ class TiroHandler(BaseHTTPRequestHandler):
             if not entry_id or not self._send_audio(entry_id):
                 json_response(self, {"error": "Audio not found"}, HTTPStatus.NOT_FOUND)
             return
+        if path == "/api/vocabulary/profiles":
+            with _state_lock:
+                json_response(self, load_profiles())
+            return
+        if path == "/api/suggestions":
+            try:
+                json_response(self, {"suggestions": get_suggestions()})
+            except (OSError, ValueError) as exc:
+                print(f"Suggestion state unavailable: {exc!r}", flush=True)
+                json_response(
+                    self,
+                    {"error": "Suggestion state is malformed or unavailable."},
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
         json_response(self, {"error": "Not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
@@ -773,7 +1334,15 @@ class TiroHandler(BaseHTTPRequestHandler):
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
 
-        if path in {"/api/history/delete", "/api/history/retention"}:
+        mutation_paths = {
+            "/api/history/delete",
+            "/api/history/retention",
+            "/api/history/correction",
+            "/api/vocabulary/profiles",
+            "/api/suggestions/accept",
+            "/api/suggestions/dismiss",
+        }
+        if path in mutation_paths:
             if not self._authorized():
                 json_response(self, {"error": "Forbidden"}, HTTPStatus.FORBIDDEN)
                 return
@@ -791,11 +1360,62 @@ class TiroHandler(BaseHTTPRequestHandler):
                         )
                         return
                     json_response(self, {"deleted": True})
-                else:
+                elif path == "/api/history/retention":
                     days = payload.get("days")
                     if isinstance(days, bool) or not isinstance(days, int):
                         raise ValueError("days must be one of 0, 7, 30, or 90")
                     json_response(self, {"days": days, "pruned": set_retention(days)})
+                elif path == "/api/history/correction":
+                    entry_id = payload.get("id")
+                    corrected_text = payload.get("corrected_text")
+                    if not isinstance(entry_id, str) or not entry_id or len(entry_id) > 200:
+                        raise ValueError("id must be a bounded non-empty string")
+                    if (
+                        not isinstance(corrected_text, str)
+                        or not corrected_text.strip()
+                        or len(corrected_text) > 10_000
+                    ):
+                        raise ValueError("corrected_text must be a bounded non-empty string")
+                    if not correct_history_entry(entry_id, corrected_text):
+                        json_response(
+                            self,
+                            {"error": "History entry not found"},
+                            HTTPStatus.NOT_FOUND,
+                        )
+                        return
+                    json_response(self, {"corrected": True})
+                elif path == "/api/vocabulary/profiles":
+                    json_response(self, save_profiles(payload))
+                elif path == "/api/suggestions/accept":
+                    suggestion_id = payload.get("id")
+                    scope = payload.get("scope")
+                    if not isinstance(suggestion_id, str) or not suggestion_id:
+                        raise ValueError("id must be a non-empty string")
+                    if scope not in {"profile", "global"}:
+                        raise ValueError("scope must be 'profile' or 'global'")
+                    accepted_scope = accept_suggestion(suggestion_id, scope)
+                    if not accepted_scope:
+                        json_response(
+                            self,
+                            {"error": "Suggestion not found"},
+                            HTTPStatus.NOT_FOUND,
+                        )
+                        return
+                    json_response(
+                        self, {"accepted": True, "scope": accepted_scope}
+                    )
+                else:
+                    suggestion_id = payload.get("id")
+                    if not isinstance(suggestion_id, str) or not suggestion_id:
+                        raise ValueError("id must be a non-empty string")
+                    if not dismiss_suggestion(suggestion_id):
+                        json_response(
+                            self,
+                            {"error": "Suggestion not found"},
+                            HTTPStatus.NOT_FOUND,
+                        )
+                        return
+                    json_response(self, {"dismissed": True})
             except HTTPError as exc:
                 json_response(self, {"error": str(exc)}, exc.status)
             except ValueError as exc:
@@ -842,7 +1462,19 @@ class TiroHandler(BaseHTTPRequestHandler):
             if length <= 44 or length > MAX_RECORDING_BYTES:
                 raise ValueError("Recording is empty or too large")
             model_key = self.headers.get("X-Parakeet-Model", "compact")
-            entry = transcribe(self.rfile.read(length), model_key)
+            origin_bundle_id = _origin_header(
+                self.headers.get("X-Tiro-Origin-Bundle-ID"),
+                MAX_ORIGIN_BUNDLE_ID,
+                "X-Tiro-Origin-Bundle-ID",
+            )
+            origin_app_name = _origin_header(
+                self.headers.get("X-Tiro-Origin-App-Name"),
+                MAX_ORIGIN_APP_NAME,
+                "X-Tiro-Origin-App-Name",
+            )
+            entry = transcribe(
+                self.rfile.read(length), model_key, origin_bundle_id, origin_app_name
+            )
             json_response(self, entry)
         except HTTPError as exc:
             json_response(self, {"error": str(exc)}, exc.status)

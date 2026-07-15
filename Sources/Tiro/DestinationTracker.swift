@@ -1,6 +1,11 @@
 import AppKit
 import ApplicationServices
 
+struct ApplicationIdentity {
+    let bundleIdentifier: String?
+    let applicationName: String?
+}
+
 @MainActor
 struct DestinationSession {
     struct PasteObservation {
@@ -15,8 +20,6 @@ struct DestinationSession {
     private let focusedElement: AXUIElement
 
     var processIdentifier: pid_t { application.processIdentifier }
-    var bundleIdentifier: String? { application.bundleIdentifier }
-
     init(
         application: NSRunningApplication,
         applicationElement: AXUIElement,
@@ -149,9 +152,7 @@ final class DestinationTracker: NSObject {
     }
 
     func capture() -> DestinationSession? {
-        rememberIfEligible(NSWorkspace.shared.frontmostApplication)
-        guard let application = lastNonTiroApplication,
-              !application.isTerminated else { return nil }
+        guard let application = currentApplication() else { return nil }
 
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
         guard let window = elementAttribute(kAXFocusedWindowAttribute as CFString, of: appElement),
@@ -166,6 +167,14 @@ final class DestinationTracker: NSObject {
         )
     }
 
+    func captureApplicationIdentity() -> ApplicationIdentity? {
+        guard let application = currentApplication() else { return nil }
+        return ApplicationIdentity(
+            bundleIdentifier: application.bundleIdentifier,
+            applicationName: application.localizedName
+        )
+    }
+
     @objc private func applicationDidActivate(_ notification: Notification) {
         rememberIfEligible(
             notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
@@ -177,6 +186,13 @@ final class DestinationTracker: NSObject {
               application.processIdentifier != ProcessInfo.processInfo.processIdentifier,
               !application.isTerminated else { return }
         lastNonTiroApplication = application
+    }
+
+    private func currentApplication() -> NSRunningApplication? {
+        rememberIfEligible(NSWorkspace.shared.frontmostApplication)
+        guard let application = lastNonTiroApplication,
+              !application.isTerminated else { return nil }
+        return application
     }
 }
 

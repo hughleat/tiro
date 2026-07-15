@@ -2,6 +2,7 @@ import Foundation
 
 @MainActor final class WorkerClient {
     private let baseURL = URL(string: "http://127.0.0.1:8767")!
+    private let mutationGate = WorkerMutationGate()
     private var process: Process?
     private var logHandle: FileHandle?
     private var startupTask: Task<Void, Error>?
@@ -72,13 +73,20 @@ import Foundation
         throw WorkerError.unavailable(recentWorkerLog())
     }
 
-    func transcribe(wavURL: URL, model: DictationModel) async throws -> TranscriptionResponse {
+    func transcribe(
+        wavURL: URL,
+        model: DictationModel,
+        originBundleID: String? = nil,
+        originName: String? = nil
+    ) async throws -> TranscriptionResponse {
         try await ensureRunning()
         var request = URLRequest(url: baseURL.appendingPathComponent("api/transcribe"))
         request.httpMethod = "POST"
         request.timeoutInterval = 1_800
         request.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
         request.setValue(model.key, forHTTPHeaderField: "X-Parakeet-Model")
+        setOriginHeader(originBundleID, maximum: 255, field: "X-Tiro-Origin-Bundle-ID", on: &request)
+        setOriginHeader(originName, maximum: 200, field: "X-Tiro-Origin-App-Name", on: &request)
         request.httpBody = try Data(contentsOf: wavURL)
 
         let data = try await send(request, operation: "Transcription")
@@ -121,24 +129,208 @@ import Foundation
     }
 
     func deleteHistoryEntry(id: String) async throws {
-        try await authenticatedPost(path: "api/history/delete", body: HistoryIDRequest(id: id))
+        try await authenticatedPost(
+            path: "api/history/delete",
+            body: HistoryIDRequest(id: id),
+            operation: "History deletion"
+        )
+    }
+
+    func correctHistoryEntry(id: String, correctedText: String) async throws {
+        try await authenticatedPost(
+            path: "api/history/correction",
+            body: HistoryCorrectionRequest(id: id, corrected_text: correctedText),
+            operation: "History correction"
+        )
     }
 
     func setHistoryRetention(days: Int) async throws {
         guard [0, 7, 30, 90].contains(days) else {
             throw WorkerError.server("Retention must be Forever, 7, 30, or 90 days.")
         }
-        try await authenticatedPost(path: "api/history/retention", body: RetentionRequest(days: days))
+        try await authenticatedPost(
+            path: "api/history/retention",
+            body: RetentionRequest(days: days),
+            operation: "History retention update"
+        )
     }
 
-    private func authenticatedPost<Body: Encodable>(path: String, body: Body) async throws {
+    func vocabularyProfiles() async throws -> VocabularyProfilesDocument {
+        try await fetchVocabularyProfiles()
+    }
+
+    func saveGlobalVocabulary(
+        _ editedEntries: [VocabularyEntry],
+        replacing baselineEntries: [VocabularyEntry]
+    ) async throws -> [VocabularyEntry] {
+        try await serializedMutation {
+            let latestEntries = try VocabularyFile.load()
+            let mergedEntries = Self.mergeVocabulary(
+                latest: latestEntries,
+                edited: editedEntries,
+                baseline: baselineEntries
+            )
+            try VocabularyFile.save(mergedEntries)
+            return mergedEntries
+        }
+    }
+
+    func saveVocabularyProfile(
+        _ editedProfile: VocabularyProfile,
+        replacing baselineProfile: VocabularyProfile
+    ) async throws -> VocabularyProfilesDocument {
+        try await serializedMutation {
+            var document = try await fetchVocabularyProfiles()
+            let profileIndex = document.profiles.firstIndex {
+                $0.bundle_id == editedProfile.bundle_id
+            }
+            var latestProfile = profileIndex.map { document.profiles[$0] }
+                ?? VocabularyProfile(
+                    bundle_id: editedProfile.bundle_id,
+                    name: editedProfile.name,
+                    entries: []
+                )
+
+            latestProfile.entries = Self.mergeVocabulary(
+                latest: latestProfile.entries,
+                edited: editedProfile.entries,
+                baseline: baselineProfile.entries
+            )
+            latestProfile.name = editedProfile.name
+
+            if let profileIndex {
+                document.profiles[profileIndex] = latestProfile
+            } else {
+                document.profiles.append(latestProfile)
+            }
+            try await sendAuthenticatedPost(
+                path: "api/vocabulary/profiles",
+                body: document,
+                operation: "Vocabulary profile update"
+            )
+            return document
+        }
+    }
+
+    private static func mergeVocabulary(
+        latest: [VocabularyEntry],
+        edited: [VocabularyEntry],
+        baseline: [VocabularyEntry]
+    ) -> [VocabularyEntry] {
+        let baselineByKey = Dictionary(
+            baseline.map { (VocabularyEntry.normalized($0.spoken), $0) },
+            uniquingKeysWith: { _, last in last }
+        )
+        let editedByKey = Dictionary(
+            edited.map { (VocabularyEntry.normalized($0.spoken), $0) },
+            uniquingKeysWith: { _, last in last }
+        )
+        let removedKeys = Set(baselineByKey.keys).subtracting(editedByKey.keys)
+        var result = latest.filter {
+            !removedKeys.contains(VocabularyEntry.normalized($0.spoken))
+        }
+        for (key, entry) in editedByKey where baselineByKey[key] != entry {
+            if let index = result.firstIndex(where: {
+                VocabularyEntry.normalized($0.spoken) == key
+            }) {
+                result[index] = entry
+            } else {
+                result.append(entry)
+            }
+        }
+        return result
+    }
+
+    func suggestions() async throws -> [VocabularySuggestion] {
+        try await ensureRunning()
+        let request = URLRequest(url: baseURL.appendingPathComponent("api/suggestions"))
+        let data = try await send(request, operation: "Vocabulary suggestions")
+        return try JSONDecoder().decode(SuggestionsResponse.self, from: data).suggestions
+    }
+
+    func acceptSuggestion(id: String, scope: SuggestionScope) async throws {
+        try await authenticatedPost(
+            path: "api/suggestions/accept",
+            body: SuggestionAcceptanceRequest(id: id, scope: scope),
+            operation: "Suggestion acceptance"
+        )
+    }
+
+    func dismissSuggestion(id: String) async throws {
+        try await authenticatedPost(
+            path: "api/suggestions/dismiss",
+            body: HistoryIDRequest(id: id),
+            operation: "Suggestion dismissal"
+        )
+    }
+
+    private func authenticatedPost<Body: Encodable>(
+        path: String,
+        body: Body,
+        operation: String
+    ) async throws {
+        try await serializedMutation {
+            try await sendAuthenticatedPost(path: path, body: body, operation: operation)
+        }
+    }
+
+    private func sendAuthenticatedPost<Body: Encodable>(
+        path: String,
+        body: Body,
+        operation: String
+    ) async throws {
         try await ensureRunning()
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(try workerToken(), forHTTPHeaderField: "X-Tiro-Worker-Token")
         request.httpBody = try JSONEncoder().encode(body)
-        _ = try await send(request, operation: "History update")
+        _ = try await send(request, operation: operation)
+    }
+
+    private func fetchVocabularyProfiles() async throws -> VocabularyProfilesDocument {
+        try await ensureRunning()
+        let request = URLRequest(url: baseURL.appendingPathComponent("api/vocabulary/profiles"))
+        let data = try await send(request, operation: "Vocabulary profiles")
+        return try JSONDecoder().decode(VocabularyProfilesDocument.self, from: data)
+    }
+
+    private func serializedMutation<Result>(
+        _ operation: () async throws -> Result
+    ) async throws -> Result {
+        try await mutationGate.acquire()
+        do {
+            try Task.checkCancellation()
+            let result = try await operation()
+            await mutationGate.release()
+            return result
+        } catch {
+            await mutationGate.release()
+            throw error
+        }
+    }
+
+    private func setOriginHeader(
+        _ value: String?,
+        maximum: Int,
+        field: String,
+        on request: inout URLRequest
+    ) {
+        guard let value = Self.encodedHeaderValue(value, maximum: maximum) else { return }
+        request.setValue(value, forHTTPHeaderField: field)
+    }
+
+    private static func encodedHeaderValue(_ value: String?, maximum: Int) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        var encoded = ""
+        for scalar in trimmed.unicodeScalars {
+            guard let chunk = String(scalar).addingPercentEncoding(withAllowedCharacters: .tiroHeaderValue),
+                  encoded.count + chunk.count <= maximum else { break }
+            encoded += chunk
+        }
+        return encoded.isEmpty ? nil : encoded
     }
 
     private func send(_ request: URLRequest, operation: String) async throws -> Data {
@@ -163,7 +355,7 @@ import Foundation
                   let status = try? JSONDecoder().decode(WorkerStatus.self, from: data) else {
                 return .unavailable
             }
-            return status.api_version == 4 ? .compatible : .incompatible
+            return status.api_version == 5 ? .compatible : .incompatible
         } catch {
             return .unavailable
         }
@@ -217,8 +409,27 @@ private struct HistoryIDRequest: Encodable {
     let id: String
 }
 
+private struct HistoryCorrectionRequest: Encodable {
+    let id: String
+    let corrected_text: String
+}
+
 private struct RetentionRequest: Encodable {
     let days: Int
+}
+
+private struct SuggestionsResponse: Decodable {
+    let suggestions: [VocabularySuggestion]
+}
+
+enum SuggestionScope: String, Encodable {
+    case profile
+    case global
+}
+
+private struct SuggestionAcceptanceRequest: Encodable {
+    let id: String
+    let scope: SuggestionScope
 }
 
 private enum WorkerState {
@@ -251,5 +462,48 @@ private extension WorkerClient {
         guard let data = try? Data(contentsOf: AppPaths.workerLog),
               let contents = String(data: data, encoding: .utf8) else { return "" }
         return contents.split(separator: "\n").suffix(3).joined(separator: " ")
+    }
+}
+
+private extension CharacterSet {
+    static let tiroHeaderValue = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+}
+
+private actor WorkerMutationGate {
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
+    private var isLocked = false
+    private var waiters: [Waiter] = []
+
+    func acquire() async throws {
+        try Task.checkCancellation()
+        if !isLocked {
+            isLocked = true
+            return
+        }
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiters.append(Waiter(id: id, continuation: continuation))
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id: id) }
+        }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            isLocked = false
+        } else {
+            waiters.removeFirst().continuation.resume()
+        }
+    }
+
+    private func cancelWaiter(id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        waiters.remove(at: index).continuation.resume(throwing: CancellationError())
     }
 }

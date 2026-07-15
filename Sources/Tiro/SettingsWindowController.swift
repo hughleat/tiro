@@ -11,10 +11,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let soundFeedbackButton = NSButton(checkboxWithTitle: "Recording sounds", target: nil, action: nil)
     private let launchAtLoginButton = NSButton(checkboxWithTitle: "Launch Tiro at login", target: nil, action: nil)
     private let shortcutRecorder = ShortcutRecorderView()
-    private let vocabularyEditor = VocabularyEditorView()
+    private let vocabularyEditor: VocabularyEditorView
+    private let suggestionsView: VocabularySuggestionsView
     private let historyView: HistoryView
 
     init(workerClient: WorkerClient) {
+        vocabularyEditor = VocabularyEditorView(workerClient: workerClient)
+        suggestionsView = VocabularySuggestionsView(workerClient: workerClient)
         historyView = HistoryView(workerClient: workerClient)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 620, height: 700),
@@ -27,19 +30,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         window.minSize = NSSize(width: 480, height: 500)
         super.init(window: window)
         window.delegate = self
+        suggestionsView.onSuggestionsChanged = { [weak vocabularyEditor, weak historyView] in
+            vocabularyEditor?.load()
+            historyView?.refresh()
+        }
+        historyView.onCorrectionSaved = { [weak suggestionsView] in
+            suggestionsView?.refresh()
+        }
         buildContent()
     }
 
     required init?(coder: NSCoder) { nil }
 
     override func showWindow(_ sender: Any?) {
-        if window?.isVisible == true {
-            refreshModel()
-            refreshLaunchAtLogin()
-            refreshHistory()
-        } else {
-            refresh()
-        }
+        refresh()
         super.showWindow(sender)
         window?.makeKeyAndOrderFront(sender)
         NSApp.activate(ignoringOtherApps: true)
@@ -59,6 +63,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         soundFeedbackButton.state = UserDefaults.standard.bool(forKey: "soundFeedback") ? .on : .off
         refreshLaunchAtLogin()
         vocabularyEditor.load()
+        suggestionsView.refresh()
         refreshHistory()
     }
 
@@ -107,7 +112,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let stack = NSStackView(views: [
             title, modelLabel, modelPicker, shortcutLabel, shortcutRecorder,
             autoPasteButton, soundFeedbackButton, launchAtLoginButton,
-            vocabularyEditor, historyLabel, historyView
+            vocabularyEditor, suggestionsView, historyLabel, historyView
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -115,6 +120,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.setCustomSpacing(22, after: title)
         stack.setCustomSpacing(18, after: launchAtLoginButton)
         stack.setCustomSpacing(18, after: vocabularyEditor)
+        stack.setCustomSpacing(18, after: suggestionsView)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         let documentView = FlippedView()
@@ -130,6 +136,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         modelPicker.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         shortcutRecorder.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         vocabularyEditor.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        suggestionsView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         historyView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         NSLayoutConstraint.activate([
             scrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),

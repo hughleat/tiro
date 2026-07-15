@@ -4,6 +4,8 @@ import AVFoundation
 @MainActor
 final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSource,
     NSTableViewDelegate, AVAudioPlayerDelegate {
+    var onCorrectionSaved: (() -> Void)?
+
     private enum DefaultsKey {
         static let retentionDays = "historyRetentionDays"
     }
@@ -17,6 +19,7 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
     private var searchTask: Task<Void, Never>?
     private var audioTask: Task<Void, Never>?
     private var retentionTask: Task<Void, Never>?
+    private var correctionTask: Task<Void, Never>?
     private var requestGeneration = 0
     private var audioPlayer: AVAudioPlayer?
     private var playingEntryID: String?
@@ -33,6 +36,7 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
         searchTask?.cancel()
         audioTask?.cancel()
         retentionTask?.cancel()
+        correctionTask?.cancel()
     }
 
     func refresh() {
@@ -186,7 +190,54 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
         guard entries.indices.contains(sender.tag) else { return }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(entries[sender.tag].text, forType: .string)
+        pasteboard.setString(entries[sender.tag].displayText, forType: .string)
+    }
+
+    @objc fileprivate func correctEntry(_ sender: NSButton) {
+        guard entries.indices.contains(sender.tag) else { return }
+        let entry = entries[sender.tag]
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 72))
+        field.stringValue = entry.corrected_text ?? entry.text
+        field.placeholderString = "Corrected transcription"
+        field.usesSingleLineMode = false
+        field.cell?.wraps = true
+        field.cell?.isScrollable = true
+        field.setAccessibilityLabel("Corrected transcription")
+
+        let alert = NSAlert()
+        alert.messageText = "Correct Transcription"
+        alert.informativeText = "Save the text exactly as it should have been transcribed."
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self, weak field] response in
+            guard response == .alertFirstButtonReturn, let correctedText = field?.stringValue else { return }
+            self?.performCorrection(entry, correctedText: correctedText)
+        }
+        if let window {
+            alert.beginSheetModal(for: window) { response in
+                completion(response)
+            }
+        } else {
+            completion(alert.runModal())
+        }
+    }
+
+    private func performCorrection(_ entry: HistoryEntry, correctedText: String) {
+        correctionTask?.cancel()
+        correctionTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await workerClient.correctHistoryEntry(id: entry.id, correctedText: correctedText)
+                guard !Task.isCancelled else { return }
+                onCorrectionSaved?()
+                refresh()
+            } catch {
+                guard !Task.isCancelled else { return }
+                window?.presentError(error)
+            }
+        }
     }
 
     @objc fileprivate func togglePlayback(_ sender: NSButton) {
@@ -351,6 +402,7 @@ private final class HistoryRowView: NSTableCellView {
     private let excerptLabel = NSTextField(labelWithString: "")
     private let metadataLabel = NSTextField(labelWithString: "")
     private let copyButton = NSButton()
+    private let correctButton = NSButton()
     private let playButton = NSButton()
     private let deleteButton = NSButton()
 
@@ -374,7 +426,7 @@ private final class HistoryRowView: NSTableCellView {
         labels.orientation = .vertical
         labels.alignment = .leading
         labels.spacing = 3
-        let buttons = NSStackView(views: [copyButton, playButton, deleteButton])
+        let buttons = NSStackView(views: [copyButton, correctButton, playButton, deleteButton])
         buttons.orientation = .horizontal
         buttons.alignment = .centerY
         buttons.spacing = 4
@@ -390,7 +442,7 @@ private final class HistoryRowView: NSTableCellView {
             buttons.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             buttons.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
-        for button in [copyButton, playButton, deleteButton] {
+        for button in [copyButton, correctButton, playButton, deleteButton] {
             button.widthAnchor.constraint(equalToConstant: 28).isActive = true
             button.heightAnchor.constraint(equalToConstant: 28).isActive = true
         }
@@ -405,10 +457,12 @@ private final class HistoryRowView: NSTableCellView {
         isPlaying: Bool,
         target: HistoryView
     ) {
-        excerptLabel.stringValue = entry.text.isEmpty ? "Untitled transcription" : entry.text
+        excerptLabel.stringValue = entry.displayText.isEmpty ? "Untitled transcription" : entry.displayText
         metadataLabel.stringValue = metadata
         configure(copyButton, symbol: "doc.on.doc", label: "Copy transcript", row: row, target: target,
                   action: #selector(HistoryView.copyEntry(_:)))
+        configure(correctButton, symbol: "square.and.pencil", label: "Correct transcript", row: row,
+                  target: target, action: #selector(HistoryView.correctEntry(_:)))
         configure(playButton, symbol: isPlaying ? "stop.fill" : "play.fill",
                   label: isPlaying ? "Stop playback" : "Play recording", row: row, target: target,
                   action: #selector(HistoryView.togglePlayback(_:)))
