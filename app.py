@@ -114,10 +114,10 @@ def get_model(model_key: str):
 
 def transcribe(wav_bytes: bytes, model_key: str) -> dict:
     samples = decode_pcm_wav(wav_bytes)
-    model, selected = get_model(model_key)
 
     started = time.perf_counter()
     with _transcribe_lock:
+        model, selected = get_model(model_key)
         import mlx.core as mx
 
         audio = mx.array(samples, dtype=mx.float32) / 32768.0
