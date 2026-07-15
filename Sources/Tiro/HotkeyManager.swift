@@ -3,21 +3,53 @@ import ApplicationServices
 
 final class HotkeyManager {
     var onTap: (() -> Void)?
-    var onHoldStart: (() -> Void)?
+    var onHoldStart: (() -> Bool)?
     var onHoldEnd: (() -> Void)?
+    var onHoldCancel: (() -> Void)?
     var onEscape: (() -> Void)?
+    var shouldHandleEscape: (() -> Bool)?
+
+    private(set) var shortcut: DictationShortcut
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
-    private var rightCommandDown = false
+    private var shortcutIsDown = false
+    private var suppressEscapeKeyUp = false
+    private var modifierGestureCanceled = false
+    private var blockedOrdinaryKeyUntilRelease: UInt16?
+    private var drainedKeyCodes = Set<UInt16>()
     private var holdTriggered = false
+    private var holdThresholdReached = false
     private var holdWorkItem: DispatchWorkItem?
-    private let rightCommandKeyCode: Int64 = 54
     private let escapeKeyCode: Int64 = 53
+
+    init(shortcut: DictationShortcut = .load()) {
+        self.shortcut = shortcut
+    }
+
+    func updateShortcut(_ shortcut: DictationShortcut) throws {
+        try shortcut.validate()
+        cancelCurrentGesture()
+        resetShortcutState()
+        self.shortcut = shortcut
+    }
+
+    func suppressUntilRelease(_ keyCodes: Set<UInt16>) {
+        drainedKeyCodes.formUnion(keyCodes)
+    }
 
     func start() throws {
         guard eventTap == nil else { return }
-        let mask = (1 << CGEventType.flagsChanged.rawValue) | (1 << CGEventType.keyDown.rawValue)
+        drainedKeyCodes = drainedKeyCodes.filter {
+            CGEventSource.keyState(.combinedSessionState, key: CGKeyCode($0))
+        }
+        if case let .ordinary(keyCode, _) = shortcut.key,
+           !CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(keyCode)) {
+            blockedOrdinaryKeyUntilRelease = nil
+        }
+        let mask = (1 << CGEventType.flagsChanged.rawValue)
+            | (1 << CGEventType.keyDown.rawValue)
+            | (1 << CGEventType.keyUp.rawValue)
         let callback: CGEventTapCallBack = { _, type, event, userInfo in
             guard let userInfo else { return Unmanaged.passUnretained(event) }
             let manager = Unmanaged<HotkeyManager>.fromOpaque(userInfo).takeUnretainedValue()
@@ -42,10 +74,9 @@ final class HotkeyManager {
     }
 
     func stop() {
-        holdWorkItem?.cancel()
-        holdWorkItem = nil
-        rightCommandDown = false
-        holdTriggered = false
+        cancelCurrentGesture()
+        resetShortcutState()
+        suppressEscapeKeyUp = false
         if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: false) }
         if let runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes) }
         eventTap = nil
@@ -54,42 +85,154 @@ final class HotkeyManager {
 
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            cancelCurrentGesture()
+            resetShortcutState()
             if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: true) }
             return Unmanaged.passUnretained(event)
         }
 
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-        if type == .keyDown, keyCode == escapeKeyCode {
-            DispatchQueue.main.async { [weak self] in self?.onEscape?() }
-            return Unmanaged.passUnretained(event)
+        if let physicalKeyCode = UInt16(exactly: keyCode), drainedKeyCodes.contains(physicalKeyCode) {
+            let isReleased = type == .keyUp
+                || (type == .flagsChanged
+                    && !CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(physicalKeyCode)))
+            if isReleased { drainedKeyCodes.remove(physicalKeyCode) }
+            return nil
+        }
+        if keyCode == escapeKeyCode {
+            if type == .keyDown {
+                if suppressEscapeKeyUp { return nil }
+                if shouldHandleEscape?() == true {
+                    suppressEscapeKeyUp = true
+                    cancelCurrentGesture()
+                    DispatchQueue.main.async { [weak self] in self?.onEscape?() }
+                    return nil
+                }
+            }
+            if type == .keyUp, suppressEscapeKeyUp {
+                suppressEscapeKeyUp = false
+                return nil
+            }
         }
 
-        guard type == .flagsChanged, keyCode == rightCommandKeyCode else {
+        switch shortcut.key {
+        case let .modifier(modifier):
+            if type == .flagsChanged,
+               shortcutIsDown,
+               keyCode != Int64(modifier.keyCode),
+               let physicalKeyCode = UInt16(exactly: keyCode),
+               DictationShortcut.ModifierKey(keyCode: physicalKeyCode) != nil {
+                cancelCurrentGesture()
+                return Unmanaged.passUnretained(event)
+            }
+            if type == .keyDown, shortcutIsDown {
+                cancelCurrentGesture()
+                return Unmanaged.passUnretained(event)
+            }
+            guard type == .flagsChanged, keyCode == Int64(modifier.keyCode) else {
+                return Unmanaged.passUnretained(event)
+            }
+            let isDown = CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(modifier.keyCode))
+            if isDown {
+                if Self.otherModifierIsDown(excluding: modifier) {
+                    modifierGestureCanceled = true
+                    return Unmanaged.passUnretained(event)
+                }
+                modifierGestureCanceled = false
+                transitionShortcut(isDown: true)
+            } else if modifierGestureCanceled {
+                modifierGestureCanceled = false
+            } else {
+                transitionShortcut(isDown: false)
+            }
+            return Unmanaged.passUnretained(event)
+
+        case let .ordinary(shortcutKeyCode, _):
+            guard keyCode == Int64(shortcutKeyCode) else { return Unmanaged.passUnretained(event) }
+            if blockedOrdinaryKeyUntilRelease == shortcutKeyCode {
+                if type == .keyUp { blockedOrdinaryKeyUntilRelease = nil }
+                return nil
+            }
+            if type == .keyDown {
+                if shortcutIsDown { return nil }
+                if event.getIntegerValueField(.keyboardEventAutorepeat) != 0 {
+                    return Unmanaged.passUnretained(event)
+                }
+                let modifiers = DictationShortcut.Modifiers(eventFlags: event.flags)
+                guard modifiers == shortcut.modifiers else { return Unmanaged.passUnretained(event) }
+                transitionShortcut(isDown: true)
+                return nil
+            }
+            if type == .keyUp, shortcutIsDown {
+                transitionShortcut(isDown: false)
+                return nil
+            }
             return Unmanaged.passUnretained(event)
         }
+    }
 
-        let isDown = event.flags.contains(.maskCommand)
-        if isDown, !rightCommandDown {
-            rightCommandDown = true
+    private func transitionShortcut(isDown: Bool) {
+        if isDown, !shortcutIsDown {
+            shortcutIsDown = true
             holdTriggered = false
+            holdThresholdReached = false
             let workItem = DispatchWorkItem { [weak self] in
-                guard let self, self.rightCommandDown else { return }
-                self.holdTriggered = true
-                self.onHoldStart?()
+                guard let self, self.shortcutIsDown else { return }
+                self.holdThresholdReached = true
+                self.holdTriggered = self.onHoldStart?() == true
             }
             holdWorkItem = workItem
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: workItem)
-        } else if !isDown, rightCommandDown {
-            rightCommandDown = false
+        } else if !isDown, shortcutIsDown {
+            shortcutIsDown = false
             holdWorkItem?.cancel()
             holdWorkItem = nil
+            let wasHoldTriggered = holdTriggered
+            let thresholdWasReached = holdThresholdReached
+            holdTriggered = false
+            holdThresholdReached = false
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                if self.holdTriggered { self.onHoldEnd?() }
-                else { self.onTap?() }
+                if wasHoldTriggered { self.onHoldEnd?() }
+                else if !thresholdWasReached { self.onTap?() }
             }
         }
-        return nil
+    }
+
+    private func resetShortcutState() {
+        holdWorkItem?.cancel()
+        holdWorkItem = nil
+        shortcutIsDown = false
+        holdTriggered = false
+        holdThresholdReached = false
+        modifierGestureCanceled = false
+    }
+
+    private func cancelCurrentGesture() {
+        guard shortcutIsDown else { return }
+        switch shortcut.key {
+        case .modifier:
+            modifierGestureCanceled = true
+        case let .ordinary(keyCode, _):
+            blockedOrdinaryKeyUntilRelease = keyCode
+        }
+        cancelActiveGesture()
+        shortcutIsDown = false
+    }
+
+    private func cancelActiveGesture() {
+        holdWorkItem?.cancel()
+        holdWorkItem = nil
+        if holdTriggered { onHoldCancel?() }
+        holdTriggered = false
+        holdThresholdReached = false
+    }
+
+    private static func otherModifierIsDown(excluding configured: DictationShortcut.ModifierKey) -> Bool {
+        DictationShortcut.ModifierKey.allCases.contains { modifier in
+            modifier != configured
+                && CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(modifier.keyCode))
+        }
     }
 }
 

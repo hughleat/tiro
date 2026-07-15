@@ -1,13 +1,16 @@
 import AppKit
 
-final class SettingsWindowController: NSWindowController {
+final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onModelChanged: ((DictationModel) -> Void)?
     var onAutoPasteChanged: ((Bool) -> Void)?
+    var onShortcutChanged: ((DictationShortcut) -> Void)?
+    var onShortcutCaptureChanged: ((Bool, Set<UInt16>) -> Void)?
 
     private let modelPicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private let autoPasteButton = NSButton(checkboxWithTitle: "Paste after transcription", target: nil, action: nil)
     private let soundFeedbackButton = NSButton(checkboxWithTitle: "Recording sounds", target: nil, action: nil)
     private let launchAtLoginButton = NSButton(checkboxWithTitle: "Launch Tiro at login", target: nil, action: nil)
+    private let shortcutRecorder = ShortcutRecorderView()
     private let vocabularyEditor = VocabularyEditorView()
     private let historyView = NSTextView(frame: .zero)
 
@@ -22,6 +25,7 @@ final class SettingsWindowController: NSWindowController {
         window.center()
         window.minSize = NSSize(width: 480, height: 420)
         super.init(window: window)
+        window.delegate = self
         buildContent()
     }
 
@@ -38,6 +42,14 @@ final class SettingsWindowController: NSWindowController {
         super.showWindow(sender)
         window?.makeKeyAndOrderFront(sender)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        shortcutRecorder.endCapture()
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        shortcutRecorder.endCapture()
     }
 
     func refresh() {
@@ -70,6 +82,18 @@ final class SettingsWindowController: NSWindowController {
         modelPicker.target = self
         modelPicker.action = #selector(modelChanged)
 
+        let shortcutLabel = NSTextField(labelWithString: "Shortcut")
+        shortcutLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        shortcutRecorder.onShortcutChanged = { [weak self] shortcut in
+            self?.onShortcutChanged?(shortcut)
+        }
+        shortcutRecorder.onCaptureStarted = { [weak self] in
+            self?.onShortcutCaptureChanged?(true, [])
+        }
+        shortcutRecorder.onCaptureEnded = { [weak self] suppressedKeys in
+            self?.onShortcutCaptureChanged?(false, suppressedKeys)
+        }
+
         autoPasteButton.target = self
         autoPasteButton.action = #selector(autoPasteChanged)
         soundFeedbackButton.target = self
@@ -89,7 +113,8 @@ final class SettingsWindowController: NSWindowController {
         historyScrollView.documentView = historyView
 
         let stack = NSStackView(views: [
-            title, modelLabel, modelPicker, autoPasteButton, soundFeedbackButton, launchAtLoginButton,
+            title, modelLabel, modelPicker, shortcutLabel, shortcutRecorder,
+            autoPasteButton, soundFeedbackButton, launchAtLoginButton,
             vocabularyEditor, historyLabel, historyScrollView
         ])
         stack.orientation = .vertical
@@ -102,6 +127,7 @@ final class SettingsWindowController: NSWindowController {
         contentView.addSubview(stack)
 
         modelPicker.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        shortcutRecorder.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         vocabularyEditor.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         historyScrollView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         historyScrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 240).isActive = true

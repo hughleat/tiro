@@ -21,6 +21,7 @@ import ApplicationServices
     private var modelMenuItems: [NSMenuItem] = []
     private var permissionTimer: Timer?
     private var hotkeysStarted = false
+    private var isCapturingShortcut = false
     private var destinationSession: DestinationSession?
     private var shouldAutoPaste = false
 
@@ -86,13 +87,38 @@ import ApplicationServices
             self?.updateModelChecks()
             self?.modelStatusItem.title = "Model: Loads on First Dictation"
         }
+        settingsWindow.onShortcutChanged = { [weak self] shortcut in
+            guard let self else { return }
+            do {
+                try shortcut.save()
+                try self.hotkeys.updateShortcut(shortcut)
+                self.updateShortcutStatus(trusted: AXIsProcessTrusted())
+            } catch {
+                self.presentError(error)
+            }
+        }
+        settingsWindow.onShortcutCaptureChanged = { [weak self] isCapturing, suppressedKeys in
+            guard let self else { return }
+            self.isCapturingShortcut = isCapturing
+            if isCapturing {
+                self.hotkeys.stop()
+                self.hotkeysStarted = false
+            } else {
+                self.hotkeys.suppressUntilRelease(suppressedKeys)
+                self.installHotkeysWhenPermitted()
+            }
+        }
     }
 
     private func requestPermissionsAndStart() {
         hotkeys.onTap = { [weak self] in self?.toggleRecording() }
-        hotkeys.onHoldStart = { [weak self] in self?.startRecording() }
+        hotkeys.onHoldStart = { [weak self] in self?.startRecording() == true }
         hotkeys.onHoldEnd = { [weak self] in self?.stopRecording() }
+        hotkeys.onHoldCancel = { [weak self] in self?.cancelRecording() }
         hotkeys.onEscape = { [weak self] in self?.cancelRecording() }
+        hotkeys.shouldHandleEscape = { [weak self] in
+            self?.state == .starting || self?.state == .recording
+        }
 
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
@@ -105,27 +131,31 @@ import ApplicationServices
 
     private func installHotkeysWhenPermitted() {
         let trusted = AXIsProcessTrusted()
+        updateShortcutStatus(trusted: trusted)
         if !trusted {
             if hotkeysStarted {
                 hotkeys.stop()
                 hotkeysStarted = false
             }
-            shortcutStatusItem.title = "Enable Right Command Shortcut…"
-            shortcutStatusItem.state = .off
             return
         }
 
-        shortcutStatusItem.title = "Right Command Shortcut Enabled"
-        shortcutStatusItem.state = .on
+        guard !isCapturingShortcut else { return }
         guard !hotkeysStarted else { return }
         do {
             try hotkeys.start()
             hotkeysStarted = true
         } catch {
-            shortcutStatusItem.title = "Right Command Shortcut Unavailable"
+            shortcutStatusItem.title = "\(hotkeys.shortcut.displayName) Shortcut Unavailable"
             shortcutStatusItem.state = .off
             NSLog("Could not install global dictation keys: %@", error.localizedDescription)
         }
+    }
+
+    private func updateShortcutStatus(trusted: Bool) {
+        let name = hotkeys.shortcut.displayName
+        shortcutStatusItem.title = trusted ? "\(name) Shortcut Enabled" : "Enable \(name) Shortcut…"
+        shortcutStatusItem.state = trusted ? .on : .off
     }
 
     @objc private func openAccessibilitySettings() {
@@ -144,8 +174,9 @@ import ApplicationServices
         }
     }
 
-    private func startRecording() {
-        guard state == .idle else { return }
+    @discardableResult
+    private func startRecording() -> Bool {
+        guard state == .idle else { return false }
         destinationSession = destinationTracker.capture()
         shouldAutoPaste = UserDefaults.standard.bool(forKey: "autoPaste")
         state = .starting
@@ -155,6 +186,7 @@ import ApplicationServices
         } else {
             beginRecording()
         }
+        return true
     }
 
     private func beginRecording() {
