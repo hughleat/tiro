@@ -190,9 +190,12 @@ import ApplicationServices
             modelStatusItem.title = "Model: Download One in Settings"
             return false
         }
+        shouldAutoPaste = UserDefaults.standard.bool(forKey: "autoPaste")
         originApplication = destinationTracker.captureApplicationIdentity()
         destinationSession = destinationTracker.capture()
-        shouldAutoPaste = UserDefaults.standard.bool(forKey: "autoPaste")
+        if shouldAutoPaste, destinationSession == nil {
+            NSLog("Could not capture the focused destination; transcription will be copied.")
+        }
         state = .starting
         menuToggleItem.title = "Cancel Starting"
         if UserDefaults.standard.bool(forKey: "soundFeedback") {

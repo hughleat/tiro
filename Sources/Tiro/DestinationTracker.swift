@@ -62,13 +62,18 @@ struct DestinationSession {
     }
 
     func restore() async -> Bool {
-        guard isAvailable,
-              application.activate(options: []) else { return false }
+        guard isAvailable else { return false }
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == processIdentifier,
+           isFocused {
+            return true
+        }
+        guard application.activate(options: []) else { return false }
 
         for _ in 0..<15 {
             guard isAvailable else { return false }
             let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
             if frontmostPID == processIdentifier {
+                if isFocused { return true }
                 _ = AXUIElementSetAttributeValue(
                     applicationElement,
                     kAXFocusedWindowAttribute as CFString,
@@ -120,8 +125,14 @@ struct DestinationSession {
     }
 
     var isFocused: Bool {
-        guard let currentWindow = elementAttribute(kAXFocusedWindowAttribute as CFString, of: applicationElement),
-              let currentElement = elementAttribute(kAXFocusedUIElementAttribute as CFString, of: applicationElement)
+        guard let currentElement = currentFocusedElement(
+                  for: applicationElement,
+                  processIdentifier: processIdentifier
+              ),
+              let currentWindow = currentFocusedWindow(
+                  for: applicationElement,
+                  focusedElement: currentElement
+              )
         else { return false }
         return CFEqual(currentWindow, windowElement) && CFEqual(currentElement, focusedElement)
     }
@@ -155,8 +166,14 @@ final class DestinationTracker: NSObject {
         guard let application = currentApplication() else { return nil }
 
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
-        guard let window = elementAttribute(kAXFocusedWindowAttribute as CFString, of: appElement),
-              let focusedElement = elementAttribute(kAXFocusedUIElementAttribute as CFString, of: appElement)
+        guard let focusedElement = currentFocusedElement(
+            for: appElement,
+            processIdentifier: application.processIdentifier
+        ) else { return nil }
+        guard let window = currentFocusedWindow(
+            for: appElement,
+            focusedElement: focusedElement
+        )
         else { return nil }
 
         return DestinationSession(
@@ -202,6 +219,36 @@ private func elementAttribute(_ attribute: CFString, of element: AXUIElement) ->
           let value,
           CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
     return unsafeBitCast(value, to: AXUIElement.self)
+}
+
+private func currentFocusedElement(
+    for applicationElement: AXUIElement,
+    processIdentifier: pid_t
+) -> AXUIElement? {
+    if let focused = elementAttribute(
+        kAXFocusedUIElementAttribute as CFString,
+        of: applicationElement
+    ) {
+        return focused
+    }
+
+    let systemWide = AXUIElementCreateSystemWide()
+    guard let focused = elementAttribute(
+        kAXFocusedUIElementAttribute as CFString,
+        of: systemWide
+    ) else { return nil }
+    var focusedPID: pid_t = 0
+    guard AXUIElementGetPid(focused, &focusedPID) == .success,
+          focusedPID == processIdentifier else { return nil }
+    return focused
+}
+
+private func currentFocusedWindow(
+    for applicationElement: AXUIElement,
+    focusedElement: AXUIElement
+) -> AXUIElement? {
+    elementAttribute(kAXFocusedWindowAttribute as CFString, of: applicationElement)
+        ?? elementAttribute(kAXWindowAttribute as CFString, of: focusedElement)
 }
 
 private func stringAttribute(_ attribute: CFString, of element: AXUIElement) -> String? {
