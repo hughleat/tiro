@@ -3,11 +3,12 @@ import AVFoundation
 import ApplicationServices
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
-    private enum State { case idle, recording, transcribing }
+    private enum State { case idle, starting, recording, transcribing }
 
     private let recorder = AudioRecorder()
     private let worker = WorkerClient()
     private let overlay = OverlayPanel()
+    private let recordingSounds = RecordingSoundPlayer()
     private let hotkeys = HotkeyManager()
     private lazy var settingsWindow = SettingsWindowController()
     private var statusItem: NSStatusItem!
@@ -20,7 +21,7 @@ import ApplicationServices
     private var hotkeysStarted = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        UserDefaults.standard.register(defaults: ["autoPaste": true])
+        UserDefaults.standard.register(defaults: ["autoPaste": true, "soundFeedback": true])
         _ = try? VocabularyFile.load()
         NSApp.setActivationPolicy(.accessory)
         configureStatusItem()
@@ -133,6 +134,7 @@ import ApplicationServices
     @objc private func toggleRecording() {
         switch state {
         case .idle: startRecording()
+        case .starting: cancelRecording()
         case .recording: stopRecording()
         case .transcribing: break
         }
@@ -140,22 +142,40 @@ import ApplicationServices
 
     private func startRecording() {
         guard state == .idle else { return }
+        state = .starting
+        menuToggleItem.title = "Cancel Starting"
+        if UserDefaults.standard.bool(forKey: "soundFeedback") {
+            recordingSounds.playStart { [weak self] in self?.beginRecording() }
+        } else {
+            beginRecording()
+        }
+    }
+
+    private func beginRecording() {
+        guard state == .starting else { return }
         do {
             try recorder.start()
             state = .recording
             menuToggleItem.title = "Stop Recording"
             statusItem.button?.image = NSImage(systemSymbolName: "record.circle.fill", accessibilityDescription: "Recording")
             statusItem.button?.contentTintColor = .systemRed
-            overlay.show(.recording)
+            overlay.showRecording(levelProvider: { [weak self] in
+                self?.recorder.normalizedMicrophoneLevel ?? 0
+            })
         } catch {
             presentError(error)
         }
     }
 
     private func stopRecording() {
+        if state == .starting {
+            cancelRecording()
+            return
+        }
         guard state == .recording else { return }
         do {
             let wavURL = try recorder.stop()
+            if UserDefaults.standard.bool(forKey: "soundFeedback") { recordingSounds.playStop() }
             state = .transcribing
             menuToggleItem.title = "Transcribing…"
             overlay.show(.transcribing)
@@ -176,8 +196,15 @@ import ApplicationServices
     }
 
     private func cancelRecording() {
+        if state == .starting {
+            recordingSounds.cancelStart()
+            state = .idle
+            menuToggleItem.title = "Start Recording"
+            return
+        }
         guard state == .recording else { return }
         recorder.cancel()
+        if UserDefaults.standard.bool(forKey: "soundFeedback") { recordingSounds.playStop() }
         state = .idle
         menuToggleItem.title = "Start Recording"
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Tiro")

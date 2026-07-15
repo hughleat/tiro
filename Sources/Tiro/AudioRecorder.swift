@@ -4,9 +4,17 @@ import Foundation
 final class AudioRecorder {
     private let engine = AVAudioEngine()
     private let lock = NSLock()
+    private let levelLock = NSLock()
     private var samples: [Float] = []
+    private var level: Float = 0
     private var inputSampleRate = 48_000.0
     private(set) var isRecording = false
+
+    var normalizedMicrophoneLevel: Float {
+        levelLock.lock()
+        defer { levelLock.unlock() }
+        return level
+    }
 
     func start() throws {
         guard !isRecording else { return }
@@ -19,11 +27,14 @@ final class AudioRecorder {
         lock.lock()
         samples.removeAll(keepingCapacity: true)
         lock.unlock()
+        setLevel(0)
         inputSampleRate = format.sampleRate
 
         input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
             guard let self, let channel = buffer.floatChannelData?[0] else { return }
             let frameCount = Int(buffer.frameLength)
+            guard frameCount > 0 else { return }
+            self.publishLevel(from: channel, count: frameCount)
             self.lock.lock()
             self.samples.append(contentsOf: UnsafeBufferPointer(start: channel, count: frameCount))
             self.lock.unlock()
@@ -39,6 +50,7 @@ final class AudioRecorder {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         isRecording = false
+        setLevel(0)
 
         lock.lock()
         let captured = samples
@@ -58,9 +70,30 @@ final class AudioRecorder {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         isRecording = false
+        setLevel(0)
         lock.lock()
         samples.removeAll(keepingCapacity: true)
         lock.unlock()
+    }
+
+    private func publishLevel(from samples: UnsafePointer<Float>, count: Int) {
+        var sum: Float = 0
+        for index in 0..<count {
+            sum += samples[index] * samples[index]
+        }
+        let rms = sqrt(sum / Float(count))
+        let decibels = 20 * log10(max(rms, 0.000_001))
+        let normalized = max(0, min(1, (decibels + 60) / 60))
+
+        guard levelLock.try() else { return }
+        level = normalized
+        levelLock.unlock()
+    }
+
+    private func setLevel(_ value: Float) {
+        levelLock.lock()
+        level = value
+        levelLock.unlock()
     }
 
     private static func resample(_ input: [Float], from sourceRate: Double, to targetRate: Double) -> [Float] {

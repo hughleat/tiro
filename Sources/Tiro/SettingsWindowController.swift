@@ -6,6 +6,7 @@ final class SettingsWindowController: NSWindowController {
 
     private let modelPicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private let autoPasteButton = NSButton(checkboxWithTitle: "Paste after transcription", target: nil, action: nil)
+    private let soundFeedbackButton = NSButton(checkboxWithTitle: "Recording sounds", target: nil, action: nil)
     private let launchAtLoginButton = NSButton(checkboxWithTitle: "Launch Tiro at login", target: nil, action: nil)
     private let vocabularyEditor = VocabularyEditorView()
     private let historyView = NSTextView(frame: .zero)
@@ -42,6 +43,7 @@ final class SettingsWindowController: NSWindowController {
     func refresh() {
         refreshModel()
         autoPasteButton.state = UserDefaults.standard.bool(forKey: "autoPaste") ? .on : .off
+        soundFeedbackButton.state = UserDefaults.standard.bool(forKey: "soundFeedback") ? .on : .off
         refreshLaunchAtLogin()
         vocabularyEditor.load()
         refreshHistory()
@@ -70,6 +72,8 @@ final class SettingsWindowController: NSWindowController {
 
         autoPasteButton.target = self
         autoPasteButton.action = #selector(autoPasteChanged)
+        soundFeedbackButton.target = self
+        soundFeedbackButton.action = #selector(soundFeedbackChanged)
         launchAtLoginButton.target = self
         launchAtLoginButton.action = #selector(launchAtLoginChanged)
 
@@ -85,7 +89,7 @@ final class SettingsWindowController: NSWindowController {
         historyScrollView.documentView = historyView
 
         let stack = NSStackView(views: [
-            title, modelLabel, modelPicker, autoPasteButton, launchAtLoginButton,
+            title, modelLabel, modelPicker, autoPasteButton, soundFeedbackButton, launchAtLoginButton,
             vocabularyEditor, historyLabel, historyScrollView
         ])
         stack.orientation = .vertical
@@ -119,6 +123,10 @@ final class SettingsWindowController: NSWindowController {
         let enabled = autoPasteButton.state == .on
         UserDefaults.standard.set(enabled, forKey: "autoPaste")
         onAutoPasteChanged?(enabled)
+    }
+
+    @objc private func soundFeedbackChanged() {
+        UserDefaults.standard.set(soundFeedbackButton.state == .on, forKey: "soundFeedback")
     }
 
     @objc private func launchAtLoginChanged() {
