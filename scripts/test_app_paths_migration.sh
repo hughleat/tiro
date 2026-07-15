@@ -55,12 +55,12 @@ env \
 [[ "$(cat "$MODELS/hub/existing/config.json")" == 'destination-model' ]]
 [[ "$(cat "$CHECKOUT/data/audio/nested/new.wav")" == 'source-new' ]]
 [[ "$(cat "$CHECKOUT/.cache/huggingface/hub/model/weights.bin")" == 'offline-model' ]]
-[[ -f "$SUPPORT/.legacy-project-data-migrated-v3" ]]
+[[ -f "$SUPPORT/.legacy-project-data-migrated-v4" ]]
 [[ "$(cat "$SUPPORT/.legacy-project-root")" -ef "$CHECKOUT" ]]
 rg -q "models=$MODELS" "$TEMP_ROOT/output"
 
 # Installed releases can recover the checkout remembered by an earlier development run.
-rm "$SUPPORT/.legacy-project-data-migrated-v3"
+rm "$SUPPORT/.legacy-project-data-migrated-v4"
 print -n 'remembered-root' > "$CHECKOUT/data/audio/remembered.wav"
 (
     cd "$TEMP_ROOT"
@@ -70,7 +70,7 @@ print -n 'remembered-root' > "$CHECKOUT/data/audio/remembered.wav"
         "$TEMP_ROOT/migration-harness" >/dev/null
 )
 [[ "$(cat "$SUPPORT/data/audio/remembered.wav")" == 'remembered-root' ]]
-[[ -f "$SUPPORT/.legacy-project-data-migrated-v3" ]]
+[[ -f "$SUPPORT/.legacy-project-data-migrated-v4" ]]
 
 # A file/directory conflict is unresolved: preserve both sides and leave migration retryable.
 FAIL_CHECKOUT="$TEMP_ROOT/failing-checkout"
@@ -89,6 +89,6 @@ if env \
 fi
 [[ "$(cat "$FAIL_SUPPORT/data/audio")" == 'blocking-file' ]]
 [[ "$(cat "$FAIL_CHECKOUT/data/audio/kept.wav")" == 'recording' ]]
-[[ ! -e "$FAIL_SUPPORT/.legacy-project-data-migrated-v3" ]]
+[[ ! -e "$FAIL_SUPPORT/.legacy-project-data-migrated-v4" ]]
 
 print "AppPaths migration assertions passed"

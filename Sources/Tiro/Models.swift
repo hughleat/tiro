@@ -1,5 +1,108 @@
 import Foundation
 
+enum DictationMode: String, CaseIterable {
+    case standard
+    case verbatim
+
+    var title: String { rawValue.capitalized }
+}
+
+enum PunctuationMode: String, CaseIterable {
+    case automatic
+    case spoken
+    case none
+
+    var title: String { rawValue.capitalized }
+}
+
+enum DictationLanguage: String, CaseIterable {
+    case auto
+    case english
+    case cantonese
+    case arabic
+    case french
+    case german
+    case spanish
+    case italian
+    case portuguese
+    case dutch
+    case chinese
+    case japanese
+    case korean
+    case russian
+    case indonesian
+    case thai
+    case vietnamese
+    case turkish
+    case hindi
+    case malay
+    case swedish
+    case danish
+    case finnish
+    case polish
+    case czech
+    case filipino
+    case persian
+    case greek
+    case romanian
+    case hungarian
+    case macedonian
+
+    var title: String { rawValue.capitalized }
+}
+
+struct DictationPreferences {
+    private enum Key {
+        static let mode = "dictationMode"
+        static let punctuation = "punctuationMode"
+        static let qwenLanguage = "dictationLanguage"
+        static let parakeetLanguage = "parakeetLanguage"
+    }
+
+    let mode: DictationMode
+    let punctuation: PunctuationMode
+    let language: DictationLanguage
+
+    static var current: DictationPreferences {
+        let defaults = UserDefaults.standard
+        return DictationPreferences(
+            mode: DictationMode(rawValue: defaults.string(forKey: Key.mode) ?? "") ?? .standard,
+            punctuation: PunctuationMode(
+                rawValue: defaults.string(forKey: Key.punctuation) ?? ""
+            ) ?? .automatic,
+            language: DictationLanguage(
+                rawValue: defaults.string(forKey: Key.qwenLanguage) ?? ""
+            ) ?? .auto
+        )
+    }
+
+    static func language(for model: DictationModel) -> DictationLanguage {
+        guard model.key != "qwen" else { return current.language }
+        let stored = UserDefaults.standard.string(forKey: Key.parakeetLanguage) ?? ""
+        let language = DictationLanguage(rawValue: stored) ?? .english
+        return language == .auto ? .auto : .english
+    }
+
+    static func save(
+        mode: DictationMode,
+        punctuation: PunctuationMode,
+        language: DictationLanguage,
+        model: DictationModel
+    ) {
+        let defaults = UserDefaults.standard
+        defaults.set(mode.rawValue, forKey: Key.mode)
+        defaults.set(punctuation.rawValue, forKey: Key.punctuation)
+        let key = model.key == "qwen" ? Key.qwenLanguage : Key.parakeetLanguage
+        defaults.set(language.rawValue, forKey: key)
+    }
+}
+
+struct UserSnippet: Codable, Hashable {
+    var id: String
+    var trigger: String
+    var content: String
+}
+
 struct DictationModel: Hashable {
     let key: String
     let name: String

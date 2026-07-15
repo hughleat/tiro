@@ -1,7 +1,7 @@
 import Foundation
 
 @MainActor final class WorkerClient {
-    private static let supportedAPIVersion = 5
+    private static let supportedAPIVersion = 6
     private let baseURL = URL(string: "http://127.0.0.1:8767")!
     private let mutationGate = WorkerMutationGate()
     private var process: Process?
@@ -100,6 +100,11 @@ import Foundation
         request.timeoutInterval = 1_800
         request.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
         request.setValue(model.key, forHTTPHeaderField: "X-Parakeet-Model")
+        let preferences = DictationPreferences.current
+        request.setValue(preferences.mode.rawValue, forHTTPHeaderField: "X-Tiro-Mode")
+        request.setValue(preferences.punctuation.rawValue, forHTTPHeaderField: "X-Tiro-Punctuation")
+        let language = DictationPreferences.language(for: model)
+        request.setValue(language.rawValue, forHTTPHeaderField: "X-Tiro-Language")
         setOriginHeader(originBundleID, maximum: 255, field: "X-Tiro-Origin-Bundle-ID", on: &request)
         setOriginHeader(originName, maximum: 200, field: "X-Tiro-Origin-App-Name", on: &request)
         request.httpBody = try Data(contentsOf: wavURL)
@@ -148,6 +153,33 @@ import Foundation
                 operation: "Model deletion"
             )
         }
+    }
+
+    func snippets() async throws -> [UserSnippet] {
+        try await ensureRunning()
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/snippets"))
+        request.setValue(try workerToken(), forHTTPHeaderField: "X-Tiro-Worker-Token")
+        let data = try await send(request, operation: "Snippet list")
+        return try JSONDecoder().decode(SnippetsResponse.self, from: data).snippets
+    }
+
+    func saveSnippet(_ snippet: UserSnippet) async throws -> UserSnippet {
+        try await serializedMutation {
+            let data = try await authenticatedJSONPost(
+                path: "api/snippets",
+                body: snippet,
+                operation: "Snippet save"
+            )
+            return try JSONDecoder().decode(UserSnippet.self, from: data)
+        }
+    }
+
+    func deleteSnippet(id: String) async throws {
+        try await authenticatedPost(
+            path: "api/snippets/delete",
+            body: HistoryIDRequest(id: id),
+            operation: "Snippet deletion"
+        )
     }
 
     func compareModels(
@@ -522,6 +554,10 @@ private struct ModelsResponse: Decodable {
         let dictionary = try values.decode([String: ModelPayload].self, forKey: .models)
         models = dictionary.map(ManagedModel.init(key:payload:)).sorted { $0.key < $1.key }
     }
+}
+
+private struct SnippetsResponse: Decodable {
+    let snippets: [UserSnippet]
 }
 
 private struct ModelKeyRequest: Encodable {

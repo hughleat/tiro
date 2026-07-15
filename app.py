@@ -14,6 +14,7 @@ import shutil
 import threading
 import time
 import traceback
+import unicodedata
 import uuid
 import wave
 from array import array
@@ -32,6 +33,7 @@ RETENTION_PATH = DATA_DIR / "retention.json"
 VOCABULARY_PATH = DATA_DIR / "vocabulary.json"
 PROFILES_PATH = DATA_DIR / "profiles.json"
 SUGGESTIONS_PATH = DATA_DIR / "suggestions.json"
+SNIPPETS_PATH = DATA_DIR / "snippets.json"
 MODEL_CACHE = ROOT / ".cache" / "huggingface"
 
 
@@ -41,12 +43,14 @@ def _log_exception(context: str, exc: Exception) -> None:
 MODEL_HUB_CACHE = MODEL_CACHE / "hub"
 SAMPLE_RATE = 16_000
 MAX_RECORDING_BYTES = 100 * 1024 * 1024
-API_VERSION = 5
+API_VERSION = 6
 MAX_JSON_BODY_BYTES = 16 * 1024
 MAX_ORIGIN_BUNDLE_ID = 255
 MAX_ORIGIN_APP_NAME = 200
 MAX_VOCABULARY_ENTRIES = 500
 MAX_PROFILES = 200
+MAX_SNIPPETS = 200
+MAX_SNIPPET_CONTENT = 2_000
 MAX_HISTORY_LIMIT = 200
 DEFAULT_HISTORY_LIMIT = 20
 MAX_COMPARISON_MODELS = 3
@@ -54,6 +58,16 @@ RETENTION_DAYS = {0, 7, 30, 90}
 HISTORY_ID_NAMESPACE = uuid.UUID("99bb23a4-4c7b-4d82-85aa-a33a072950f7")
 SUGGESTION_ID_NAMESPACE = uuid.UUID("ad2d6d17-a3ef-49df-bbd5-ed73ad9b81cb")
 STAGED_AUDIO_PREFIX = ".tiro-delete-"
+
+TRANSCRIPTION_MODES = {"standard", "verbatim"}
+PUNCTUATION_MODES = {"automatic", "spoken", "none"}
+QWEN_LANGUAGES = {
+    "Arabic", "Cantonese", "Chinese", "Czech", "Danish", "Dutch", "English",
+    "Filipino", "Finnish", "French", "German", "Greek", "Hindi", "Hungarian",
+    "Indonesian", "Italian", "Japanese", "Korean", "Macedonian", "Malay",
+    "Persian", "Polish", "Portuguese", "Romanian", "Russian", "Spanish",
+    "Swedish", "Thai", "Turkish", "Vietnamese",
+}
 
 MODELS = {
     "compact": {
@@ -239,6 +253,180 @@ def apply_vocabulary(text: str, entries: list[dict[str, str]]) -> str:
         lambda match: replacements.get(match.group(0).casefold(), match.group(0)),
         text,
     )
+
+
+def _validated_snippets(value: object, *, strict: bool = False) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        if strict:
+            raise ValueError("snippets must be an array")
+        return []
+    if len(value) > MAX_SNIPPETS:
+        if strict:
+            raise ValueError(f"snippets may contain at most {MAX_SNIPPETS} items")
+        value = value[:MAX_SNIPPETS]
+    snippets = []
+    triggers = set()
+    ids = set()
+    for item in value:
+        trigger = item.get("trigger") if isinstance(item, dict) else None
+        valid = (
+            isinstance(item, dict)
+            and isinstance(item.get("id"), str)
+            and bool(item["id"].strip())
+            and len(item["id"]) <= 200
+            and item["id"].strip() not in ids
+            and isinstance(trigger, str)
+            and bool(trigger.strip())
+            and len(trigger) <= 200
+            and trigger.strip().casefold() not in triggers
+            and isinstance(item.get("content"), str)
+            and bool(item["content"].strip())
+            and len(item["content"]) <= MAX_SNIPPET_CONTENT
+        )
+        if not valid:
+            if strict:
+                raise ValueError("each snippet needs a unique bounded trigger and non-empty id and content")
+            continue
+        triggers.add(trigger.strip().casefold())
+        ids.add(item["id"].strip())
+        snippets.append({
+            "id": item["id"].strip(),
+            "trigger": item["trigger"].strip(),
+            "content": item["content"].strip(),
+        })
+    return snippets
+
+
+def load_snippets() -> list[dict[str, str]]:
+    try:
+        payload = json.loads(SNIPPETS_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        return []
+    return _validated_snippets(payload.get("snippets"))
+
+
+def _load_snippets_strict() -> list[dict[str, str]]:
+    try:
+        payload = json.loads(SNIPPETS_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("snippets file is malformed; repair it before accepting changes") from exc
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        raise ValueError("snippets document version must be 1")
+    return _validated_snippets(payload.get("snippets"), strict=True)
+
+
+def save_snippet(payload: object) -> dict[str, str]:
+    if not isinstance(payload, dict):
+        raise ValueError("snippet must be an object")
+    snippet_id = payload.get("id") or str(uuid.uuid4())
+    snippet = _validated_snippets([{
+        "id": snippet_id,
+        "trigger": payload.get("trigger"),
+        "content": payload.get("content"),
+    }], strict=True)[0]
+    with _state_lock:
+        snippets = _load_snippets_strict()
+        replacing = any(item["id"] == snippet["id"] for item in snippets)
+        if not replacing and len(snippets) >= MAX_SNIPPETS:
+            raise ValueError(f"snippet capacity is {MAX_SNIPPETS} items")
+        snippets = _validated_snippets(
+            [item for item in snippets if item["id"] != snippet["id"]] + [snippet],
+            strict=True,
+        )
+        _atomic_write(SNIPPETS_PATH, json.dumps(
+            {"version": 1, "snippets": snippets}, ensure_ascii=False, separators=(",", ":")
+        ) + "\n")
+    return snippet
+
+
+def delete_snippet(snippet_id: str) -> bool:
+    with _state_lock:
+        snippets = _load_snippets_strict()
+        kept = [item for item in snippets if item["id"] != snippet_id]
+        if len(kept) == len(snippets):
+            return False
+        _atomic_write(SNIPPETS_PATH, json.dumps(
+            {"version": 1, "snippets": kept}, ensure_ascii=False, separators=(",", ":")
+        ) + "\n")
+    return True
+
+
+def apply_snippets(text: str, snippets: list[dict[str, str]]) -> str:
+    return apply_vocabulary(text, [
+        {"spoken": item["trigger"], "written": item["content"]}
+        for item in snippets
+    ])
+
+
+_FORMATTING_COMMANDS = {
+    "new paragraph": "\n\n",
+    "new line": "\n",
+}
+_PUNCTUATION_COMMANDS = {
+    "question mark": "?",
+    "exclamation mark": "!",
+    "semicolon": ";",
+    "colon": ":",
+    "comma": ",",
+    "full stop": ".",
+    "period": ".",
+}
+
+
+def _without_punctuation(text: str) -> str:
+    characters = []
+    lexical_punctuation = {"'", "’", "ʼ", "-", "‐", "‑"}
+    for index, character in enumerate(text):
+        punctuation = unicodedata.category(character).startswith("P")
+        inside_word = (
+            character in lexical_punctuation
+            and index > 0
+            and index + 1 < len(text)
+            and text[index - 1].isalnum()
+            and text[index + 1].isalnum()
+        )
+        characters.append(" " if punctuation and not inside_word else character)
+    return re.sub(r"[ \t]+", " ", "".join(characters)).strip()
+
+
+def apply_spoken_formatting(text: str, punctuation: str) -> str:
+    commands = dict(_FORMATTING_COMMANDS)
+    if punctuation == "spoken":
+        commands.update(_PUNCTUATION_COMMANDS)
+    markers = {}
+    for index, (spoken, written) in enumerate(commands.items()):
+        marker = f"\x00{index}\x00"
+        markers[marker] = written
+        text = re.sub(rf"(?<!\w){re.escape(spoken)}(?!\w)", marker, text, flags=re.IGNORECASE)
+    if punctuation in {"spoken", "none"}:
+        text = _without_punctuation(text)
+    for marker, written in markers.items():
+        text = text.replace(marker, written)
+    text = re.sub(r"[ \t]+([,.;:?!])", r"\1", text)
+    text = re.sub(r"([,.;:?!])(?=\w)", r"\1 ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    return text.strip(" \t\r")
+
+
+def _transcription_options(
+    model_key: str, mode: str, punctuation: str, language: str
+) -> tuple[str, str, str]:
+    if mode not in TRANSCRIPTION_MODES:
+        raise ValueError("mode must be 'standard' or 'verbatim'")
+    if punctuation not in PUNCTUATION_MODES:
+        raise ValueError("punctuation must be 'automatic', 'spoken', or 'none'")
+    canonical_language = "auto" if language.casefold() == "auto" else next(
+        (name for name in QWEN_LANGUAGES if name.casefold() == language.casefold()), None
+    )
+    if canonical_language is None:
+        raise ValueError("language must be 'auto' or a supported language name")
+    if MODELS[_model_key(model_key)]["backend"] == "parakeet" and canonical_language not in {"auto", "English"}:
+        raise ValueError("Parakeet models support only auto or English language")
+    return mode, punctuation, canonical_language
 
 
 def _origin_header(value: str | None, maximum: int, label: str) -> str | None:
@@ -1309,6 +1497,19 @@ def _history_audio(entry_id: str) -> bytes | None:
     return None
 
 
+def _history_language(entry_id: str) -> str:
+    with _history_lock:
+        for line in reversed(_read_history_lines()):
+            entry = _parse_history_line(line)
+            if entry is None or entry.get("id") != entry_id:
+                continue
+            language = entry.get("language")
+            if language == "auto" or language in QWEN_LANGUAGES:
+                return language
+            break
+    return "English"
+
+
 def _installed_model_snapshots(model_keys: list[str]) -> dict[str, Path]:
     with _model_download_lock:
         busy = [
@@ -1377,13 +1578,15 @@ def _load_model(model_key: str, source: str | Path):
     return _model, selected
 
 
-def _generate_transcript(samples: array, model_key: str, source: str | Path) -> str:
+def _generate_transcript(
+    samples: array, model_key: str, source: str | Path, language: str = "English"
+) -> str:
     model, selected = _load_model(model_key, source)
     import mlx.core as mx
 
     audio = mx.array(samples, dtype=mx.float32) / 32768.0
     if selected["backend"] == "qwen":
-        result = model.generate(audio, language="English")
+        result = model.generate(audio, language=None if language == "auto" else language)
     else:
         from parakeet_mlx.audio import get_logmel
 
@@ -1421,6 +1624,7 @@ def compare_history_models(
     if wav_bytes is None:
         raise HTTPError(HTTPStatus.NOT_FOUND, "History audio not found")
     samples = decode_pcm_wav(wav_bytes)
+    language = _history_language(entry_id)
 
     _installed_model_snapshots(model_keys)
     with _comparison_run_lock:
@@ -1440,7 +1644,10 @@ def compare_history_models(
                         restore_model, restore_model_id = _model, _model_id
                     source = _installed_model_snapshots([key])[key]
                     try:
-                        text = _generate_transcript(samples, key, source)
+                        if key == "qwen" and language != "English":
+                            text = _generate_transcript(samples, key, source, language)
+                        else:
+                            text = _generate_transcript(samples, key, source)
                     finally:
                         expected_model, expected_model_id = _model, _model_id
                 results.append(
@@ -1468,14 +1675,23 @@ def transcribe(
     model_key: str,
     origin_bundle_id: str | None = None,
     origin_app_name: str | None = None,
+    mode: str = "standard",
+    punctuation: str = "automatic",
+    language: str = "English",
 ) -> dict:
     samples = decode_pcm_wav(wav_bytes)
 
     started = time.perf_counter()
     with _operation_lock:
         model_key = _model_key(model_key)
+        mode, punctuation, language = _transcription_options(
+            model_key, mode, punctuation, language
+        )
         source = _installed_model_snapshots([model_key])[model_key]
-        raw_text = _generate_transcript(samples, model_key, source)
+        if language == "English":
+            raw_text = _generate_transcript(samples, model_key, source)
+        else:
+            raw_text = _generate_transcript(samples, model_key, source, language)
         selected = MODELS[model_key]
     elapsed = time.perf_counter() - started
 
@@ -1483,13 +1699,21 @@ def transcribe(
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     audio_path = AUDIO_DIR / f"{stamp}.wav"
     audio_path.write_bytes(wav_bytes)
+    text = raw_text
+    if mode == "standard":
+        text = apply_spoken_formatting(text, punctuation)
+        text = apply_vocabulary(text, vocabulary_for_origin(origin_bundle_id))
+        text = apply_snippets(text, load_snippets())
     entry = {
         "id": str(uuid.uuid4()),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "model": selected["id"],
         "audio_file": str(audio_path.relative_to(ROOT)),
         "transcription_seconds": round(elapsed, 3),
-        "text": apply_vocabulary(raw_text, vocabulary_for_origin(origin_bundle_id)),
+        "text": text,
+        "mode": mode,
+        "punctuation": punctuation,
+        "language": language,
     }
     if origin_bundle_id:
         entry["origin_bundle_id"] = origin_bundle_id
@@ -1618,6 +1842,13 @@ class TiroHandler(BaseHTTPRequestHandler):
             with _state_lock:
                 json_response(self, load_profiles())
             return
+        if path == "/api/snippets":
+            if not self._authorized():
+                json_response(self, {"error": "Forbidden"}, HTTPStatus.FORBIDDEN)
+                return
+            with _state_lock:
+                json_response(self, {"snippets": load_snippets()})
+            return
         if path == "/api/suggestions":
             try:
                 json_response(self, {"suggestions": get_suggestions()})
@@ -1653,6 +1884,8 @@ class TiroHandler(BaseHTTPRequestHandler):
             "/api/models/delete",
             "/api/models/compare",
             "/api/models/compare/cancel",
+            "/api/snippets",
+            "/api/snippets/delete",
         }
         if path in mutation_paths:
             if not self._authorized():
@@ -1698,6 +1931,13 @@ class TiroHandler(BaseHTTPRequestHandler):
                     json_response(self, {"corrected": True})
                 elif path == "/api/vocabulary/profiles":
                     json_response(self, save_profiles(payload))
+                elif path == "/api/snippets":
+                    json_response(self, save_snippet(payload), HTTPStatus.CREATED)
+                elif path == "/api/snippets/delete":
+                    snippet_id = payload.get("id")
+                    if not isinstance(snippet_id, str) or not snippet_id:
+                        raise ValueError("id must be a non-empty string")
+                    json_response(self, {"deleted": delete_snippet(snippet_id)})
                 elif path == "/api/models/download":
                     model_key = _model_key(payload.get("key", payload.get("model")))
                     downloaded = download_model(model_key)
@@ -1856,9 +2096,19 @@ class TiroHandler(BaseHTTPRequestHandler):
                 MAX_ORIGIN_APP_NAME,
                 "X-Tiro-Origin-App-Name",
             )
-            entry = transcribe(
-                self.rfile.read(length), model_key, origin_bundle_id, origin_app_name
-            )
+            mode = self.headers.get("X-Tiro-Mode", "standard")
+            punctuation = self.headers.get("X-Tiro-Punctuation", "automatic")
+            language = self.headers.get("X-Tiro-Language", "English")
+            wav_bytes = self.rfile.read(length)
+            if (mode, punctuation, language) == ("standard", "automatic", "English"):
+                entry = transcribe(
+                    wav_bytes, model_key, origin_bundle_id, origin_app_name
+                )
+            else:
+                entry = transcribe(
+                    wav_bytes, model_key, origin_bundle_id, origin_app_name,
+                    mode, punctuation, language,
+                )
             json_response(self, entry)
         except HTTPError as exc:
             json_response(self, {"error": str(exc)}, exc.status)

@@ -24,6 +24,7 @@ def configure_paths() -> None:
     app.VOCABULARY_PATH = data_dir / "vocabulary.json"
     app.PROFILES_PATH = data_dir / "profiles.json"
     app.SUGGESTIONS_PATH = data_dir / "suggestions.json"
+    app.SNIPPETS_PATH = data_dir / "snippets.json"
     app.MODEL_CACHE = model_dir
     app.MODEL_HUB_CACHE = model_dir / "hub"
     os.environ["HF_HOME"] = str(model_dir)

@@ -4,12 +4,20 @@ Tiro is a private, local dictation app for Apple Silicon Macs. A native menu-bar
 
 ## Controls
 
-- Tap Right Command to start or stop recording.
-- Hold Right Command for push-to-talk.
+- Tap the configured shortcut (Right Command by default) to start or stop recording.
+- Hold the shortcut for push-to-talk.
 - Press Escape to cancel a recording.
 - Use the waveform menu-bar icon to record, select a model, change automatic paste, or view history.
 
-Manage personal vocabulary in the two-column table in Settings. Tiro applies each correction locally before copying, pasting, and saving the transcript.
+Settings includes searchable history, model downloads and comparisons, global and per-app vocabulary, and reusable snippets. Tiro applies these local transformations before copying, pasting, and saving the transcript.
+
+## Dictation
+
+- **Standard** mode applies spoken formatting commands, vocabulary, and snippets. **Verbatim** preserves the model transcript.
+- Punctuation can use the model output, spoken punctuation such as “comma” and “question mark,” or no punctuation.
+- “New line” and “new paragraph” work as formatting commands in Standard mode.
+- Qwen supports automatic language detection and 30 explicit languages. The Parakeet models remain English-only.
+- Snippets use an editable “When Tiro hears” / “Tiro inserts” table and are stored locally.
 
 The global shortcut and automatic paste require macOS Accessibility permission. Recording requires Microphone permission. Tiro shows the shortcut permission state in its menu.
 
@@ -39,6 +47,8 @@ Python 3.11 or newer and the project-local virtual environment are required for 
 
 ```sh
 .venv/bin/python -m unittest discover -s tests
+./scripts/test_app_paths_migration.sh
+./scripts/test_snippet_edit_state.sh
 ./scripts/build_native_app.sh development
 open "dist/Tiro.app"
 ```

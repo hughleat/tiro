@@ -18,7 +18,7 @@ enum AppPaths {
     }
 
     private static let fileManager = FileManager.default
-    private static let migrationMarkerName = ".legacy-project-data-migrated-v3"
+    private static let migrationMarkerName = ".legacy-project-data-migrated-v4"
     private static let knownProjectRootName = ".legacy-project-root"
     private static let migratableDataItems = [
         "audio",
@@ -27,6 +27,7 @@ enum AppPaths {
         "profiles.json",
         "retention.json",
         "suggestions.json",
+        "snippets.json",
         "vocabulary.json",
         "vocabulary.txt",
         "worker-token",

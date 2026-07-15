@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import app
+from scripts import worker_entry
 
 
 def make_wav(*, channels=1, sample_width=2, sample_rate=16_000, frames=160):
@@ -44,6 +45,7 @@ def history_environment():
         stack.enter_context(patch.object(app, "VOCABULARY_PATH", data / "vocabulary.json"))
         stack.enter_context(patch.object(app, "PROFILES_PATH", data / "profiles.json"))
         stack.enter_context(patch.object(app, "SUGGESTIONS_PATH", data / "suggestions.json"))
+        stack.enter_context(patch.object(app, "SNIPPETS_PATH", data / "snippets.json"))
         yield root, audio, app.HISTORY_PATH
 
 
@@ -662,6 +664,160 @@ class VocabularyTests(unittest.TestCase):
     def test_matches_unicode_case_fold_expansions(self):
         entries = [{"spoken": "Straße", "written": "Street"}]
         self.assertEqual(app.apply_vocabulary("STRAẞE", entries), "Street")
+
+
+class TranscriptionOptionTests(unittest.TestCase):
+    def test_validates_models_modes_punctuation_and_languages(self):
+        self.assertEqual(
+            app._transcription_options("qwen", "standard", "spoken", "french"),
+            ("standard", "spoken", "French"),
+        )
+        self.assertEqual(
+            app._transcription_options("compact", "verbatim", "none", "auto"),
+            ("verbatim", "none", "auto"),
+        )
+        with self.assertRaisesRegex(ValueError, "Parakeet"):
+            app._transcription_options("compact", "standard", "automatic", "French")
+        for mode, punctuation, language in (
+            ("edited", "automatic", "English"),
+            ("standard", "sometimes", "English"),
+            ("standard", "automatic", "Klingon"),
+        ):
+            with self.assertRaises(ValueError):
+                app._transcription_options("qwen", mode, punctuation, language)
+
+    def test_qwen_auto_and_named_language_reach_model(self):
+        class FakeAudio:
+            def __truediv__(self, _divisor):
+                return self
+
+        model = Mock()
+        model.generate.return_value = types.SimpleNamespace(text=" bonjour ")
+        mlx = types.ModuleType("mlx")
+        mlx_core = types.ModuleType("mlx.core")
+        mlx_core.float32 = object()
+        mlx_core.array = lambda _samples, dtype: FakeAudio()
+        mlx.core = mlx_core
+        selected = {"id": "test", "backend": "qwen"}
+        with patch.dict("sys.modules", {"mlx": mlx, "mlx.core": mlx_core}), patch.object(
+            app, "_load_model", return_value=(model, selected)
+        ):
+            self.assertEqual(app._generate_transcript(array("h", [1]), "qwen", "/x", "auto"), "bonjour")
+            self.assertEqual(app._generate_transcript(array("h", [1]), "qwen", "/x", "French"), "bonjour")
+        self.assertEqual(
+            [call.kwargs["language"] for call in model.generate.call_args_list],
+            [None, "French"],
+        )
+
+    def test_spoken_commands_and_punctuation_modes(self):
+        self.assertEqual(
+            app.apply_spoken_formatting(
+                "Hello, comma world period new paragraph next question mark", "spoken"
+            ),
+            "Hello, world.\n\nnext?",
+        )
+        self.assertEqual(
+            app.apply_spoken_formatting("Hello, world! new line Next.", "none"),
+            "Hello world\nNext",
+        )
+        self.assertEqual(
+            app.apply_spoken_formatting("Hello, new line world!", "automatic"),
+            "Hello,\nworld!",
+        )
+        self.assertEqual(app.apply_spoken_formatting("new paragraph", "automatic"), "\n\n")
+        self.assertEqual(app.apply_spoken_formatting("new line hello", "automatic"), "\nhello")
+        self.assertEqual(app.apply_spoken_formatting("hello new line", "automatic"), "hello\n")
+        self.assertEqual(
+            app.apply_spoken_formatting("don't stop l’amour state-of-the-art!", "none"),
+            "don't stop l’amour state-of-the-art",
+        )
+
+    def test_standard_applies_vocabulary_snippets_and_commands_but_verbatim_does_not(self):
+        with history_environment(), patch.object(
+            app, "decode_pcm_wav", return_value=array("h", [1])
+        ), patch.object(
+            app, "_installed_model_snapshots", return_value={"qwen": Path("/cache/qwen")}
+        ), patch.object(
+            app, "_generate_transcript", return_value="yana signature new line thanks period"
+        ), patch.object(
+            app, "vocabulary_for_origin", return_value=[{"spoken": "yana", "written": "Janne"}]
+        ), patch.object(
+            app, "load_snippets", return_value=[{"id": "one", "trigger": "signature", "content": "Best regards"}]
+        ), patch.object(app, "apply_retention", return_value=0):
+            standard = app.transcribe(
+                make_wav(), "qwen", mode="standard", punctuation="spoken"
+            )
+            verbatim = app.transcribe(
+                make_wav(), "qwen", mode="verbatim", punctuation="none"
+            )
+        self.assertEqual(standard["text"], "Janne Best regards\nthanks.")
+        self.assertEqual(standard["raw_text"], "yana signature new line thanks period")
+        self.assertEqual(verbatim["text"], "yana signature new line thanks period")
+        self.assertNotIn("raw_text", verbatim)
+
+    def test_commands_do_not_rewrite_vocabulary_or_snippet_content(self):
+        text = app.apply_spoken_formatting("signature new line name", "automatic")
+        text = app.apply_vocabulary(text, [{"spoken": "name", "written": "new paragraph"}])
+        text = app.apply_snippets(text, [{
+            "id": "one", "trigger": "signature", "content": "first new line second",
+        }])
+        self.assertEqual(text, "first new line second\nnew paragraph")
+
+
+class SnippetTests(unittest.TestCase):
+    def test_crud_persists_atomically_and_applies_longest_trigger(self):
+        with history_environment():
+            first = app.save_snippet({"trigger": "my address", "content": "1 Main Street"})
+            second = app.save_snippet({"id": "short", "trigger": "address", "content": "wrong"})
+            self.assertEqual(app.load_snippets(), [first, second])
+            self.assertEqual(
+                app.apply_snippets("Send to my address.", app.load_snippets()),
+                "Send to 1 Main Street.",
+            )
+            updated = app.save_snippet({
+                "id": first["id"], "trigger": "home address", "content": "2 Side Street"
+            })
+            self.assertEqual(len(app.load_snippets()), 2)
+            self.assertEqual(app.load_snippets()[-1], updated)
+            self.assertTrue(app.delete_snippet("short"))
+            self.assertFalse(app.delete_snippet("missing"))
+            self.assertEqual(app.load_snippets(), [updated])
+
+    def test_malformed_store_is_not_overwritten(self):
+        with history_environment():
+            app.SNIPPETS_PATH.write_text("not json")
+            self.assertEqual(app.load_snippets(), [])
+            with self.assertRaisesRegex(ValueError, "malformed"):
+                app.save_snippet({"trigger": "hello", "content": "world"})
+            self.assertEqual(app.SNIPPETS_PATH.read_text(), "not json")
+
+    def test_duplicate_triggers_are_rejected_case_insensitively(self):
+        with history_environment():
+            app.save_snippet({"id": "one", "trigger": "Straße", "content": "First"})
+            with self.assertRaisesRegex(ValueError, "unique"):
+                app.save_snippet({"id": "two", "trigger": " STRASSE ", "content": "Second"})
+            self.assertEqual([item["id"] for item in app.load_snippets()], ["one"])
+
+    def test_duplicate_ids_make_store_read_only(self):
+        with history_environment():
+            app.SNIPPETS_PATH.write_text(json.dumps({"version": 1, "snippets": [
+                {"id": "same", "trigger": "one", "content": "First"},
+                {"id": "same", "trigger": "two", "content": "Second"},
+            ]}))
+            with self.assertRaisesRegex(ValueError, "unique"):
+                app.save_snippet({"id": "new", "trigger": "three", "content": "Third"})
+
+
+class WorkerEntryTests(unittest.TestCase):
+    def test_configure_paths_relocates_snippets_with_other_mutable_data(self):
+        with history_environment(), tempfile.TemporaryDirectory() as directory, patch.dict(
+            app.os.environ,
+            {"TIRO_DATA_DIR": f"{directory}/data", "TIRO_MODEL_DIR": f"{directory}/models"},
+        ):
+            worker_entry.configure_paths()
+            self.assertEqual(
+                app.SNIPPETS_PATH, Path(directory).resolve() / "data/snippets.json"
+            )
 
 
 class ProfileVocabularyTests(unittest.TestCase):
@@ -1363,6 +1519,29 @@ class ModelManagementTests(unittest.TestCase):
                 [Path("/cache/compact"), Path("/cache/qwen")],
             )
 
+    def test_compare_reuses_recorded_qwen_language(self):
+        with history_environment() as (_, audio, history):
+            (audio / "entry.wav").write_bytes(make_wav())
+            history.write_text(json.dumps({
+                "id": "entry",
+                "audio_file": "data/audio/entry.wav",
+                "language": "French",
+            }) + "\n")
+            cache = {
+                key: {"installed": True, "snapshot_path": Path(f"/cache/{key}")}
+                for key in app.MODELS
+            }
+            with patch.object(app, "_cached_models", return_value=cache), patch.object(
+                app, "_generate_transcript", return_value="bonjour"
+            ) as generate:
+                app.compare_history_models("entry", ["compact", "qwen"])
+            self.assertEqual(generate.call_args_list[0].args, (
+                app.decode_pcm_wav(make_wav()), "compact", Path("/cache/compact"),
+            ))
+            self.assertEqual(generate.call_args_list[1].args[1:], (
+                "qwen", Path("/cache/qwen"), "French",
+            ))
+
     def test_compare_releases_lock_between_runs_and_restores_prior_model(self):
         prior_model = object()
         contender_acquired = threading.Event()
@@ -1970,15 +2149,70 @@ class VocabularySuggestionEndpointTests(unittest.TestCase):
             transcribe.assert_not_called()
 
 
+class FinalFeatureEndpointTests(unittest.TestCase):
+    def test_snippet_crud_requires_authentication(self):
+        with history_environment(), worker_server() as address:
+            self.assertEqual(request(address, "GET", "/api/snippets")[0], 403)
+            self.assertEqual(
+                request(address, "POST", "/api/snippets", {"trigger": "sig", "content": "Regards"})[0],
+                403,
+            )
+            status, _, body = request(
+                address, "POST", "/api/snippets",
+                {"trigger": "sig", "content": "Regards"}, "secret",
+            )
+            self.assertEqual(status, 201)
+            snippet = json.loads(body)
+            status, _, body = request(address, "GET", "/api/snippets", token="secret")
+            self.assertEqual((status, json.loads(body)), (200, {"snippets": [snippet]}))
+
+            self.assertEqual(request(
+                address, "POST", "/api/snippets/delete", {"id": snippet["id"]}
+            )[0], 403)
+            status, _, body = request(
+                address, "POST", "/api/snippets/delete", {"id": snippet["id"]}, "secret"
+            )
+            self.assertEqual((status, json.loads(body)), (200, {"deleted": True}))
+            status, _, body = request(
+                address, "POST", "/api/snippets/delete", {"id": snippet["id"]}, "secret"
+            )
+            self.assertEqual((status, json.loads(body)), (200, {"deleted": False}))
+            self.assertEqual(app.load_snippets(), [])
+
+    def test_transcribe_forwards_final_feature_headers(self):
+        response_entry = {"id": "one", "text": "bonjour"}
+        with history_environment(), worker_server() as address, patch.object(
+            app, "transcribe", return_value=response_entry
+        ) as transcribe:
+            wav = make_wav()
+            connection = http.client.HTTPConnection(*address, timeout=2)
+            connection.request(
+                "POST", "/api/transcribe", body=wav,
+                headers={
+                    "X-Parakeet-Model": "qwen",
+                    "X-Tiro-Mode": "verbatim",
+                    "X-Tiro-Punctuation": "none",
+                    "X-Tiro-Language": "French",
+                },
+            )
+            response = connection.getresponse()
+            response.read()
+            connection.close()
+        self.assertEqual(response.status, 200)
+        transcribe.assert_called_once_with(
+            wav, "qwen", None, None, "verbatim", "none", "French"
+        )
+
+
 class WorkerProtocolTests(unittest.TestCase):
     def test_protocol_version_is_current(self):
-        self.assertEqual(app.API_VERSION, 5)
+        self.assertEqual(app.API_VERSION, 6)
 
     def test_status_reports_protocol_version(self):
         with history_environment(), worker_server() as address:
             status, _, body = request(address, "GET", "/api/status")
             self.assertEqual(status, 200)
-            self.assertEqual(json.loads(body)["api_version"], 5)
+            self.assertEqual(json.loads(body)["api_version"], 6)
 
     def test_shutdown_requires_the_worker_token(self):
         with patch.dict(app.os.environ, {"TIRO_WORKER_TOKEN": "secret"}):
