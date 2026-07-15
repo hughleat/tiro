@@ -20,6 +20,22 @@ struct DestinationSession {
     private let focusedElement: AXUIElement
 
     var processIdentifier: pid_t { application.processIdentifier }
+    var isFrontmost: Bool {
+        NSWorkspace.shared.frontmostApplication?.processIdentifier == processIdentifier
+    }
+    var isCurrentPasteTargetAtDispatch: Bool {
+        guard isFrontmost,
+              let currentElement = currentFocusedElement(
+                  for: applicationElement,
+                  processIdentifier: processIdentifier
+              ),
+              let currentWindow = currentFocusedWindow(
+                  for: applicationElement,
+                  focusedElement: currentElement
+              ) else { return false }
+        return CFEqual(currentWindow, windowElement)
+            && CFEqual(currentElement, focusedElement)
+    }
     init(
         application: NSRunningApplication,
         applicationElement: AXUIElement,
@@ -63,8 +79,7 @@ struct DestinationSession {
 
     func restore() async -> Bool {
         guard isAvailable else { return false }
-        if NSWorkspace.shared.frontmostApplication?.processIdentifier == processIdentifier,
-           isFocused {
+        if isFrontmost, isFocused {
             return true
         }
         guard application.activate(options: []) else { return false }
@@ -166,6 +181,7 @@ final class DestinationTracker: NSObject {
         guard let application = currentApplication() else { return nil }
 
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
+        AXUIElementSetMessagingTimeout(appElement, 0.05)
         guard let focusedElement = currentFocusedElement(
             for: appElement,
             processIdentifier: application.processIdentifier
@@ -233,6 +249,7 @@ private func currentFocusedElement(
     }
 
     let systemWide = AXUIElementCreateSystemWide()
+    AXUIElementSetMessagingTimeout(systemWide, 0.05)
     guard let focused = elementAttribute(
         kAXFocusedUIElementAttribute as CFString,
         of: systemWide
@@ -247,8 +264,14 @@ private func currentFocusedWindow(
     for applicationElement: AXUIElement,
     focusedElement: AXUIElement
 ) -> AXUIElement? {
-    elementAttribute(kAXFocusedWindowAttribute as CFString, of: applicationElement)
-        ?? elementAttribute(kAXWindowAttribute as CFString, of: focusedElement)
+    if let window = elementAttribute(
+        kAXFocusedWindowAttribute as CFString,
+        of: applicationElement
+    ) {
+        return window
+    }
+    AXUIElementSetMessagingTimeout(focusedElement, 0.05)
+    return elementAttribute(kAXWindowAttribute as CFString, of: focusedElement)
 }
 
 private func stringAttribute(_ attribute: CFString, of element: AXUIElement) -> String? {

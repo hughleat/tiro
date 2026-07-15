@@ -94,6 +94,15 @@ final class HotkeyManager {
             if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: true) }
             return Unmanaged.passUnretained(event)
         }
+        if event.getIntegerValueField(.eventSourceUserData) == PasteEventGate.marker {
+            guard type == .keyDown || type == .keyUp else { return nil }
+            let shouldPass = MainActor.assumeIsolated {
+                PasteEventGate.shared.shouldPass(keyDown: type == .keyDown)
+            }
+            return shouldPass
+                ? Unmanaged.passUnretained(event)
+                : nil
+        }
 
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         if let physicalKeyCode = UInt16(exactly: keyCode), drainedKeyCodes.contains(physicalKeyCode) {

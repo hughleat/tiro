@@ -113,15 +113,19 @@ final class PasteCoordinator {
         )
 
         let observation = destination.observePasteTarget(afterInserting: text)
-        guard destination.isAvailable, destination.isFocused, !destination.isSecure else {
+        guard destination.isAvailable,
+              destination.isFrontmost,
+              destination.isFocused,
+              !destination.isSecure else {
             if pasteboard.changeCount == injectedChangeCount {
                 snapshot.restore(to: pasteboard)
             }
             pendingRestoration = nil
             throw PasteError.couldNotRestoreDestination
         }
-        keyDown.postToPid(destination.processIdentifier)
-        keyUp.postToPid(destination.processIdentifier)
+        PasteEventGate.shared.arm(for: destination)
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
         guard observation.canConfirmConsumption else {
             pendingRestoration = nil
             return
@@ -138,6 +142,10 @@ final class PasteCoordinator {
               let event = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: keyDown)
         else { return nil }
         event.flags = .maskCommand
+        event.setIntegerValueField(
+            .eventSourceUserData,
+            value: PasteEventGate.marker
+        )
         return event
     }
 
