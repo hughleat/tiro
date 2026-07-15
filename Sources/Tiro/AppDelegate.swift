@@ -122,7 +122,7 @@ import ApplicationServices
 
     private func requestPermissionsAndStart() {
         hotkeys.onTap = { [weak self] in self?.toggleRecording() }
-        hotkeys.onHoldStart = { [weak self] in self?.startRecording() == true }
+        hotkeys.onHoldStart = { [weak self] in self?.startRecording(playStartSound: false) == true }
         hotkeys.onHoldEnd = { [weak self] in self?.stopRecording() }
         hotkeys.onHoldCancel = { [weak self] in self?.cancelRecording() }
         hotkeys.onEscape = { [weak self] in self?.cancelRecording() }
@@ -194,7 +194,7 @@ import ApplicationServices
     }
 
     @discardableResult
-    private func startRecording() -> Bool {
+    private func startRecording(playStartSound: Bool = true) -> Bool {
         guard state == .idle else { return false }
         guard installedModelKeys.contains(DictationModel.selected.key) else {
             modelStatusItem.title = "Model: Download One in Settings"
@@ -208,10 +208,13 @@ import ApplicationServices
         }
         state = .starting
         menuToggleItem.title = "Cancel Starting"
-        if UserDefaults.standard.bool(forKey: "soundFeedback") {
+        if playStartSound, UserDefaults.standard.bool(forKey: "soundFeedback") {
             recordingSounds.playStart { [weak self] in self?.beginRecording() }
         } else {
             beginRecording()
+            if UserDefaults.standard.bool(forKey: "soundFeedback") {
+                recordingSounds.playHoldStart()
+            }
         }
         return true
     }

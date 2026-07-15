@@ -24,7 +24,12 @@ final class RecordingSoundPlayer: NSObject, NSSoundDelegate {
         startSound = nil
     }
 
+    func playHoldStart() {
+        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+    }
+
     func playStop() {
+        cancelStart()
         stopSound?.stop()
         stopSound?.play()
     }

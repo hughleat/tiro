@@ -10,8 +10,17 @@ struct ApplicationIdentity {
 struct DestinationSession {
     struct PasteObservation {
         let expectedValue: String?
+        let expectedCharacterCount: Int?
 
-        var canConfirmConsumption: Bool { expectedValue != nil }
+        var canConfirmConsumption: Bool {
+            expectedValue != nil || expectedCharacterCount != nil
+        }
+    }
+
+    enum AccessibilityInsertionResult {
+        case inserted
+        case unsupported
+        case uncertain
     }
 
     private let application: NSRunningApplication
@@ -116,14 +125,29 @@ struct DestinationSession {
     }
 
     func observePasteTarget(afterInserting text: String) -> PasteObservation {
-        guard let original = stringAttribute(kAXValueAttribute as CFString, of: focusedElement),
-              let range = rangeAttribute(kAXSelectedTextRangeAttribute as CFString, of: focusedElement),
+        guard let range = rangeAttribute(kAXSelectedTextRangeAttribute as CFString, of: focusedElement),
               range.location >= 0,
-              range.length >= 0,
-              (original as NSString).length <= 250_000,
-              range.location <= (original as NSString).length,
-              range.length <= (original as NSString).length - range.location
-        else { return PasteObservation(expectedValue: nil) }
+              range.length >= 0 else {
+            return PasteObservation(expectedValue: nil, expectedCharacterCount: nil)
+        }
+
+        let original = stringAttribute(kAXValueAttribute as CFString, of: focusedElement)
+        let originalLength = original.map { ($0 as NSString).length }
+            ?? integerAttribute(kAXNumberOfCharactersAttribute as CFString, of: focusedElement)
+        guard let originalLength,
+              originalLength <= 250_000,
+              range.location <= originalLength,
+              range.length <= originalLength - range.location else {
+            return PasteObservation(expectedValue: nil, expectedCharacterCount: nil)
+        }
+
+        let expectedCharacterCount = originalLength - range.length + (text as NSString).length
+        guard let original else {
+            return PasteObservation(
+                expectedValue: nil,
+                expectedCharacterCount: expectedCharacterCount
+            )
+        }
 
         let expected = NSMutableString(string: original)
         expected.replaceCharacters(
@@ -131,12 +155,46 @@ struct DestinationSession {
             with: text
         )
         let expectedValue = expected as String
-        return PasteObservation(expectedValue: expectedValue == original ? nil : expectedValue)
+        return PasteObservation(
+            expectedValue: expectedValue == original ? nil : expectedValue,
+            expectedCharacterCount: expectedCharacterCount == originalLength
+                ? nil
+                : expectedCharacterCount
+        )
     }
 
     func hasConsumedPaste(since observation: PasteObservation) -> Bool {
-        guard let expectedValue = observation.expectedValue, isFocused else { return false }
-        return stringAttribute(kAXValueAttribute as CFString, of: focusedElement) == expectedValue
+        guard isFocused else { return false }
+        if let expectedValue = observation.expectedValue {
+            return stringAttribute(kAXValueAttribute as CFString, of: focusedElement) == expectedValue
+        }
+        if let expectedCharacterCount = observation.expectedCharacterCount {
+            return integerAttribute(
+                kAXNumberOfCharactersAttribute as CFString,
+                of: focusedElement
+            ) == expectedCharacterCount
+        }
+        return false
+    }
+
+    func insertUsingAccessibility(_ text: String) -> AccessibilityInsertionResult {
+        guard isAvailable, isFrontmost, isFocused, !isSecure else { return .uncertain }
+        var isSettable = DarwinBoolean(false)
+        let settableResult = AXUIElementIsAttributeSettable(
+            focusedElement,
+            kAXSelectedTextAttribute as CFString,
+            &isSettable
+        )
+        if settableResult == .attributeUnsupported || settableResult == .notImplemented {
+            return .unsupported
+        }
+        guard settableResult == .success else { return .uncertain }
+        guard isSettable.boolValue else { return .unsupported }
+        return AXUIElementSetAttributeValue(
+            focusedElement,
+            kAXSelectedTextAttribute as CFString,
+            text as CFString
+        ) == .success ? .inserted : .uncertain
     }
 
     var isFocused: Bool {
@@ -278,6 +336,12 @@ private func stringAttribute(_ attribute: CFString, of element: AXUIElement) -> 
     var value: CFTypeRef?
     guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else { return nil }
     return value as? String
+}
+
+private func integerAttribute(_ attribute: CFString, of element: AXUIElement) -> Int? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else { return nil }
+    return (value as? NSNumber)?.intValue
 }
 
 private func rangeAttribute(_ name: CFString, of element: AXUIElement) -> CFRange? {
