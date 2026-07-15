@@ -1242,6 +1242,134 @@ class CorrectionSuggestionTests(unittest.TestCase):
             self.assertEqual(stored["transcription_ids"], ["two"])
 
 
+class ModelExecutorTests(unittest.TestCase):
+    def test_preload_and_transcription_share_one_model_thread(self):
+        caller_threads = []
+        model_threads = []
+
+        def record_preload(_):
+            model_threads.append(threading.get_ident())
+            return {"loaded_model": "test-model"}
+
+        def record_transcription(*_):
+            model_threads.append(threading.get_ident())
+            return {"text": "hello"}
+
+        def call_preload():
+            caller_threads.append(threading.get_ident())
+            app.preload_model("compact")
+
+        def call_transcription():
+            caller_threads.append(threading.get_ident())
+            app.transcribe(b"wav", "compact")
+
+        with patch.object(app, "_preload_model", side_effect=record_preload), \
+             patch.object(app, "_transcribe", side_effect=record_transcription):
+            preload_thread = threading.Thread(target=call_preload)
+            transcription_thread = threading.Thread(target=call_transcription)
+            preload_thread.start()
+            preload_thread.join(timeout=1)
+            transcription_thread.start()
+            transcription_thread.join(timeout=1)
+
+        self.assertFalse(preload_thread.is_alive())
+        self.assertFalse(transcription_thread.is_alive())
+        self.assertEqual(len(set(model_threads)), 1)
+        self.assertNotIn(model_threads[0], caller_threads)
+
+    def test_worker_closes_executor_before_releasing_port(self):
+        events = []
+        executor = Mock()
+        executor.shutdown.side_effect = lambda **_: events.append("executor")
+        server = Mock()
+        server.server_close.side_effect = lambda: events.append("server")
+
+        with patch.object(app, "_model_executor", executor):
+            app._close_worker(server)
+
+        executor.shutdown.assert_called_once_with(wait=True, cancel_futures=True)
+        server.server_close.assert_called_once_with()
+        self.assertEqual(events, ["executor", "server"])
+
+    def test_queued_transcription_runs_between_comparison_models(self):
+        first_model_started = threading.Event()
+        transcription_queued = threading.Event()
+        release_first_model = threading.Event()
+        prior_model = object()
+        compact_model = object()
+        qwen_model = object()
+        order = []
+        errors = []
+
+        def generate(_samples, model_key, _source):
+            app._model = compact_model if model_key == "compact" else qwen_model
+            app._model_id = app.MODELS[model_key]["id"]
+            order.append(model_key)
+            if model_key == "compact":
+                first_model_started.set()
+                self.assertTrue(release_first_model.wait(1))
+            return model_key
+
+        def transcribe(*_):
+            self.assertIs(app._model, compact_model)
+            app._model_generation += 1
+            order.append("transcription")
+            return {"text": "hello"}
+
+        original_submit = app._model_executor.submit
+
+        def submit(operation, *args):
+            future = original_submit(operation, *args)
+            if operation is transcribe:
+                transcription_queued.set()
+            return future
+
+        def compare():
+            try:
+                app.compare_history_models("entry", ["compact", "qwen"])
+            except Exception as exc:
+                errors.append(exc)
+
+        with patch.object(app, "_history_audio", return_value=make_wav()), \
+             patch.object(app, "_history_language", return_value="English"), \
+             patch.object(
+                 app,
+                 "_installed_model_snapshots",
+                 side_effect=lambda keys: {key: Path("/cache") for key in keys},
+             ), patch.object(app, "_generate_transcript", side_effect=generate), \
+             patch.object(app, "_transcribe", new=transcribe), \
+             patch.object(app._model_executor, "submit", side_effect=submit), \
+             patch.object(app, "_model", prior_model), \
+             patch.object(app, "_model_id", "prior-model"), \
+             patch.object(app, "_model_generation", 0), \
+             patch.object(
+                 app,
+                 "_clear_loaded_model",
+                 side_effect=lambda: (
+                     setattr(app, "_model", None),
+                     setattr(app, "_model_id", None),
+                 ),
+             ):
+            comparison_thread = threading.Thread(target=compare)
+            comparison_thread.start()
+            self.assertTrue(first_model_started.wait(1))
+            transcription_thread = threading.Thread(
+                target=app.transcribe, args=(b"wav", "compact")
+            )
+            transcription_thread.start()
+            self.assertTrue(transcription_queued.wait(1))
+            release_first_model.set()
+            comparison_thread.join(timeout=2)
+            transcription_thread.join(timeout=2)
+            self.assertIs(app._model, compact_model)
+            self.assertEqual(app._model_id, app.MODELS["compact"]["id"])
+
+        self.assertFalse(comparison_thread.is_alive())
+        self.assertFalse(transcription_thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(order, ["compact", "transcription", "qwen"])
+
+
 class PreloadTests(unittest.TestCase):
     def test_preload_loads_requested_model(self):
         selected = {"id": app.MODELS["compact"]["id"]}

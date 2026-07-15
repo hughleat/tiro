@@ -18,6 +18,7 @@ import unicodedata
 import uuid
 import wave
 from array import array
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -92,6 +93,8 @@ MODELS = {
 
 _model = None
 _model_id: str | None = None
+_model_generation = 0
+_model_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tiro-model")
 _operation_lock = threading.Lock()
 _history_lock = threading.Lock()
 _state_lock = threading.RLock()
@@ -101,6 +104,10 @@ _comparison_registry_lock = threading.Lock()
 _comparison_run_lock = threading.Lock()
 _comparison_cancellations: dict[str, threading.Event] = {}
 _pending_comparison_cancellations: dict[str, float] = {}
+
+
+def _run_model_operation(operation, *args):
+    return _model_executor.submit(operation, *args).result()
 
 
 def _validated_entries(value: object, *, strict: bool = False) -> list[dict[str, str]]:
@@ -1595,12 +1602,71 @@ def _generate_transcript(
     return result.text.strip()
 
 
-def preload_model(model_key: str) -> dict[str, str]:
+def _preload_model(model_key: str) -> dict[str, str]:
+    global _model_generation
     model_key = _model_key(model_key)
     with _operation_lock:
         source = _installed_model_snapshots([model_key])[model_key]
         _, selected = _load_model(model_key, source)
+        _model_generation += 1
     return {"loaded_model": selected["id"]}
+
+
+def preload_model(model_key: str) -> dict[str, str]:
+    return _run_model_operation(_preload_model, model_key)
+
+
+def _comparison_context() -> dict:
+    with _operation_lock:
+        return {
+            "restore_model": _model,
+            "restore_model_id": _model_id,
+            "expected_model": _model,
+            "expected_model_id": _model_id,
+            "expected_generation": _model_generation,
+        }
+
+
+def _compare_model(
+    context: dict,
+    samples: array,
+    model_key: str,
+    language: str,
+    cancellation: threading.Event | None,
+) -> str:
+    with _operation_lock:
+        if cancellation is not None and cancellation.is_set():
+            raise HTTPError(HTTPStatus.CONFLICT, "Model comparison was cancelled")
+        if (
+            _model is not context["expected_model"]
+            or _model_id != context["expected_model_id"]
+            or _model_generation != context["expected_generation"]
+        ):
+            context["restore_model"] = _model
+            context["restore_model_id"] = _model_id
+            context["expected_generation"] = _model_generation
+        source = _installed_model_snapshots([model_key])[model_key]
+        try:
+            if model_key == "qwen" and language != "English":
+                return _generate_transcript(samples, model_key, source, language)
+            return _generate_transcript(samples, model_key, source)
+        finally:
+            context["expected_model"] = _model
+            context["expected_model_id"] = _model_id
+
+
+def _restore_comparison_model(context: dict) -> None:
+    with _operation_lock:
+        if (
+            _model is not context["expected_model"]
+            or _model_id != context["expected_model_id"]
+            or _model_generation != context["expected_generation"]
+        ):
+            context["restore_model"] = _model
+            context["restore_model_id"] = _model_id
+        _restore_loaded_model(
+            context["restore_model"], context["restore_model_id"]
+        )
 
 
 def compare_history_models(
@@ -1628,28 +1694,21 @@ def compare_history_models(
 
     _installed_model_snapshots(model_keys)
     with _comparison_run_lock:
-        with _operation_lock:
-            restore_model, restore_model_id = _model, _model_id
-        expected_model, expected_model_id = restore_model, restore_model_id
+        context = _run_model_operation(_comparison_context)
         results = []
         try:
             for index, key in enumerate(model_keys):
                 if cancellation is not None and cancellation.is_set():
                     raise HTTPError(HTTPStatus.CONFLICT, "Model comparison was cancelled")
                 started = time.perf_counter()
-                with _operation_lock:
-                    if cancellation is not None and cancellation.is_set():
-                        raise HTTPError(HTTPStatus.CONFLICT, "Model comparison was cancelled")
-                    if _model is not expected_model or _model_id != expected_model_id:
-                        restore_model, restore_model_id = _model, _model_id
-                    source = _installed_model_snapshots([key])[key]
-                    try:
-                        if key == "qwen" and language != "English":
-                            text = _generate_transcript(samples, key, source, language)
-                        else:
-                            text = _generate_transcript(samples, key, source)
-                    finally:
-                        expected_model, expected_model_id = _model, _model_id
+                text = _run_model_operation(
+                    _compare_model,
+                    context,
+                    samples,
+                    key,
+                    language,
+                    cancellation,
+                )
                 results.append(
                     {
                         "key": key,
@@ -1663,14 +1722,11 @@ def compare_history_models(
                 if index + 1 < len(model_keys):
                     time.sleep(0.001)
         finally:
-            with _operation_lock:
-                if _model is not expected_model or _model_id != expected_model_id:
-                    restore_model, restore_model_id = _model, _model_id
-                _restore_loaded_model(restore_model, restore_model_id)
+            _run_model_operation(_restore_comparison_model, context)
     return {"history_id": entry_id, "results": results}
 
 
-def transcribe(
+def _transcribe(
     wav_bytes: bytes,
     model_key: str,
     origin_bundle_id: str | None = None,
@@ -1679,6 +1735,7 @@ def transcribe(
     punctuation: str = "automatic",
     language: str = "English",
 ) -> dict:
+    global _model_generation
     samples = decode_pcm_wav(wav_bytes)
 
     started = time.perf_counter()
@@ -1693,6 +1750,7 @@ def transcribe(
         else:
             raw_text = _generate_transcript(samples, model_key, source, language)
         selected = MODELS[model_key]
+        _model_generation += 1
     elapsed = time.perf_counter() - started
 
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
@@ -1733,6 +1791,27 @@ def transcribe(
     except Exception as exc:
         print(f"Retention maintenance failed; will retry later: {exc!r}", flush=True)
     return entry
+
+
+def transcribe(
+    wav_bytes: bytes,
+    model_key: str,
+    origin_bundle_id: str | None = None,
+    origin_app_name: str | None = None,
+    mode: str = "standard",
+    punctuation: str = "automatic",
+    language: str = "English",
+) -> dict:
+    return _run_model_operation(
+        _transcribe,
+        wav_bytes,
+        model_key,
+        origin_bundle_id,
+        origin_app_name,
+        mode,
+        punctuation,
+        language,
+    )
 
 
 class TiroHandler(BaseHTTPRequestHandler):
@@ -2118,9 +2197,14 @@ class TiroHandler(BaseHTTPRequestHandler):
             print(f"Transcription failed: {exc!r}", flush=True)
             json_response(
                 self,
-                {"error": "Local transcription failed. See data/worker.log for details."},
+                {"error": "Local transcription failed. See Tiro's worker log for details."},
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
+
+
+def _close_worker(server: ThreadingHTTPServer) -> None:
+    _model_executor.shutdown(wait=True, cancel_futures=True)
+    server.server_close()
 
 
 def main() -> None:
@@ -2139,7 +2223,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        server.server_close()
+        _close_worker(server)
 
 
 if __name__ == "__main__":
