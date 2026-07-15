@@ -42,6 +42,7 @@ import ApplicationServices
         permissionTimer?.invalidate()
         modelStartupTask?.cancel()
         hotkeys.stop()
+        PasteEventGate.shared.stop()
         worker.stopOwnedWorker()
     }
 
@@ -144,6 +145,7 @@ import ApplicationServices
         if !trusted {
             if hotkeysStarted {
                 hotkeys.stop()
+                PasteEventGate.shared.stop()
                 hotkeysStarted = false
             }
             return
@@ -153,12 +155,15 @@ import ApplicationServices
         do {
             if hotkeysStarted {
                 try hotkeys.maintain()
+                try PasteEventGate.shared.maintain()
             } else {
+                try PasteEventGate.shared.start()
                 try hotkeys.start()
                 hotkeysStarted = true
             }
         } catch {
             hotkeys.stop()
+            PasteEventGate.shared.stop()
             hotkeysStarted = false
             shortcutStatusItem.title = "\(hotkeys.shortcut.displayName) Shortcut Unavailable"
             shortcutStatusItem.state = .off

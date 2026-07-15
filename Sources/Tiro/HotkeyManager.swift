@@ -61,7 +61,7 @@ final class HotkeyManager {
         }
 
         guard let tap = CGEvent.tapCreate(
-            tap: .cgAnnotatedSessionEventTap,
+            tap: .cgSessionEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,
             eventsOfInterest: CGEventMask(mask),
@@ -112,16 +112,6 @@ final class HotkeyManager {
             NSLog("Global shortcut event tap was disabled and re-enabled.")
             return Unmanaged.passUnretained(event)
         }
-        if event.getIntegerValueField(.eventSourceUserData) == PasteEventGate.marker {
-            guard type == .keyDown || type == .keyUp else { return nil }
-            let shouldPass = MainActor.assumeIsolated {
-                PasteEventGate.shared.shouldPass(keyDown: type == .keyDown)
-            }
-            return shouldPass
-                ? Unmanaged.passUnretained(event)
-                : nil
-        }
-
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         if let physicalKeyCode = UInt16(exactly: keyCode), drainedKeyCodes.contains(physicalKeyCode) {
             let isReleased = type == .keyUp
