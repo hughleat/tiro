@@ -57,7 +57,7 @@ Build and test with:
 open "dist/Tiro.app"
 ```
 
-The aggregate check runs the worker suite, data-migration assertions, native snippet-state assertions, and a signed development build.
+The aggregate check runs the worker suite, data-migration assertions, native shortcut and snippet-state assertions, and a signed development build.
 
 The development app does not embed Python. It uses `.venv/bin/python scripts/worker_entry.py` from `TIRO_PROJECT_ROOT` (or the checkout inferred from `dist/Tiro.app`) so development and release share the same data-location behavior.
 

@@ -14,6 +14,7 @@ final class HotkeyManager {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var shortcutIsDown = false
+    private var blockedModifierUntilRelease: DictationShortcut.ModifierKey?
     private var suppressEscapeKeyUp = false
     private var modifierGestureCanceled = false
     private var blockedOrdinaryKeyUntilRelease: UInt16?
@@ -32,6 +33,7 @@ final class HotkeyManager {
         cancelCurrentGesture()
         resetShortcutState()
         self.shortcut = shortcut
+        blockHeldModifierIfNeeded()
     }
 
     func suppressUntilRelease(_ keyCodes: Set<UInt16>) {
@@ -47,6 +49,7 @@ final class HotkeyManager {
            !CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(keyCode)) {
             blockedOrdinaryKeyUntilRelease = nil
         }
+        blockHeldModifierIfNeeded()
         let mask = (1 << CGEventType.flagsChanged.rawValue)
             | (1 << CGEventType.keyDown.rawValue)
             | (1 << CGEventType.keyUp.rawValue)
@@ -87,6 +90,7 @@ final class HotkeyManager {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             cancelCurrentGesture()
             resetShortcutState()
+            blockHeldModifierIfNeeded()
             if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: true) }
             return Unmanaged.passUnretained(event)
         }
@@ -117,6 +121,34 @@ final class HotkeyManager {
 
         switch shortcut.key {
         case let .modifier(modifier):
+            if blockedModifierUntilRelease == modifier {
+                if type == .flagsChanged,
+                   let physicalKeyCode = UInt16(exactly: keyCode),
+                   let changedModifier = DictationShortcut.ModifierKey(keyCode: physicalKeyCode),
+                   changedModifier.eventFlag == modifier.eventFlag,
+                   !ModifierEventState.shouldRemainBlocked(
+                       familyFlagIsDown: event.flags.contains(modifier.eventFlag),
+                       physicalKeyIsDown: CGEventSource.keyState(
+                           .combinedSessionState,
+                           key: CGKeyCode(modifier.keyCode)
+                       ),
+                       changedKeyIsConfigured: physicalKeyCode == modifier.keyCode
+                   ) {
+                    blockedModifierUntilRelease = nil
+                }
+                return Unmanaged.passUnretained(event)
+            }
+            if type == .flagsChanged,
+               modifierGestureCanceled,
+               keyCode != Int64(modifier.keyCode),
+               let physicalKeyCode = UInt16(exactly: keyCode),
+               let changedModifier = DictationShortcut.ModifierKey(keyCode: physicalKeyCode),
+               ModifierEventState.canceledGestureEnded(
+                   familyFlagIsDown: event.flags.contains(modifier.eventFlag),
+                   changedKeyIsSameFamily: changedModifier.eventFlag == modifier.eventFlag
+               ) {
+                modifierGestureCanceled = false
+            }
             if type == .flagsChanged,
                shortcutIsDown,
                keyCode != Int64(modifier.keyCode),
@@ -132,7 +164,14 @@ final class HotkeyManager {
             guard type == .flagsChanged, keyCode == Int64(modifier.keyCode) else {
                 return Unmanaged.passUnretained(event)
             }
-            let isDown = CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(modifier.keyCode))
+            let isDown = ModifierEventState.isDown(
+                familyFlagIsDown: event.flags.contains(modifier.eventFlag),
+                physicalKeyIsDown: CGEventSource.keyState(
+                    .combinedSessionState,
+                    key: CGKeyCode(modifier.keyCode)
+                ),
+                wasDown: shortcutIsDown || modifierGestureCanceled
+            )
             if isDown {
                 if Self.otherModifierIsDown(excluding: modifier) {
                     modifierGestureCanceled = true
@@ -206,6 +245,15 @@ final class HotkeyManager {
         holdTriggered = false
         holdThresholdReached = false
         modifierGestureCanceled = false
+    }
+
+    private func blockHeldModifierIfNeeded() {
+        guard case let .modifier(modifier) = shortcut.key,
+              CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(modifier.keyCode)) else {
+            blockedModifierUntilRelease = nil
+            return
+        }
+        blockedModifierUntilRelease = modifier
     }
 
     private func cancelCurrentGesture() {

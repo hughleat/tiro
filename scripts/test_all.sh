@@ -12,6 +12,7 @@ fi
 cd "$ROOT"
 "$PYTHON" -m unittest discover -s tests
 "$ROOT/scripts/test_app_paths_migration.sh"
+"$ROOT/scripts/test_hotkey_state.sh"
 "$ROOT/scripts/test_snippet_edit_state.sh"
 "$ROOT/scripts/build_native_app.sh" development
 

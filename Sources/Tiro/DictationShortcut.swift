@@ -37,6 +37,15 @@ struct DictationShortcut: Codable, Equatable {
             }
         }
 
+        var eventFlag: CGEventFlags {
+            switch self {
+            case .leftCommand, .rightCommand: .maskCommand
+            case .leftOption, .rightOption: .maskAlternate
+            case .leftControl, .rightControl: .maskControl
+            case .leftShift, .rightShift: .maskShift
+            }
+        }
+
         init?(keyCode: UInt16) {
             guard let modifier = Self.allCases.first(where: { $0.keyCode == keyCode }) else { return nil }
             self = modifier
