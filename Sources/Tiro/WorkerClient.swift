@@ -1,6 +1,7 @@
 import Foundation
 
 @MainActor final class WorkerClient {
+    private static let supportedAPIVersion = 5
     private let baseURL = URL(string: "http://127.0.0.1:8767")!
     private let mutationGate = WorkerMutationGate()
     private var process: Process?
@@ -36,13 +37,27 @@ import Foundation
 
     private func startAndWait() async throws {
         if process?.isRunning != true {
-            let pythonURL = AppPaths.projectRoot.appendingPathComponent(".venv/bin/python")
-            guard FileManager.default.isExecutableFile(atPath: pythonURL.path) else {
-                throw WorkerError.runtimeMissing(pythonURL.path)
+            let embeddedWorker = AppPaths.embeddedWorkerExecutable
+            let executableURL: URL
+            let arguments: [String]
+            if FileManager.default.isExecutableFile(atPath: embeddedWorker.path) {
+                executableURL = embeddedWorker
+                arguments = []
+            } else {
+                let pythonURL = AppPaths.projectRoot.appendingPathComponent(".venv/bin/python")
+                guard FileManager.default.isExecutableFile(atPath: pythonURL.path) else {
+                    throw WorkerError.runtimeMissing(pythonURL.path)
+                }
+                executableURL = pythonURL
+                arguments = [AppPaths.developmentWorkerEntryPoint.path]
             }
 
             try FileManager.default.createDirectory(
                 at: AppPaths.workerLog.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try FileManager.default.createDirectory(
+                at: AppPaths.applicationSupportDirectory,
                 withIntermediateDirectories: true
             )
             if !FileManager.default.fileExists(atPath: AppPaths.workerLog.path) {
@@ -53,10 +68,10 @@ import Foundation
             logHandle = handle
 
             let process = Process()
-            process.executableURL = pythonURL
-            process.arguments = [AppPaths.projectRoot.appendingPathComponent("app.py").path]
-            process.currentDirectoryURL = AppPaths.projectRoot
-            var environment = ProcessInfo.processInfo.environment
+            process.executableURL = executableURL
+            process.arguments = arguments
+            process.currentDirectoryURL = AppPaths.applicationSupportDirectory
+            var environment = AppPaths.workerEnvironment()
             environment["TIRO_WORKER_TOKEN"] = try workerToken()
             process.environment = environment
             process.standardOutput = handle
@@ -95,11 +110,74 @@ import Foundation
 
     func preload(model: DictationModel) async throws {
         try await ensureRunning()
+        let availableModels = try await models()
+        guard availableModels.contains(where: { $0.key == model.key && $0.installed }) else {
+            throw WorkerError.server("Download \(model.name) before loading it.")
+        }
         var request = URLRequest(url: baseURL.appendingPathComponent("api/preload"))
         request.httpMethod = "POST"
         request.timeoutInterval = 1_800
         request.setValue(model.key, forHTTPHeaderField: "X-Parakeet-Model")
         _ = try await send(request, operation: "Model preload")
+    }
+
+    func models() async throws -> [ManagedModel] {
+        try await ensureRunning()
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/models"))
+        request.setValue(try workerToken(), forHTTPHeaderField: "X-Tiro-Worker-Token")
+        let data = try await send(request, operation: "Model list")
+        return try JSONDecoder().decode(ModelsResponse.self, from: data).models
+    }
+
+    func downloadModel(key: String) async throws {
+        try await serializedMutation {
+            _ = try await authenticatedJSONPost(
+                path: "api/models/download",
+                body: ModelKeyRequest(key: key, model: key),
+                operation: "Model download",
+                timeout: 7_200
+            )
+        }
+    }
+
+    func deleteModel(key: String) async throws {
+        try await serializedMutation {
+            _ = try await authenticatedJSONPost(
+                path: "api/models/delete",
+                body: ModelKeyRequest(key: key, model: key),
+                operation: "Model deletion"
+            )
+        }
+    }
+
+    func compareModels(
+        historyID: String,
+        modelKeys: [String],
+        comparisonID: String
+    ) async throws -> [ModelComparisonResult] {
+        guard modelKeys.count >= 2 else {
+            throw WorkerError.server("Choose at least two installed models.")
+        }
+        let data = try await authenticatedJSONPost(
+            path: "api/models/compare",
+            body: ModelComparisonRequest(
+                history_id: historyID,
+                model_keys: modelKeys,
+                models: modelKeys,
+                comparison_id: comparisonID
+            ),
+            operation: "Model comparison",
+            timeout: 7_200
+        )
+        return try JSONDecoder().decode(ModelComparisonResponse.self, from: data).results
+    }
+
+    func cancelComparison(id: String) async {
+        _ = try? await authenticatedJSONPost(
+            path: "api/models/compare/cancel",
+            body: ComparisonIDRequest(comparison_id: id),
+            operation: "Model comparison cancellation"
+        )
     }
 
     func searchHistory(query: String = "", limit: Int = 200) async throws -> [HistoryEntry] {
@@ -279,13 +357,23 @@ import Foundation
         body: Body,
         operation: String
     ) async throws {
+        _ = try await authenticatedJSONPost(path: path, body: body, operation: operation)
+    }
+
+    private func authenticatedJSONPost<Body: Encodable>(
+        path: String,
+        body: Body,
+        operation: String,
+        timeout: TimeInterval = 60
+    ) async throws -> Data {
         try await ensureRunning()
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
         request.httpMethod = "POST"
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(try workerToken(), forHTTPHeaderField: "X-Tiro-Worker-Token")
         request.httpBody = try JSONEncoder().encode(body)
-        _ = try await send(request, operation: operation)
+        return try await send(request, operation: operation)
     }
 
     private func fetchVocabularyProfiles() async throws -> VocabularyProfilesDocument {
@@ -355,7 +443,17 @@ import Foundation
                   let status = try? JSONDecoder().decode(WorkerStatus.self, from: data) else {
                 return .unavailable
             }
-            return status.api_version == 5 ? .compatible : .incompatible
+            guard status.api_version == Self.supportedAPIVersion,
+                  URL(fileURLWithPath: status.history_file).standardizedFileURL
+                    == AppPaths.historyFile.standardizedFileURL else {
+                return .incompatible
+            }
+            var request = URLRequest(url: baseURL.appendingPathComponent("api/models"))
+            request.setValue(try workerToken(), forHTTPHeaderField: "X-Tiro-Worker-Token")
+            let (_, authResponse) = try await URLSession.shared.data(for: request)
+            return (authResponse as? HTTPURLResponse)?.statusCode == 200
+                ? .compatible
+                : .incompatible
         } catch {
             return .unavailable
         }
@@ -399,10 +497,68 @@ import Foundation
 
 private struct WorkerStatus: Decodable {
     let api_version: Int
+    let history_file: String
 }
 
 private struct HistoryResponse: Decodable {
     let entries: [HistoryEntry]
+}
+
+private struct ModelsResponse: Decodable {
+    let models: [ManagedModel]
+
+    private enum CodingKeys: String, CodingKey { case models }
+
+    init(from decoder: Decoder) throws {
+        if let direct = try? [ManagedModel](from: decoder) {
+            models = direct
+            return
+        }
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        if let array = try? values.decode([ManagedModel].self, forKey: .models) {
+            models = array
+            return
+        }
+        let dictionary = try values.decode([String: ModelPayload].self, forKey: .models)
+        models = dictionary.map(ManagedModel.init(key:payload:)).sorted { $0.key < $1.key }
+    }
+}
+
+private struct ModelKeyRequest: Encodable {
+    let key: String
+    let model: String
+}
+
+private struct ModelComparisonRequest: Encodable {
+    let history_id: String
+    let model_keys: [String]
+    let models: [String]
+    let comparison_id: String
+}
+
+private struct ComparisonIDRequest: Encodable {
+    let comparison_id: String
+}
+
+private struct ModelComparisonResponse: Decodable {
+    let results: [ModelComparisonResult]
+
+    private enum CodingKeys: String, CodingKey { case results, comparisons, models }
+
+    init(from decoder: Decoder) throws {
+        if let direct = try? [ModelComparisonResult](from: decoder) {
+            results = direct
+            return
+        }
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        if let decoded = try? values.decode([ModelComparisonResult].self, forKey: .results) {
+            results = decoded
+        } else if let decoded = try? values.decode([ModelComparisonResult].self, forKey: .comparisons) {
+            results = decoded
+        } else {
+            results = try values.decode([ModelComparisonResult].self, forKey: .models)
+        }
+    }
 }
 
 private struct HistoryIDRequest: Encodable {

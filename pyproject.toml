@@ -8,5 +8,11 @@ dependencies = [
   "parakeet-mlx>=0.4.0",
 ]
 
+[project.optional-dependencies]
+bundle = [
+  "pyinstaller>=6.0,<7",
+  "uv>=0.8,<0.9",
+]
+
 [tool.uv]
 package = false

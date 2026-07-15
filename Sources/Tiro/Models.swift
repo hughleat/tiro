@@ -21,6 +21,162 @@ struct DictationModel: Hashable {
     }
 }
 
+struct ManagedModel: Decodable, Hashable {
+    let key: String
+    let name: String
+    let detail: String
+    let downloadSizeBytes: Int64?
+    let installedSizeBytes: Int64?
+    let sizeText: String?
+    let installed: Bool
+    let downloading: Bool
+    let deleting: Bool
+    let loaded: Bool
+    let downloadError: String?
+    let progress: Double?
+    let state: String?
+
+    var sizeDescription: String {
+        if let sizeText, !sizeText.isEmpty { return sizeText }
+        if installed, let installedSizeBytes, installedSizeBytes > 0 {
+            return ByteCountFormatter.string(fromByteCount: installedSizeBytes, countStyle: .file)
+        }
+        if let downloadSizeBytes {
+            return ByteCountFormatter.string(fromByteCount: downloadSizeBytes, countStyle: .file)
+        }
+        return DictationModel.all.first(where: { $0.key == key })?.detail.components(separatedBy: " · ").last
+            ?? "Size unavailable"
+    }
+
+    var dictationModel: DictationModel? {
+        DictationModel.all.first(where: { $0.key == key })
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case key, name, label, detail, backend, size, sizeBytes = "size_bytes"
+        case downloadSizeBytes = "download_size_bytes"
+        case installedSizeBytes = "installed_size_bytes"
+        case installed, downloaded, downloading, deleting, loaded, progress, state, status
+        case downloadError = "download_error"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedKey = try values.decode(String.self, forKey: .key)
+        key = decodedKey
+        let known = DictationModel.all.first(where: { $0.key == decodedKey })
+        let label = try values.decodeIfPresent(String.self, forKey: .label)
+        name = try values.decodeIfPresent(String.self, forKey: .name)
+            ?? label?.replacingOccurrences(of: #"\s*\([^)]*(?:MB|GB)\)\s*$"#, with: "", options: .regularExpression)
+            ?? known?.name
+            ?? key
+        detail = try values.decodeIfPresent(String.self, forKey: .detail)
+            ?? values.decodeIfPresent(String.self, forKey: .backend)
+            ?? known?.detail.components(separatedBy: " · ").first
+            ?? "Transcription model"
+        downloadSizeBytes = try values.decodeIfPresent(Int64.self, forKey: .downloadSizeBytes)
+            ?? values.decodeIfPresent(Int64.self, forKey: .sizeBytes)
+        installedSizeBytes = try values.decodeIfPresent(Int64.self, forKey: .installedSizeBytes)
+        sizeText = try values.decodeIfPresent(String.self, forKey: .size)
+            ?? label.flatMap(Self.sizeSuffix)
+        installed = try values.decodeIfPresent(Bool.self, forKey: .installed)
+            ?? values.decodeIfPresent(Bool.self, forKey: .downloaded)
+            ?? false
+        downloading = try values.decodeIfPresent(Bool.self, forKey: .downloading) ?? false
+        deleting = try values.decodeIfPresent(Bool.self, forKey: .deleting) ?? false
+        loaded = try values.decodeIfPresent(Bool.self, forKey: .loaded) ?? false
+        downloadError = try values.decodeIfPresent(String.self, forKey: .downloadError)
+        progress = try values.decodeIfPresent(Double.self, forKey: .progress)
+        state = try values.decodeIfPresent(String.self, forKey: .state)
+            ?? values.decodeIfPresent(String.self, forKey: .status)
+    }
+
+    init(key: String, payload: ModelPayload) {
+        self.key = key
+        let known = DictationModel.all.first(where: { $0.key == key })
+        name = payload.name ?? payload.label.map {
+            $0.replacingOccurrences(of: #"\s*\([^)]*(?:MB|GB)\)\s*$"#, with: "", options: .regularExpression)
+        } ?? known?.name ?? key
+        detail = payload.detail ?? payload.backend
+            ?? known?.detail.components(separatedBy: " · ").first
+            ?? "Transcription model"
+        downloadSizeBytes = payload.download_size_bytes ?? payload.size_bytes
+        installedSizeBytes = payload.installed_size_bytes
+        sizeText = payload.size ?? payload.label.flatMap(Self.sizeSuffix)
+        installed = payload.installed ?? payload.downloaded ?? false
+        downloading = payload.downloading ?? false
+        deleting = payload.deleting ?? false
+        loaded = payload.loaded ?? false
+        downloadError = payload.download_error
+        progress = payload.progress
+        state = payload.state ?? payload.status
+    }
+
+    private static func sizeSuffix(_ label: String) -> String? {
+        guard let range = label.range(of: #"[0-9]+(?:\.[0-9]+)?\s*(?:MB|GB)"#, options: .regularExpression) else {
+            return nil
+        }
+        return String(label[range])
+    }
+}
+
+struct ModelPayload: Decodable {
+    let name: String?
+    let label: String?
+    let detail: String?
+    let backend: String?
+    let size: String?
+    let size_bytes: Int64?
+    let download_size_bytes: Int64?
+    let installed_size_bytes: Int64?
+    let installed: Bool?
+    let downloaded: Bool?
+    let downloading: Bool?
+    let deleting: Bool?
+    let loaded: Bool?
+    let download_error: String?
+    let progress: Double?
+    let state: String?
+    let status: String?
+}
+
+struct ModelComparisonResult: Decodable {
+    let modelKey: String
+    let modelName: String?
+    let text: String
+    let transcriptionSeconds: Double
+
+    private enum CodingKeys: String, CodingKey {
+        case modelKey = "model_key"
+        case key
+        case model
+        case modelName = "model_name"
+        case name
+        case text
+        case transcript
+        case transcriptionSeconds = "transcription_seconds"
+        case seconds
+        case elapsedSeconds = "elapsed_seconds"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        modelKey = try values.decodeIfPresent(String.self, forKey: .modelKey)
+            ?? values.decodeIfPresent(String.self, forKey: .key)
+            ?? values.decodeIfPresent(String.self, forKey: .model)
+            ?? ""
+        modelName = try values.decodeIfPresent(String.self, forKey: .modelName)
+            ?? values.decodeIfPresent(String.self, forKey: .name)
+        text = try values.decodeIfPresent(String.self, forKey: .text)
+            ?? values.decodeIfPresent(String.self, forKey: .transcript)
+            ?? ""
+        transcriptionSeconds = try values.decodeIfPresent(Double.self, forKey: .transcriptionSeconds)
+            ?? values.decodeIfPresent(Double.self, forKey: .seconds)
+            ?? values.decodeIfPresent(Double.self, forKey: .elapsedSeconds)
+            ?? 0
+    }
+}
+
 struct HistoryEntry: Codable {
     let id: String
     let timestamp: String

@@ -2,11 +2,11 @@ import AppKit
 
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onModelChanged: ((DictationModel) -> Void)?
+    var onModelsChanged: (([ManagedModel]) -> Void)?
     var onAutoPasteChanged: ((Bool) -> Void)?
     var onShortcutChanged: ((DictationShortcut) -> Void)?
     var onShortcutCaptureChanged: ((Bool, Set<UInt16>) -> Void)?
 
-    private let modelPicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private let autoPasteButton = NSButton(checkboxWithTitle: "Paste after transcription", target: nil, action: nil)
     private let soundFeedbackButton = NSButton(checkboxWithTitle: "Recording sounds", target: nil, action: nil)
     private let launchAtLoginButton = NSButton(checkboxWithTitle: "Launch Tiro at login", target: nil, action: nil)
@@ -14,11 +14,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let vocabularyEditor: VocabularyEditorView
     private let suggestionsView: VocabularySuggestionsView
     private let historyView: HistoryView
+    private let modelManagementView: ModelManagementView
+    private let modelComparisonView: ModelComparisonView
 
     init(workerClient: WorkerClient) {
         vocabularyEditor = VocabularyEditorView(workerClient: workerClient)
         suggestionsView = VocabularySuggestionsView(workerClient: workerClient)
         historyView = HistoryView(workerClient: workerClient)
+        modelManagementView = ModelManagementView(workerClient: workerClient)
+        modelComparisonView = ModelComparisonView(workerClient: workerClient)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 620, height: 700),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -30,12 +34,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         window.minSize = NSSize(width: 480, height: 500)
         super.init(window: window)
         window.delegate = self
+        modelManagementView.onModelChanged = { [weak self] model in
+            self?.onModelChanged?(model)
+        }
+        modelManagementView.onModelsChanged = { [weak self, weak modelComparisonView] models in
+            modelComparisonView?.setModels(models)
+            self?.onModelsChanged?(models)
+        }
         suggestionsView.onSuggestionsChanged = { [weak vocabularyEditor, weak historyView] in
             vocabularyEditor?.load()
             historyView?.refresh()
         }
-        historyView.onCorrectionSaved = { [weak suggestionsView] in
+        historyView.onCorrectionSaved = { [weak suggestionsView, weak modelComparisonView] in
             suggestionsView?.refresh()
+            modelComparisonView?.refresh()
         }
         buildContent()
     }
@@ -51,6 +63,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         shortcutRecorder.endCapture()
+        modelManagementView.cancelWork()
+        modelComparisonView.cancelWork()
     }
 
     func windowDidResignKey(_ notification: Notification) {
@@ -64,13 +78,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         refreshLaunchAtLogin()
         vocabularyEditor.load()
         suggestionsView.refresh()
+        modelComparisonView.refresh()
         refreshHistory()
     }
 
     func refreshModel() {
-        if let index = DictationModel.all.firstIndex(of: DictationModel.selected) {
-            modelPicker.selectItem(at: index)
-        }
+        modelManagementView.refresh()
     }
 
     func refreshHistory() {
@@ -82,11 +95,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         let title = NSTextField(labelWithString: "Dictation Settings")
         title.font = NSFont.systemFont(ofSize: 22, weight: .semibold)
-        let modelLabel = NSTextField(labelWithString: "Model")
+        let modelLabel = NSTextField(labelWithString: "Models")
         modelLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        modelPicker.addItems(withTitles: DictationModel.all.map { "\($0.name) — \($0.detail)" })
-        modelPicker.target = self
-        modelPicker.action = #selector(modelChanged)
+        let comparisonLabel = NSTextField(labelWithString: "Compare Models")
+        comparisonLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
 
         let shortcutLabel = NSTextField(labelWithString: "Shortcut")
         shortcutLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
@@ -110,7 +122,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let historyLabel = NSTextField(labelWithString: "Recent Transcriptions")
         historyLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
         let stack = NSStackView(views: [
-            title, modelLabel, modelPicker, shortcutLabel, shortcutRecorder,
+            title, modelLabel, modelManagementView, comparisonLabel, modelComparisonView,
+            shortcutLabel, shortcutRecorder,
             autoPasteButton, soundFeedbackButton, launchAtLoginButton,
             vocabularyEditor, suggestionsView, historyLabel, historyView
         ])
@@ -118,6 +131,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.alignment = .leading
         stack.spacing = 10
         stack.setCustomSpacing(22, after: title)
+        stack.setCustomSpacing(18, after: modelManagementView)
+        stack.setCustomSpacing(18, after: modelComparisonView)
         stack.setCustomSpacing(18, after: launchAtLoginButton)
         stack.setCustomSpacing(18, after: vocabularyEditor)
         stack.setCustomSpacing(18, after: suggestionsView)
@@ -133,7 +148,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(scrollView)
 
-        modelPicker.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        modelManagementView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        modelComparisonView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         shortcutRecorder.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         vocabularyEditor.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         suggestionsView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -150,12 +166,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             stack.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 24),
             stack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -24)
         ])
-    }
-
-    @objc private func modelChanged() {
-        let model = DictationModel.all[modelPicker.indexOfSelectedItem]
-        DictationModel.select(model)
-        onModelChanged?(model)
     }
 
     @objc private func autoPasteChanged() {

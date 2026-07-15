@@ -19,6 +19,8 @@ import ApplicationServices
     private var shortcutStatusItem: NSMenuItem!
     private var modelStatusItem: NSMenuItem!
     private var modelMenuItems: [NSMenuItem] = []
+    private var installedModelKeys: Set<String> = []
+    private var modelStartupTask: Task<Void, Never>?
     private var permissionTimer: Timer?
     private var hotkeysStarted = false
     private var isCapturingShortcut = false
@@ -33,11 +35,12 @@ import ApplicationServices
         configureStatusItem()
         configureSettings()
         requestPermissionsAndStart()
-        preloadSelectedModel()
+        prepareInstalledModel()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         permissionTimer?.invalidate()
+        modelStartupTask?.cancel()
         hotkeys.stop()
         worker.stopOwnedWorker()
     }
@@ -84,9 +87,14 @@ import ApplicationServices
     }
 
     private func configureSettings() {
-        settingsWindow.onModelChanged = { [weak self] _ in
+        settingsWindow.onModelChanged = { [weak self] model in
             self?.updateModelChecks()
-            self?.modelStatusItem.title = "Model: Loads on First Dictation"
+            if self?.installedModelKeys.contains(model.key) == true {
+                self?.modelStatusItem.title = "Model: Loads on First Dictation"
+            }
+        }
+        settingsWindow.onModelsChanged = { [weak self] models in
+            self?.applyModelInventory(models)
         }
         settingsWindow.onShortcutChanged = { [weak self] shortcut in
             guard let self else { return }
@@ -178,6 +186,10 @@ import ApplicationServices
     @discardableResult
     private func startRecording() -> Bool {
         guard state == .idle else { return false }
+        guard installedModelKeys.contains(DictationModel.selected.key) else {
+            modelStatusItem.title = "Model: Download One in Settings"
+            return false
+        }
         originApplication = destinationTracker.captureApplicationIdentity()
         destinationSession = destinationTracker.capture()
         shouldAutoPaste = UserDefaults.standard.bool(forKey: "autoPaste")
@@ -310,6 +322,7 @@ import ApplicationServices
 
     @objc private func selectModel(_ sender: NSMenuItem) {
         guard let key = sender.representedObject as? String,
+              installedModelKeys.contains(key),
               let model = DictationModel.all.first(where: { $0.key == key }) else { return }
         DictationModel.select(model)
         updateModelChecks()
@@ -320,26 +333,61 @@ import ApplicationServices
     private func updateModelChecks() {
         let selected = DictationModel.selected
         for item in modelMenuItems {
-            item.state = (item.representedObject as? String) == selected.key ? .on : .off
+            let key = item.representedObject as? String
+            let isInstalled = key.map(installedModelKeys.contains) ?? false
+            item.isEnabled = isInstalled
+            item.state = isInstalled && key == selected.key ? .on : .off
         }
+        menuToggleItem.isEnabled = installedModelKeys.contains(selected.key)
     }
 
-    private func preloadSelectedModel() {
-        let model = DictationModel.selected
-        modelStatusItem.title = "Model: Loading…"
-        Task {
+    private func prepareInstalledModel() {
+        modelStatusItem.title = "Model: Checking Installed Models…"
+        modelStartupTask?.cancel()
+        modelStartupTask = Task { [weak self] in
+            guard let self else { return }
             do {
+                let models = try await worker.models()
+                guard !Task.isCancelled else { return }
+                guard let model = applyModelInventory(models) else {
+                    modelStatusItem.title = "Model: None Installed"
+                    return
+                }
+                modelStatusItem.title = "Model: Loading…"
                 try await worker.preload(model: model)
+                guard !Task.isCancelled else { return }
                 if DictationModel.selected == model {
                     modelStatusItem.title = "Model: Ready"
                 }
             } catch {
-                if DictationModel.selected == model {
-                    modelStatusItem.title = "Model: Preload Failed; Will Retry"
-                }
-                NSLog("Could not preload %@: %@", model.name, error.localizedDescription)
+                guard !Task.isCancelled else { return }
+                modelStatusItem.title = "Model: Installed Models Unavailable"
+                updateModelChecks()
+                NSLog("Could not prepare an installed model: %@", error.localizedDescription)
             }
         }
+    }
+
+    @discardableResult
+    private func applyModelInventory(_ models: [ManagedModel]) -> DictationModel? {
+        installedModelKeys = Set(models.lazy.filter { $0.installed && !$0.deleting }.map(\.key))
+        var selected = DictationModel.selected
+        if !installedModelKeys.contains(selected.key),
+           let fallback = DictationModel.all.first(where: { installedModelKeys.contains($0.key) }) {
+            DictationModel.select(fallback)
+            selected = fallback
+        }
+        updateModelChecks()
+        guard installedModelKeys.contains(selected.key) else {
+            modelStatusItem.title = "Model: None Installed"
+            return nil
+        }
+        if models.first(where: { $0.key == selected.key })?.loaded == true {
+            modelStatusItem.title = "Model: Ready"
+        } else {
+            modelStatusItem.title = "Model: Loads on First Dictation"
+        }
+        return selected
     }
 
     private func copyToClipboard(_ text: String) {

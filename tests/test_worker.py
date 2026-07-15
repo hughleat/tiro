@@ -3,6 +3,7 @@ import http.client
 import json
 import tempfile
 import threading
+import time
 import types
 import unittest
 import uuid
@@ -12,7 +13,7 @@ from contextlib import ExitStack, contextmanager
 from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import app
 
@@ -458,6 +459,22 @@ class RetentionTests(unittest.TestCase):
 
 
 class TranscriptionHistoryTests(unittest.TestCase):
+    def test_transcribe_requires_and_uses_installed_snapshot_without_downloading(self):
+        snapshot = Path("/cache/qwen")
+        with history_environment(), patch.object(
+            app, "decode_pcm_wav", return_value=array("h", [1])
+        ), patch.object(
+            app, "_installed_model_snapshots", return_value={"qwen": snapshot}
+        ), patch.object(
+            app, "_generate_transcript", return_value="hello"
+        ) as generate, patch.object(
+            app, "apply_retention", return_value=0
+        ), patch("huggingface_hub.snapshot_download") as download:
+            app.transcribe(make_wav(), "qwen")
+
+        generate.assert_called_once_with(array("h", [1]), "qwen", snapshot)
+        download.assert_not_called()
+
     def test_new_entry_gets_uuid_and_applies_persisted_retention(self):
         class FakeAudio:
             def __truediv__(self, _divisor):
@@ -1072,19 +1089,26 @@ class CorrectionSuggestionTests(unittest.TestCase):
 class PreloadTests(unittest.TestCase):
     def test_preload_loads_requested_model(self):
         selected = {"id": app.MODELS["compact"]["id"]}
-        with patch.object(app, "_load_model", return_value=(object(), selected)) as loader:
+        snapshot = Path("/cache/compact")
+        with patch.object(
+            app, "_installed_model_snapshots", return_value={"compact": snapshot}
+        ), patch.object(app, "_load_model", return_value=(object(), selected)) as loader:
             payload = app.preload_model("compact")
-        loader.assert_called_once_with("compact")
+        loader.assert_called_once_with("compact", snapshot)
         self.assertEqual(payload, {"loaded_model": selected["id"]})
 
     def test_preload_uses_the_inference_operation_lock(self):
         started = threading.Event()
 
-        def load(_):
+        def load(_, __):
             started.set()
             return object(), {"id": "test-model"}
 
-        with patch.object(app, "_load_model", side_effect=load):
+        with patch.object(
+            app,
+            "_installed_model_snapshots",
+            return_value={"compact": Path("/cache/compact")},
+        ), patch.object(app, "_load_model", side_effect=load):
             app._operation_lock.acquire()
             try:
                 thread = threading.Thread(target=app.preload_model, args=("compact",))
@@ -1096,8 +1120,555 @@ class PreloadTests(unittest.TestCase):
         self.assertTrue(started.is_set())
 
     def test_preload_rejects_an_unknown_model(self):
-        with self.assertRaisesRegex(ValueError, "Unknown transcription model"):
+        with self.assertRaisesRegex(ValueError, "canonical model key"):
             app.preload_model("missing")
+
+    def test_preload_rejects_uninstalled_model_without_loading(self):
+        with patch.object(app, "_cached_models", return_value={
+            key: {"installed": False, "snapshot_path": None} for key in app.MODELS
+        }), patch.object(app, "_load_model") as loader:
+            with self.assertRaisesRegex(app.HTTPError, "installed before use"):
+                app.preload_model("compact")
+        loader.assert_not_called()
+
+
+class ModelManagementTests(unittest.TestCase):
+    def setUp(self):
+        app._model_downloads.clear()
+
+    def tearDown(self):
+        app._model_downloads.clear()
+
+    @staticmethod
+    def cache_info(*keys):
+        repos = []
+        for index, key in enumerate(keys):
+            revision = types.SimpleNamespace(
+                commit_hash=f"commit-{key}",
+                snapshot_path=Path(f"/cache/{key}"),
+                last_modified=index,
+            )
+            repos.append(types.SimpleNamespace(
+                repo_id=app.MODELS[key]["id"],
+                repo_type="model",
+                size_on_disk=1000 + index,
+                revisions=[revision],
+            ))
+        return types.SimpleNamespace(repos=repos)
+
+    def test_status_is_canonical_and_does_not_download(self):
+        cache = self.cache_info("compact")
+        app._model_downloads["qwen"] = {"downloading": True, "error": None}
+        with patch.object(app, "_model_cache_info", return_value=cache), patch(
+            "huggingface_hub.snapshot_download"
+        ) as download, patch.object(app, "_model_id", app.MODELS["compact"]["id"]):
+            models = app.model_status()
+
+        self.assertEqual([model["key"] for model in models], list(app.MODELS))
+        compact = models[0]
+        self.assertTrue(compact["installed"])
+        self.assertTrue(compact["loaded"])
+        self.assertEqual(compact["installed_size_bytes"], 1000)
+        self.assertGreater(compact["download_size_bytes"], 0)
+        self.assertTrue(models[2]["downloading"])
+        download.assert_not_called()
+
+    def test_fresh_missing_cache_reports_available_and_first_download_works(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            app, "MODEL_HUB_CACHE", Path(directory) / "missing" / "hub"
+        ), patch("huggingface_hub.snapshot_download") as download:
+            models = app.model_status()
+            downloaded = app.download_model("compact")
+
+        self.assertTrue(downloaded)
+        self.assertTrue(all(model["state"] == "available" for model in models))
+        self.assertTrue(all(not model["installed"] for model in models))
+        download.assert_called_once_with(
+            repo_id=app.MODELS["compact"]["id"],
+            cache_dir=Path(directory) / "missing" / "hub",
+        )
+
+    def test_download_uses_canonical_repo_and_cache(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            app, "MODEL_HUB_CACHE", Path(directory) / "hub"
+        ), patch.object(app, "_cached_models", return_value={
+            key: {"installed": False} for key in app.MODELS
+        }), patch("huggingface_hub.snapshot_download") as download:
+            self.assertTrue(app.download_model("compact"))
+
+        download.assert_called_once_with(
+            repo_id=app.MODELS["compact"]["id"],
+            cache_dir=Path(directory) / "hub",
+        )
+        self.assertEqual(
+            app._model_downloads["compact"],
+            {"downloading": False, "deleting": False, "error": None},
+        )
+
+    def test_download_never_runs_for_installed_or_concurrent_model(self):
+        with patch.object(app, "_cached_models", return_value={
+            key: {"installed": key == "compact"} for key in app.MODELS
+        }), patch("huggingface_hub.snapshot_download") as download:
+            self.assertFalse(app.download_model("compact"))
+            app._model_downloads["qwen"] = {"downloading": True, "error": None}
+            with self.assertRaisesRegex(app.HTTPError, "operation is already running"):
+                app.download_model("qwen")
+        download.assert_not_called()
+
+    def test_download_failure_clears_downloading_and_is_reported_as_state_only(self):
+        missing = {
+            key: {
+                "installed": False,
+                "installed_size_bytes": 0,
+            }
+            for key in app.MODELS
+        }
+        with patch.object(app, "_cached_models", return_value=missing), patch(
+            "huggingface_hub.snapshot_download", side_effect=OSError("private path detail")
+        ), patch("builtins.print"):
+            with self.assertRaises(OSError):
+                app.download_model("compact")
+            models = app.model_status()
+
+        self.assertFalse(app._model_downloads["compact"]["downloading"])
+        compact = models[0]
+        self.assertEqual(compact["state"], "error")
+        self.assertNotIn("download_error", compact)
+
+    def test_download_does_not_hold_inference_lock_and_blocks_delete(self):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def download_snapshot(**_):
+            entered.set()
+            self.assertTrue(release.wait(1))
+
+        missing = {
+            key: {"installed": False} for key in app.MODELS
+        }
+        with patch.object(app, "_cached_models", return_value=missing), patch(
+            "huggingface_hub.snapshot_download", side_effect=download_snapshot
+        ):
+            thread = threading.Thread(target=app.download_model, args=("compact",))
+            thread.start()
+            self.assertTrue(entered.wait(1))
+            self.assertTrue(app._operation_lock.acquire(blocking=False))
+            app._operation_lock.release()
+            with self.assertRaisesRegex(app.HTTPError, "operation is already running"):
+                app.delete_model("compact")
+            release.set()
+            thread.join(1)
+        self.assertFalse(thread.is_alive())
+
+    def test_delete_claim_blocks_download_before_waiting_for_inference(self):
+        cache = self.cache_info("compact")
+        strategy = types.SimpleNamespace(expected_freed_size=10, execute=Mock())
+        cache.delete_revisions = Mock(return_value=strategy)
+        finished = threading.Event()
+
+        app._operation_lock.acquire()
+        try:
+            with patch.object(app, "_model_id", None), patch.object(
+                app, "_model_cache_info", return_value=cache
+            ):
+                thread = threading.Thread(
+                    target=lambda: (app.delete_model("compact"), finished.set())
+                )
+                thread.start()
+                for _ in range(100):
+                    with app._model_download_lock:
+                        if app._model_downloads.get("compact", {}).get("deleting"):
+                            break
+                    time.sleep(0.005)
+                else:
+                    self.fail("delete did not claim model state")
+                with self.assertRaisesRegex(app.HTTPError, "operation is already running"):
+                    app.download_model("compact")
+                self.assertFalse(finished.is_set())
+        finally:
+            app._operation_lock.release()
+        thread.join(1)
+        self.assertTrue(finished.is_set())
+
+    def test_local_snapshot_source_is_passed_to_both_backend_loaders(self):
+        qwen_load = Mock(return_value=object())
+        qwen_package = types.ModuleType("mlx_audio")
+        qwen_stt = types.ModuleType("mlx_audio.stt")
+        qwen_stt.load = qwen_load
+        parakeet = types.ModuleType("parakeet_mlx")
+        parakeet.from_pretrained = Mock(return_value=object())
+        mlx = types.ModuleType("mlx")
+        mlx_core = types.ModuleType("mlx.core")
+        mlx_core.clear_cache = Mock()
+        mlx.core = mlx_core
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            app, "MODEL_HUB_CACHE", Path(directory) / "hub"
+        ), patch.object(app, "_model", None), patch.object(
+            app, "_model_id", None
+        ), patch.dict("sys.modules", {
+            "mlx": mlx,
+            "mlx.core": mlx_core,
+            "mlx_audio": qwen_package,
+            "mlx_audio.stt": qwen_stt,
+            "parakeet_mlx": parakeet,
+        }):
+            app._load_model("qwen", Path("/snapshots/qwen"))
+            app._load_model("compact", Path("/snapshots/compact"))
+
+        qwen_load.assert_called_once_with("/snapshots/qwen")
+        parakeet.from_pretrained.assert_called_once_with(
+            "/snapshots/compact", cache_dir=str(Path(directory) / "hub")
+        )
+
+    def test_delete_refuses_loaded_or_downloading_model(self):
+        with patch.object(app, "_model_id", app.MODELS["compact"]["id"]):
+            with self.assertRaisesRegex(app.HTTPError, "loaded"):
+                app.delete_model("compact")
+        app._model_downloads["qwen"] = {"downloading": True, "error": None}
+        with self.assertRaisesRegex(app.HTTPError, "operation is already running"):
+            app.delete_model("qwen")
+
+    def test_delete_uses_hugging_face_revision_strategy(self):
+        cache = self.cache_info("compact")
+        strategy = types.SimpleNamespace(expected_freed_size=987, execute=Mock())
+        cache.delete_revisions = Mock(return_value=strategy)
+        with patch.object(app, "_model_id", None), patch.object(
+            app, "_model_cache_info", return_value=cache
+        ):
+            self.assertEqual(app.delete_model("compact"), 987)
+        cache.delete_revisions.assert_called_once_with("commit-compact")
+        strategy.execute.assert_called_once_with()
+
+    def test_compare_uses_only_snapshot_paths_and_preserves_history(self):
+        with history_environment() as (_, audio, history):
+            (audio / "entry.wav").write_bytes(make_wav())
+            original = '{"id":"entry","audio_file":"data/audio/entry.wav","extra":1}\n'
+            history.write_text(original)
+            cache = {
+                key: {"installed": True, "snapshot_path": Path(f"/cache/{key}")}
+                for key in app.MODELS
+            }
+            with patch.object(app, "_cached_models", return_value=cache), patch.object(
+                app, "_generate_transcript", side_effect=["compact text", "qwen text"]
+            ) as generate:
+                payload = app.compare_history_models("entry", ["compact", "qwen"])
+
+            self.assertEqual(history.read_text(), original)
+            self.assertEqual([item["text"] for item in payload["results"]], [
+                "compact text", "qwen text",
+            ])
+            self.assertEqual(
+                [call.args[2] for call in generate.call_args_list],
+                [Path("/cache/compact"), Path("/cache/qwen")],
+            )
+
+    def test_compare_releases_lock_between_runs_and_restores_prior_model(self):
+        prior_model = object()
+        contender_acquired = threading.Event()
+        contender = None
+
+        def generate(_samples, key, _source):
+            nonlocal contender
+            app._model = object()
+            app._model_id = app.MODELS[key]["id"]
+            if key == "compact":
+                def contend():
+                    with app._operation_lock:
+                        contender_acquired.set()
+                contender = threading.Thread(target=contend)
+                contender.start()
+            else:
+                self.assertTrue(contender_acquired.wait(1))
+            return key
+
+        with history_environment() as (_, audio, history), patch.object(
+            app, "_model", prior_model
+        ), patch.object(app, "_model_id", "prior-model"), patch.object(
+            app, "_clear_loaded_model", side_effect=lambda: setattr(app, "_model", None)
+        ):
+            (audio / "entry.wav").write_bytes(make_wav())
+            history.write_text('{"id":"entry","audio_file":"data/audio/entry.wav"}\n')
+            cache = {
+                key: {"installed": True, "snapshot_path": Path(f"/cache/{key}")}
+                for key in app.MODELS
+            }
+            with patch.object(app, "_cached_models", return_value=cache), patch.object(
+                app, "_generate_transcript", side_effect=generate
+            ):
+                app.compare_history_models("entry", ["compact", "qwen"])
+
+            self.assertIs(app._model, prior_model)
+            self.assertEqual(app._model_id, "prior-model")
+        contender.join(1)
+        self.assertTrue(contender_acquired.is_set())
+
+    def test_compare_restores_unloaded_state_after_failure(self):
+        def fail_after_loading(_samples, key, _source):
+            app._model = object()
+            app._model_id = app.MODELS[key]["id"]
+            raise RuntimeError("comparison failed")
+
+        with history_environment() as (_, audio, history), patch.object(
+            app, "_model", None
+        ), patch.object(app, "_model_id", None), patch.object(
+            app, "_clear_loaded_model", side_effect=lambda: (
+                setattr(app, "_model", None), setattr(app, "_model_id", None)
+            )
+        ):
+            (audio / "entry.wav").write_bytes(make_wav())
+            history.write_text('{"id":"entry","audio_file":"data/audio/entry.wav"}\n')
+            cache = {
+                key: {"installed": True, "snapshot_path": Path(f"/cache/{key}")}
+                for key in app.MODELS
+            }
+            with patch.object(app, "_cached_models", return_value=cache), patch.object(
+                app, "_generate_transcript", side_effect=fail_after_loading
+            ), self.assertRaisesRegex(RuntimeError, "comparison failed"):
+                app.compare_history_models("entry", ["compact", "qwen"])
+            self.assertIsNone(app._model)
+            self.assertIsNone(app._model_id)
+
+    def test_restore_reinstates_prior_state_even_if_cache_clear_fails(self):
+        prior = object()
+        with patch.object(app, "_model", object()), patch.object(
+            app, "_model_id", "comparison-model"
+        ), patch.object(
+            app, "_clear_loaded_model", side_effect=RuntimeError("clear failed")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "clear failed"):
+                app._restore_loaded_model(prior, "prior-model")
+            self.assertIs(app._model, prior)
+            self.assertEqual(app._model_id, "prior-model")
+
+    def test_compare_preserves_model_selected_between_runs(self):
+        prior = object()
+        selected_during_comparison = object()
+        app._model = prior
+        app._model_id = "prior-model"
+        def generate(_samples, key, _source):
+            app._model = object()
+            app._model_id = app.MODELS[key]["id"]
+            return key
+
+        def select_model(_delay):
+            app._model = selected_during_comparison
+            app._model_id = "new-selection"
+
+        with (
+            patch.object(app, "_history_audio", return_value=make_wav()),
+            patch.object(
+                app,
+                "_installed_model_snapshots",
+                side_effect=lambda keys: {key: Path("/tmp/model") for key in keys},
+            ),
+            patch.object(app, "_generate_transcript", side_effect=generate),
+            patch.object(app.time, "sleep", side_effect=select_model),
+            patch.object(
+                app,
+                "_clear_loaded_model",
+                side_effect=lambda: (setattr(app, "_model", None), setattr(app, "_model_id", None)),
+            ),
+        ):
+            app.compare_history_models("entry", ["compact", "parakeet-v2"])
+
+        self.assertIs(app._model, selected_during_comparison)
+        self.assertEqual(app._model_id, "new-selection")
+
+    def test_compare_preserves_model_selected_before_first_run(self):
+        prior = object()
+        selected_during_comparison = object()
+        app._model = prior
+        app._model_id = "prior-model"
+        clock_calls = 0
+
+        def clock():
+            nonlocal clock_calls
+            clock_calls += 1
+            if clock_calls == 1:
+                app._model = selected_during_comparison
+                app._model_id = "new-selection"
+            return float(clock_calls)
+
+        def generate(_samples, key, _source):
+            app._model = object()
+            app._model_id = app.MODELS[key]["id"]
+            return key
+
+        with (
+            patch.object(app, "_history_audio", return_value=make_wav()),
+            patch.object(
+                app,
+                "_installed_model_snapshots",
+                side_effect=lambda keys: {key: Path("/tmp/model") for key in keys},
+            ),
+            patch.object(app, "_generate_transcript", side_effect=generate),
+            patch.object(app.time, "perf_counter", side_effect=clock),
+            patch.object(
+                app,
+                "_clear_loaded_model",
+                side_effect=lambda: (setattr(app, "_model", None), setattr(app, "_model_id", None)),
+            ),
+        ):
+            app.compare_history_models("entry", ["compact", "parakeet-v2"])
+
+        self.assertIs(app._model, selected_during_comparison)
+        self.assertEqual(app._model_id, "new-selection")
+
+    def test_compare_rejects_bad_selection_missing_audio_and_uninstalled(self):
+        with history_environment() as (_, audio, history):
+            for models in ([], ["compact"], ["compact", "compact"], ["unknown", "qwen"]):
+                with self.assertRaises(ValueError):
+                    app.compare_history_models("entry", models)
+            with self.assertRaisesRegex(app.HTTPError, "not found"):
+                app.compare_history_models("entry", ["compact", "qwen"])
+
+            (audio / "entry.wav").write_bytes(make_wav())
+            history.write_text('{"id":"entry","audio_file":"data/audio/entry.wav"}\n')
+            cache = {
+                key: {"installed": key != "qwen", "snapshot_path": Path(f"/cache/{key}")}
+                for key in app.MODELS
+            }
+            with patch.object(app, "_cached_models", return_value=cache), patch.object(
+                app, "_generate_transcript"
+            ) as generate, self.assertRaisesRegex(app.HTTPError, "installed before use"):
+                app.compare_history_models("entry", ["compact", "qwen"])
+            generate.assert_not_called()
+
+    def test_compare_honors_server_side_cancellation(self):
+        cancellation = threading.Event()
+        cancellation.set()
+        with (
+            patch.object(app, "_history_audio", return_value=make_wav()),
+            patch.object(
+                app,
+                "_installed_model_snapshots",
+                side_effect=lambda keys: {key: Path("/tmp/model") for key in keys},
+            ),
+            patch.object(app, "_generate_transcript") as generate,
+            self.assertRaisesRegex(app.HTTPError, "cancelled"),
+        ):
+            app.compare_history_models(
+                "entry",
+                ["compact", "parakeet-v2"],
+                cancellation,
+            )
+        generate.assert_not_called()
+
+
+class ModelManagementEndpointTests(unittest.TestCase):
+    def test_preload_preserves_current_unauthenticated_client_contract(self):
+        with history_environment(), worker_server() as address, patch.object(
+            app, "preload_model", return_value={"loaded_model": "local-model"}
+        ) as preload:
+            status, _, body = request(
+                address,
+                "POST",
+                "/api/preload",
+                headers={"X-Parakeet-Model": "compact"},
+            )
+        self.assertEqual(
+            (status, json.loads(body)),
+            (200, {"loaded_model": "local-model"}),
+        )
+        preload.assert_called_once_with("compact")
+
+    def test_endpoints_require_authentication(self):
+        with history_environment(), worker_server() as address, patch.object(
+            app, "model_status", return_value=[]
+        ):
+            self.assertEqual(request(address, "GET", "/api/models")[0], 403)
+            self.assertEqual(
+                request(address, "GET", "/api/models", token="secret")[0], 200
+            )
+            for path, payload in (
+                ("/api/models/download", {"model": "compact"}),
+                ("/api/models/delete", {"model": "compact"}),
+                ("/api/models/compare", {"history_id": "one", "models": ["compact"]}),
+                ("/api/models/compare/cancel", {"comparison_id": "one"}),
+            ):
+                self.assertEqual(request(address, "POST", path, payload)[0], 403)
+
+    def test_status_and_management_contracts(self):
+        status_payload = [{"key": "compact", "installed": False}]
+        with history_environment(), worker_server() as address, patch.object(
+            app, "model_status", return_value=status_payload
+        ), patch.object(app, "download_model", return_value=True), patch.object(
+            app, "delete_model", return_value=123
+        ), patch.object(app, "compare_history_models", return_value={
+            "history_id": "one", "results": []
+        }):
+            status, _, body = request(
+                address, "GET", "/api/models", token="secret"
+            )
+            self.assertEqual((status, json.loads(body)), (200, {"models": status_payload}))
+            self.assertEqual(request(
+                address, "POST", "/api/models/download", {"key": "compact"}, "secret"
+            )[0], 200)
+            status, _, body = request(
+                address, "POST", "/api/models/delete", {"model": "compact"}, "secret"
+            )
+            self.assertEqual(json.loads(body)["freed_size_bytes"], 123)
+            status, _, body = request(
+                address, "POST", "/api/models/compare",
+                {"history_id": "one", "model_keys": ["compact", "qwen"]}, "secret"
+            )
+            self.assertEqual((status, json.loads(body)), (200, {
+                "history_id": "one", "results": [],
+            }))
+            cancellation = threading.Event()
+            app._comparison_cancellations["one"] = cancellation
+            try:
+                status, _, body = request(
+                    address,
+                    "POST",
+                    "/api/models/compare/cancel",
+                    {"comparison_id": "one"},
+                    "secret",
+                )
+                self.assertEqual((status, json.loads(body)), (200, {"cancelled": True}))
+                self.assertTrue(cancellation.is_set())
+            finally:
+                app._comparison_cancellations.pop("one", None)
+
+    def test_cancel_before_comparison_registration_is_honored(self):
+        def compare(history_id, model_keys, cancellation):
+            self.assertTrue(cancellation.is_set())
+            raise app.HTTPError(409, "Model comparison was cancelled")
+
+        with history_environment(), worker_server() as address, patch.object(
+            app, "compare_history_models", side_effect=compare
+        ):
+            status, _, body = request(
+                address,
+                "POST",
+                "/api/models/compare/cancel",
+                {"comparison_id": "future"},
+                "secret",
+            )
+            self.assertEqual((status, json.loads(body)), (200, {"cancelled": True}))
+            status, _, body = request(
+                address,
+                "POST",
+                "/api/models/compare",
+                {
+                    "comparison_id": "future",
+                    "history_id": "one",
+                    "model_keys": ["compact", "qwen"],
+                },
+                "secret",
+            )
+            self.assertEqual(status, 409)
+            self.assertIn("cancelled", json.loads(body)["error"])
+
+    def test_management_rejects_unknown_model(self):
+        with history_environment(), worker_server() as address:
+            for path in ("/api/models/download", "/api/models/delete"):
+                status, _, body = request(
+                    address, "POST", path, {"model": "not-canonical"}, "secret"
+                )
+                self.assertEqual(status, 400)
+                self.assertIn("canonical", json.loads(body)["error"])
 
 
 class HistoryEndpointTests(unittest.TestCase):

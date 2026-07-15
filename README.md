@@ -21,18 +21,44 @@ Tiro can launch automatically at login from Settings. It also warms the selected
 - `mlx-community/parakeet-tdt-0.6b-v2`: larger English model with stronger punctuation.
 - `mlx-community/Qwen3-ASR-0.6B-4bit`: compact multilingual model.
 
-Models are loaded through MLX and cached under `.cache/huggingface`. Recordings and JSONL history remain under `data/`; both directories are excluded from Git.
+## Data Locations
+
+Tiro keeps mutable files outside the application bundle:
+
+- History, recordings, vocabulary, settings documents, token: `~/Library/Application Support/Tiro/data/`
+- Downloaded model cache: `~/Library/Application Support/Tiro/Models/huggingface/`
+- Worker output: `~/Library/Logs/Tiro/worker.log`
+
+On first access, `AppPaths.migrateLegacyProjectDataIfNeeded()` recursively merges known files from the old checkout-local `data/` directory and `.cache/huggingface` model cache. It copies missing files with the native filesystem copy operation, never overwrites destination files, and never deletes the source. Keeping the `data/` component preserves audio references in existing history. A versioned completion marker is written only after every discovered source is resolved successfully; a copy error or file/directory conflict leaves migration retryable.
+
+Development runs remember a validated checkout in `~/Library/Application Support/Tiro/.legacy-project-root`. Installed releases consult `TIRO_PROJECT_ROOT` first, then the running development layout, the remembered checkout, and conservative `~/Documents/code`, `~/Developer`, and `~/Code` fallbacks. Tests and local tooling may override destinations with `TIRO_DATA_DIR`, `TIRO_MODEL_DIR`, and `TIRO_LOG_DIR`; `TIRO_DATA_DIR` names the Application Support root, not its `data/` child, while `TIRO_MODEL_DIR` names the exact model-cache directory.
 
 ## Development
 
-Python 3.11 or newer and the project-local virtual environment are required.
+Python 3.11 or newer and the project-local virtual environment are required for the worker. Build and test with:
 
 ```sh
 .venv/bin/python -m unittest discover -s tests
-./scripts/build_native_app.sh
+./scripts/build_native_app.sh development
 open "dist/Tiro.app"
 ```
 
-The app expects to run from `dist/Tiro.app` and locates the worker relative to the project root. Set `TIRO_PROJECT_ROOT` when launching it to override that location.
+The development app does not embed Python. It uses `.venv/bin/python scripts/worker_entry.py` from `TIRO_PROJECT_ROOT` (or the checkout inferred from `dist/Tiro.app`) so development and release share the same data-location behavior.
 
-The build uses a stable designated requirement for local ad-hoc signing. This prevents ordinary rebuilds from invalidating Tiro's Accessibility permission.
+## Self-contained App
+
+The release build uses PyInstaller `onedir` to embed the Python interpreter, `app.py`, MLX libraries, and their Python dependencies under `Tiro.app/Contents/Resources/worker/`. It synchronizes the project-local `.venv` exactly from `uv.lock`, including the `bundle` dependencies, then builds with:
+
+```sh
+./scripts/build_native_app.sh release
+```
+
+The sync may download missing build packages. If the locked environment or runtime imports are unavailable, the command exits with an actionable error. Models themselves are not bundled; users explicitly download and remove them in Tiro's Models settings, and their files remain in Application Support.
+
+`WorkerClient.startAndWait()` must select `AppPaths.embeddedWorkerExecutable` when it is executable and use no script argument for it. Otherwise it must retain `.venv/bin/python` as the development executable and pass `AppPaths.developmentWorkerEntryPoint.path` as its sole argument. For either launch path it must set `process.environment = AppPaths.workerEnvironment()`, then add `TIRO_WORKER_TOKEN`, and use `AppPaths.applicationSupportDirectory` as `currentDirectoryURL`. These are the only native launch changes required by the packaged worker.
+
+### macOS support policy
+
+macOS 14 remains the native source baseline, but a self-contained release can only support the highest minimum required by all native libraries embedded from its Python environment. After PyInstaller runs, the build scans every bundled Mach-O `LC_BUILD_VERSION`, raises the built app's `LSMinimumSystemVersion` to that maximum, and validates the result before signing. This deliberately favors a truthful, runnable artifact over claiming compatibility that its MLX wheel cannot provide. With the dependencies currently installed on this macOS 26 machine, MLX requires macOS 26.2, so this machine can run the result and the release bundle will declare 26.2 rather than falsely declaring 14.0. Building on an environment whose complete native dependency set supports an older macOS version produces that lower truthful minimum, never below the macOS 14 baseline.
+
+The script applies an ad-hoc signature with a stable designated requirement for local builds, which helps preserve Accessibility permission across rebuilds. This is not distributable signing: public release still requires a Developer ID Application identity, hardened runtime and appropriate entitlements, signing nested code in inside-out order, notarization, and stapling. Those credentialed steps are intentionally not automated here.

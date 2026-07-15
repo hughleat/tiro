@@ -13,6 +13,7 @@ import secrets
 import shutil
 import threading
 import time
+import traceback
 import uuid
 import wave
 from array import array
@@ -32,6 +33,11 @@ VOCABULARY_PATH = DATA_DIR / "vocabulary.json"
 PROFILES_PATH = DATA_DIR / "profiles.json"
 SUGGESTIONS_PATH = DATA_DIR / "suggestions.json"
 MODEL_CACHE = ROOT / ".cache" / "huggingface"
+
+
+def _log_exception(context: str, exc: Exception) -> None:
+    print(f"{context}: {exc!r}", flush=True)
+    traceback.print_exc()
 MODEL_HUB_CACHE = MODEL_CACHE / "hub"
 SAMPLE_RATE = 16_000
 MAX_RECORDING_BYTES = 100 * 1024 * 1024
@@ -43,6 +49,7 @@ MAX_VOCABULARY_ENTRIES = 500
 MAX_PROFILES = 200
 MAX_HISTORY_LIMIT = 200
 DEFAULT_HISTORY_LIMIT = 20
+MAX_COMPARISON_MODELS = 3
 RETENTION_DAYS = {0, 7, 30, 90}
 HISTORY_ID_NAMESPACE = uuid.UUID("99bb23a4-4c7b-4d82-85aa-a33a072950f7")
 SUGGESTION_ID_NAMESPACE = uuid.UUID("ad2d6d17-a3ef-49df-bbd5-ed73ad9b81cb")
@@ -53,16 +60,19 @@ MODELS = {
         "id": "mlx-community/parakeet-tdt_ctc-110m",
         "label": "Compact English (459 MB)",
         "backend": "parakeet",
+        "download_size_bytes": 459_000_000,
     },
     "parakeet-v2": {
         "id": "mlx-community/parakeet-tdt-0.6b-v2",
         "label": "Parakeet English v2 (2.47 GB)",
         "backend": "parakeet",
+        "download_size_bytes": 2_470_000_000,
     },
     "qwen": {
         "id": "mlx-community/Qwen3-ASR-0.6B-4bit",
         "label": "Qwen3-ASR multilingual (713 MB)",
         "backend": "qwen",
+        "download_size_bytes": 713_000_000,
     },
 }
 
@@ -71,6 +81,12 @@ _model_id: str | None = None
 _operation_lock = threading.Lock()
 _history_lock = threading.Lock()
 _state_lock = threading.RLock()
+_model_download_lock = threading.Lock()
+_model_downloads: dict[str, dict[str, object]] = {}
+_comparison_registry_lock = threading.Lock()
+_comparison_run_lock = threading.Lock()
+_comparison_cancellations: dict[str, threading.Event] = {}
+_pending_comparison_cancellations: dict[str, float] = {}
 
 
 def _validated_entries(value: object, *, strict: bool = False) -> list[dict[str, str]]:
@@ -1127,38 +1143,324 @@ def decode_pcm_wav(wav_bytes: bytes, expected_sample_rate: int = SAMPLE_RATE) ->
     return samples
 
 
-def _load_model(model_key: str):
+def _model_key(value: object) -> str:
+    if not isinstance(value, str) or value not in MODELS:
+        raise ValueError("model must be a canonical model key")
+    return value
+
+
+def _model_cache_info():
+    from huggingface_hub import scan_cache_dir
+    from huggingface_hub.errors import CacheNotFound
+
+    try:
+        return scan_cache_dir(MODEL_HUB_CACHE)
+    except CacheNotFound:
+        return None
+
+
+def _cached_models(cache_info=None) -> dict[str, dict[str, object]]:
+    if cache_info is None:
+        cache_info = _model_cache_info()
+    by_repo = {
+        repo.repo_id: repo
+        for repo in (cache_info.repos if cache_info is not None else ())
+        if getattr(repo, "repo_type", "model") == "model"
+    }
+    result = {}
+    for key, model in MODELS.items():
+        repo = by_repo.get(model["id"])
+        revisions = list(repo.revisions) if repo is not None else []
+        revision = max(
+            revisions,
+            key=lambda item: (getattr(item, "last_modified", 0), item.commit_hash),
+            default=None,
+        )
+        result[key] = {
+            "repo": repo,
+            "revision": revision,
+            "installed": revision is not None,
+            "installed_size_bytes": int(repo.size_on_disk) if repo is not None else 0,
+            "snapshot_path": Path(revision.snapshot_path) if revision is not None else None,
+        }
+    return result
+
+
+def model_status() -> list[dict[str, object]]:
+    cached = _cached_models()
+    with _model_download_lock:
+        downloads = {key: dict(value) for key, value in _model_downloads.items()}
+    result = []
+    for key, model in MODELS.items():
+        installed = bool(cached[key]["installed"])
+        download = downloads.get(key, {})
+        downloading = bool(download.get("downloading"))
+        deleting = bool(download.get("deleting"))
+        state = (
+            "downloading" if downloading
+            else "deleting" if deleting
+            else "installed" if installed
+            else "available"
+        )
+        if download.get("error") and not installed:
+            state = "error"
+        result.append({
+            "key": key,
+            **model,
+            "installed": installed,
+            "downloading": downloading,
+            "deleting": deleting,
+            "state": state,
+            "size_bytes": cached[key]["installed_size_bytes"]
+            or model["download_size_bytes"],
+            "installed_size_bytes": cached[key]["installed_size_bytes"],
+            "loaded": _model_id == model["id"],
+        })
+    return result
+
+
+def download_model(model_key: str) -> bool:
+    model_key = _model_key(model_key)
+    with _model_download_lock:
+        state = _model_downloads.get(model_key, {})
+        if state.get("downloading") or state.get("deleting"):
+            raise HTTPError(HTTPStatus.CONFLICT, "Model operation is already running")
+        if _cached_models()[model_key]["installed"]:
+            return False
+        _model_downloads[model_key] = {
+            "downloading": True,
+            "deleting": False,
+            "error": None,
+        }
+    try:
+        from huggingface_hub import snapshot_download
+
+        MODEL_HUB_CACHE.mkdir(parents=True, exist_ok=True)
+        snapshot_download(
+            repo_id=MODELS[model_key]["id"],
+            cache_dir=MODEL_HUB_CACHE,
+        )
+    except Exception as exc:
+        _log_exception(f"Model download failed for {model_key}", exc)
+        with _model_download_lock:
+            _model_downloads[model_key] = {
+                "downloading": False,
+                "deleting": False,
+                "error": str(exc)[:500] or type(exc).__name__,
+            }
+        raise
+    else:
+        with _model_download_lock:
+            _model_downloads[model_key] = {
+                "downloading": False,
+                "deleting": False,
+                "error": None,
+            }
+        return True
+
+
+def delete_model(model_key: str) -> int:
+    model_key = _model_key(model_key)
+    selected = MODELS[model_key]
+    with _model_download_lock:
+        state = _model_downloads.get(model_key, {})
+        if state.get("downloading") or state.get("deleting"):
+            raise HTTPError(HTTPStatus.CONFLICT, "Model operation is already running")
+        _model_downloads[model_key] = {
+            "downloading": False,
+            "deleting": True,
+            "error": None,
+        }
+    try:
+        with _operation_lock:
+            if _model_id == selected["id"]:
+                raise HTTPError(HTTPStatus.CONFLICT, "Cannot delete the loaded model")
+            cache_info = _model_cache_info()
+            cached = _cached_models(cache_info)[model_key]
+            repo = cached["repo"]
+            if repo is None or cache_info is None:
+                return 0
+            strategy = cache_info.delete_revisions(
+                *(revision.commit_hash for revision in repo.revisions)
+            )
+            freed = int(strategy.expected_freed_size)
+            strategy.execute()
+            return freed
+    finally:
+        with _model_download_lock:
+            _model_downloads[model_key] = {
+                "downloading": False,
+                "deleting": False,
+                "error": None,
+            }
+
+
+def _history_audio(entry_id: str) -> bytes | None:
+    with _history_lock:
+        lines = _read_history_lines()
+        for line in reversed(lines):
+            entry = _parse_history_line(line)
+            if entry is None or entry.get("id") != entry_id:
+                continue
+            audio_path = _audio_path(entry)
+            if audio_path is None or not audio_path.is_file():
+                return None
+            return audio_path.read_bytes()
+    return None
+
+
+def _installed_model_snapshots(model_keys: list[str]) -> dict[str, Path]:
+    with _model_download_lock:
+        busy = [
+            key for key in model_keys
+            if _model_downloads.get(key, {}).get("downloading")
+            or _model_downloads.get(key, {}).get("deleting")
+        ]
+        if busy:
+            raise HTTPError(
+                HTTPStatus.CONFLICT,
+                "Model operation is already running: " + ", ".join(busy),
+            )
+        cached = _cached_models()
+        missing = [key for key in model_keys if not cached[key]["installed"]]
+        if missing:
+            raise HTTPError(
+                HTTPStatus.CONFLICT,
+                "Models must be installed before use: " + ", ".join(missing),
+            )
+        return {key: cached[key]["snapshot_path"] for key in model_keys}
+
+
+def _clear_loaded_model() -> None:
+    global _model, _model_id
+    if _model is None:
+        _model_id = None
+        return
+    _model = None
+    _model_id = None
+    gc.collect()
+    import mlx.core as mx
+
+    mx.clear_cache()
+
+
+def _restore_loaded_model(model, model_id: str | None) -> None:
+    global _model, _model_id
+    if _model is model and _model_id == model_id:
+        return
+    try:
+        _clear_loaded_model()
+    finally:
+        _model = model
+        _model_id = model_id
+
+
+def _load_model(model_key: str, source: str | Path):
     global _model, _model_id
     if model_key not in MODELS:
         raise ValueError(f"Unknown transcription model: {model_key}")
     selected = MODELS[model_key]
     wanted_id = selected["id"]
+    load_source = str(Path(source))
 
     if _model is None or _model_id != wanted_id:
-        if _model is not None:
-            _model = None
-            _model_id = None
-            gc.collect()
-            import mlx.core as mx
-
-            mx.clear_cache()
-        MODEL_HUB_CACHE.mkdir(parents=True, exist_ok=True)
+        _clear_loaded_model()
         if selected["backend"] == "qwen":
             from mlx_audio.stt import load
 
-            _model = load(wanted_id)
+            _model = load(load_source)
         else:
             from parakeet_mlx import from_pretrained
 
-            _model = from_pretrained(wanted_id, cache_dir=str(MODEL_HUB_CACHE))
+            _model = from_pretrained(load_source, cache_dir=str(MODEL_HUB_CACHE))
         _model_id = wanted_id
     return _model, selected
 
 
+def _generate_transcript(samples: array, model_key: str, source: str | Path) -> str:
+    model, selected = _load_model(model_key, source)
+    import mlx.core as mx
+
+    audio = mx.array(samples, dtype=mx.float32) / 32768.0
+    if selected["backend"] == "qwen":
+        result = model.generate(audio, language="English")
+    else:
+        from parakeet_mlx.audio import get_logmel
+
+        mel = get_logmel(audio, model.preprocessor_config)
+        result = model.generate(mel)[0]
+    return result.text.strip()
+
+
 def preload_model(model_key: str) -> dict[str, str]:
+    model_key = _model_key(model_key)
     with _operation_lock:
-        _, selected = _load_model(model_key)
+        source = _installed_model_snapshots([model_key])[model_key]
+        _, selected = _load_model(model_key, source)
     return {"loaded_model": selected["id"]}
+
+
+def compare_history_models(
+    entry_id: str,
+    model_keys: list[str],
+    cancellation: threading.Event | None = None,
+) -> dict:
+    if not isinstance(entry_id, str) or not entry_id or len(entry_id) > 200:
+        raise ValueError("history_id must be a bounded non-empty string")
+    if (
+        not isinstance(model_keys, list)
+        or not 2 <= len(model_keys) <= MAX_COMPARISON_MODELS
+        or any(not isinstance(key, str) for key in model_keys)
+        or len(set(model_keys)) != len(model_keys)
+    ):
+        raise ValueError(
+            f"models must contain 2 to {MAX_COMPARISON_MODELS} unique model keys"
+        )
+    model_keys = [_model_key(key) for key in model_keys]
+    wav_bytes = _history_audio(entry_id)
+    if wav_bytes is None:
+        raise HTTPError(HTTPStatus.NOT_FOUND, "History audio not found")
+    samples = decode_pcm_wav(wav_bytes)
+
+    _installed_model_snapshots(model_keys)
+    with _comparison_run_lock:
+        with _operation_lock:
+            restore_model, restore_model_id = _model, _model_id
+        expected_model, expected_model_id = restore_model, restore_model_id
+        results = []
+        try:
+            for index, key in enumerate(model_keys):
+                if cancellation is not None and cancellation.is_set():
+                    raise HTTPError(HTTPStatus.CONFLICT, "Model comparison was cancelled")
+                started = time.perf_counter()
+                with _operation_lock:
+                    if cancellation is not None and cancellation.is_set():
+                        raise HTTPError(HTTPStatus.CONFLICT, "Model comparison was cancelled")
+                    if _model is not expected_model or _model_id != expected_model_id:
+                        restore_model, restore_model_id = _model, _model_id
+                    source = _installed_model_snapshots([key])[key]
+                    try:
+                        text = _generate_transcript(samples, key, source)
+                    finally:
+                        expected_model, expected_model_id = _model, _model_id
+                results.append(
+                    {
+                        "key": key,
+                        "id": MODELS[key]["id"],
+                        "text": text,
+                        "transcription_seconds": round(time.perf_counter() - started, 3),
+                    }
+                )
+                if cancellation is not None and cancellation.is_set():
+                    raise HTTPError(HTTPStatus.CONFLICT, "Model comparison was cancelled")
+                if index + 1 < len(model_keys):
+                    time.sleep(0.001)
+        finally:
+            with _operation_lock:
+                if _model is not expected_model or _model_id != expected_model_id:
+                    restore_model, restore_model_id = _model, _model_id
+                _restore_loaded_model(restore_model, restore_model_id)
+    return {"history_id": entry_id, "results": results}
 
 
 def transcribe(
@@ -1171,24 +1473,16 @@ def transcribe(
 
     started = time.perf_counter()
     with _operation_lock:
-        model, selected = _load_model(model_key)
-        import mlx.core as mx
-
-        audio = mx.array(samples, dtype=mx.float32) / 32768.0
-        if selected["backend"] == "qwen":
-            result = model.generate(audio, language="English")
-        else:
-            from parakeet_mlx.audio import get_logmel
-
-            mel = get_logmel(audio, model.preprocessor_config)
-            result = model.generate(mel)[0]
+        model_key = _model_key(model_key)
+        source = _installed_model_snapshots([model_key])[model_key]
+        raw_text = _generate_transcript(samples, model_key, source)
+        selected = MODELS[model_key]
     elapsed = time.perf_counter() - started
 
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     audio_path = AUDIO_DIR / f"{stamp}.wav"
     audio_path.write_bytes(wav_bytes)
-    raw_text = result.text.strip()
     entry = {
         "id": str(uuid.uuid4()),
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1272,6 +1566,20 @@ class TiroHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed_url = urlparse(self.path)
         path = parsed_url.path
+        if path == "/api/models":
+            if not self._authorized():
+                json_response(self, {"error": "Forbidden"}, HTTPStatus.FORBIDDEN)
+                return
+            try:
+                json_response(self, {"models": model_status()})
+            except Exception as exc:
+                _log_exception("Model status failed", exc)
+                json_response(
+                    self,
+                    {"error": "Could not inspect the local model cache."},
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
         if path == "/api/status":
             json_response(
                 self,
@@ -1341,6 +1649,10 @@ class TiroHandler(BaseHTTPRequestHandler):
             "/api/vocabulary/profiles",
             "/api/suggestions/accept",
             "/api/suggestions/dismiss",
+            "/api/models/download",
+            "/api/models/delete",
+            "/api/models/compare",
+            "/api/models/compare/cancel",
         }
         if path in mutation_paths:
             if not self._authorized():
@@ -1386,6 +1698,69 @@ class TiroHandler(BaseHTTPRequestHandler):
                     json_response(self, {"corrected": True})
                 elif path == "/api/vocabulary/profiles":
                     json_response(self, save_profiles(payload))
+                elif path == "/api/models/download":
+                    model_key = _model_key(payload.get("key", payload.get("model")))
+                    downloaded = download_model(model_key)
+                    json_response(
+                        self,
+                        {"key": model_key, "downloaded": downloaded},
+                    )
+                elif path == "/api/models/delete":
+                    model_key = _model_key(payload.get("key", payload.get("model")))
+                    freed = delete_model(model_key)
+                    json_response(
+                        self,
+                        {"model": model_key, "deleted": freed > 0, "freed_size_bytes": freed},
+                    )
+                elif path == "/api/models/compare":
+                    comparison_id = payload.get("comparison_id")
+                    if comparison_id is None:
+                        comparison_id = str(uuid.uuid4())
+                    if (
+                        not isinstance(comparison_id, str)
+                        or not comparison_id
+                        or len(comparison_id) > 200
+                    ):
+                        raise ValueError("comparison_id must be a bounded non-empty string")
+                    cancellation = threading.Event()
+                    with _comparison_registry_lock:
+                        if comparison_id in _comparison_cancellations:
+                            raise HTTPError(HTTPStatus.CONFLICT, "Comparison is already running")
+                        if _pending_comparison_cancellations.pop(comparison_id, None) is not None:
+                            cancellation.set()
+                        _comparison_cancellations[comparison_id] = cancellation
+                    try:
+                        response = compare_history_models(
+                            payload.get("history_id"),
+                            payload.get("model_keys", payload.get("models")),
+                            cancellation,
+                        )
+                    finally:
+                        with _comparison_registry_lock:
+                            _comparison_cancellations.pop(comparison_id, None)
+                    json_response(self, response)
+                elif path == "/api/models/compare/cancel":
+                    comparison_id = payload.get("comparison_id")
+                    if not isinstance(comparison_id, str) or not comparison_id:
+                        raise ValueError("comparison_id must be a non-empty string")
+                    with _comparison_registry_lock:
+                        cancellation = _comparison_cancellations.get(comparison_id)
+                        if cancellation is None:
+                            now = time.monotonic()
+                            _pending_comparison_cancellations[comparison_id] = now
+                            expired = [
+                                key for key, created in _pending_comparison_cancellations.items()
+                                if now - created > 60
+                            ]
+                            for key in expired:
+                                _pending_comparison_cancellations.pop(key, None)
+                            while len(_pending_comparison_cancellations) > 100:
+                                _pending_comparison_cancellations.pop(
+                                    next(iter(_pending_comparison_cancellations))
+                                )
+                        else:
+                            cancellation.set()
+                    json_response(self, {"cancelled": True})
                 elif path == "/api/suggestions/accept":
                     suggestion_id = payload.get("id")
                     scope = payload.get("scope")
@@ -1421,10 +1796,17 @@ class TiroHandler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 json_response(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except OSError as exc:
-                print(f"History mutation failed: {exc!r}", flush=True)
+                _log_exception("History or model mutation failed", exc)
                 json_response(
                     self,
                     {"error": "History mutation failed."},
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            except Exception as exc:
+                _log_exception("Authenticated operation failed", exc)
+                json_response(
+                    self,
+                    {"error": "Authenticated operation failed."},
                     HTTPStatus.INTERNAL_SERVER_ERROR,
                 )
             return
@@ -1433,10 +1815,12 @@ class TiroHandler(BaseHTTPRequestHandler):
             try:
                 model_key = self.headers.get("X-Parakeet-Model", "compact")
                 json_response(self, preload_model(model_key))
+            except HTTPError as exc:
+                json_response(self, {"error": str(exc)}, exc.status)
             except ValueError as exc:
                 json_response(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except Exception as exc:
-                print(f"Model preload failed: {exc!r}", flush=True)
+                _log_exception("Model preload failed", exc)
                 json_response(
                     self,
                     {"error": "Could not preload the transcription model."},
