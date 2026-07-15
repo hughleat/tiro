@@ -21,7 +21,15 @@ enum AppPaths {
     }
 
     static var vocabularyFile: URL {
+        projectRoot.appendingPathComponent("data/vocabulary.json")
+    }
+
+    static var legacyVocabularyFile: URL {
         projectRoot.appendingPathComponent("data/vocabulary.txt")
+    }
+
+    static var workerTokenFile: URL {
+        projectRoot.appendingPathComponent("data/worker-token")
     }
 
     static var workerLog: URL {

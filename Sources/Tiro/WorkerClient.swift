@@ -1,14 +1,12 @@
 import Foundation
 
 @MainActor final class WorkerClient {
-    private let baseURL = URL(string: "http://127.0.0.1:8765")!
+    private let baseURL = URL(string: "http://127.0.0.1:8767")!
     private var process: Process?
     private var logHandle: FileHandle?
     private var startupTask: Task<Void, Error>?
 
     func ensureRunning() async throws {
-        if await isHealthy() { return }
-
         if let startupTask {
             try await startupTask.value
             return
@@ -16,11 +14,23 @@ import Foundation
 
         let task = Task { [weak self] in
             guard let self else { throw WorkerError.unavailable("Tiro was closed during worker startup.") }
-            try await self.startAndWait()
+            try await self.reconcileWorker()
         }
         startupTask = task
         defer { startupTask = nil }
         try await task.value
+    }
+
+    private func reconcileWorker() async throws {
+        switch await workerState() {
+        case .compatible:
+            return
+        case .incompatible:
+            try await stopIncompatibleWorker()
+        case .unavailable:
+            break
+        }
+        try await startAndWait()
     }
 
     private func startAndWait() async throws {
@@ -45,7 +55,9 @@ import Foundation
             process.executableURL = pythonURL
             process.arguments = [AppPaths.projectRoot.appendingPathComponent("app.py").path]
             process.currentDirectoryURL = AppPaths.projectRoot
-            process.environment = ProcessInfo.processInfo.environment
+            var environment = ProcessInfo.processInfo.environment
+            environment["TIRO_WORKER_TOKEN"] = try workerToken()
+            process.environment = environment
             process.standardOutput = handle
             process.standardError = handle
             try process.run()
@@ -95,12 +107,49 @@ import Foundation
     }
 
     private func isHealthy() async -> Bool {
+        await workerState() == .compatible
+    }
+
+    private func workerState() async -> WorkerState {
         do {
-            let (_, response) = try await URLSession.shared.data(from: baseURL.appendingPathComponent("api/status"))
-            return (response as? HTTPURLResponse)?.statusCode == 200
+            let (data, response) = try await URLSession.shared.data(from: baseURL.appendingPathComponent("api/status"))
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  let status = try? JSONDecoder().decode(WorkerStatus.self, from: data) else {
+                return .unavailable
+            }
+            return status.api_version == 3 ? .compatible : .incompatible
         } catch {
-            return false
+            return .unavailable
         }
+    }
+
+    private func stopIncompatibleWorker() async throws {
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/shutdown"))
+        request.httpMethod = "POST"
+        request.setValue(try workerToken(), forHTTPHeaderField: "X-Tiro-Worker-Token")
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw WorkerError.unavailable("An incompatible local worker is already running.")
+        }
+        for _ in 0..<20 {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            if await workerState() == .unavailable { return }
+        }
+        throw WorkerError.unavailable("The incompatible local worker did not stop.")
+    }
+
+    private func workerToken() throws -> String {
+        if let token = try? String(contentsOf: AppPaths.workerTokenFile, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {
+            return token
+        }
+        let token = UUID().uuidString
+        try FileManager.default.createDirectory(
+            at: AppPaths.workerTokenFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try token.write(to: AppPaths.workerTokenFile, atomically: true, encoding: .utf8)
+        return token
     }
 
     func stopOwnedWorker() {
@@ -108,6 +157,16 @@ import Foundation
         try? logHandle?.close()
         logHandle = nil
     }
+}
+
+private struct WorkerStatus: Decodable {
+    let api_version: Int
+}
+
+private enum WorkerState {
+    case compatible
+    case incompatible
+    case unavailable
 }
 
 enum WorkerError: LocalizedError {

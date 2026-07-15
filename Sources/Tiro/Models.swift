@@ -31,22 +31,68 @@ struct HistoryEntry: Codable {
 }
 
 enum VocabularyFile {
-    static let initialText = "yarna = Janne\nyana = Janne\njana = Janne\n"
+    static let initialEntries = [
+        VocabularyEntry(spoken: "yarna", written: "Janne"),
+        VocabularyEntry(spoken: "yana", written: "Janne"),
+        VocabularyEntry(spoken: "jana", written: "Janne")
+    ]
 
-    static func load(from url: URL = AppPaths.vocabularyFile) throws -> String {
+    static func load(from url: URL = AppPaths.vocabularyFile) throws -> [VocabularyEntry] {
         if FileManager.default.fileExists(atPath: url.path) {
-            return try String(contentsOf: url, encoding: .utf8)
+            let data = try Data(contentsOf: url)
+            return try JSONDecoder().decode(VocabularyDocument.self, from: data).entries
         }
-        try save(initialText, to: url)
-        return initialText
+        if url == AppPaths.vocabularyFile,
+           FileManager.default.fileExists(atPath: AppPaths.legacyVocabularyFile.path) {
+            let text = try String(contentsOf: AppPaths.legacyVocabularyFile, encoding: .utf8)
+            let entries = parseLegacy(text)
+            try save(entries, to: url)
+            return entries
+        }
+        try save(initialEntries, to: url)
+        return initialEntries
     }
 
-    static func save(_ text: String, to url: URL = AppPaths.vocabularyFile) throws {
+    static func save(_ entries: [VocabularyEntry], to url: URL = AppPaths.vocabularyFile) throws {
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try text.write(to: url, atomically: true, encoding: .utf8)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(VocabularyDocument(entries: entries)).write(to: url, options: .atomic)
+    }
+
+    private static func parseLegacy(_ text: String) -> [VocabularyEntry] {
+        var entries: [VocabularyEntry] = []
+        var indexBySpoken: [String: Int] = [:]
+        for line in text.split(separator: "\n") {
+            let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            let spoken = parts[0].trimmingCharacters(in: .whitespaces)
+            let written = parts.count == 2 ? parts[1].trimmingCharacters(in: .whitespaces) : ""
+            guard !spoken.isEmpty || !written.isEmpty else { continue }
+            let key = VocabularyEntry.normalized(spoken)
+            if let index = indexBySpoken[key] {
+                entries[index].written = written
+            } else {
+                indexBySpoken[key] = entries.count
+                entries.append(VocabularyEntry(spoken: spoken, written: written))
+            }
+        }
+        return entries
+    }
+}
+
+private struct VocabularyDocument: Codable {
+    let entries: [VocabularyEntry]
+}
+
+struct VocabularyEntry: Codable {
+    var spoken: String
+    var written: String
+
+    static func normalized(_ text: String) -> String {
+        text.folding(options: .caseInsensitive, locale: nil)
     }
 }
 

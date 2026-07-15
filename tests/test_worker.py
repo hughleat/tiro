@@ -49,17 +49,33 @@ class HistoryTests(unittest.TestCase):
 class VocabularyTests(unittest.TestCase):
     def test_loads_only_valid_entries(self):
         with tempfile.TemporaryDirectory() as directory:
-            vocabulary = Path(directory) / "vocabulary.txt"
-            vocabulary.write_text(" yana = Janne \nunfinished\n = ignored\n")
+            vocabulary = Path(directory) / "vocabulary.json"
+            vocabulary.write_text(json.dumps({"entries": [
+                {"spoken": " yana ", "written": " Janne "},
+                {"spoken": "unfinished", "written": ""},
+                {"spoken": 42, "written": "ignored"},
+            ]}))
             with patch.object(app, "VOCABULARY_PATH", vocabulary):
                 self.assertEqual(
                     app.load_vocabulary(),
                     [{"spoken": "yana", "written": "Janne"}],
                 )
 
+    def test_json_vocabulary_preserves_equals_signs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vocabulary = Path(directory) / "vocabulary.json"
+            vocabulary.write_text(json.dumps({"entries": [
+                {"spoken": "equals = sign", "written": "a=b"},
+            ]}))
+            with patch.object(app, "VOCABULARY_PATH", vocabulary):
+                self.assertEqual(
+                    app.load_vocabulary(),
+                    [{"spoken": "equals = sign", "written": "a=b"}],
+                )
+
     def test_unreadable_text_is_ignored(self):
         with tempfile.TemporaryDirectory() as directory:
-            vocabulary = Path(directory) / "vocabulary.txt"
+            vocabulary = Path(directory) / "vocabulary.json"
             vocabulary.write_bytes(b"\xff\xfe")
             with patch.object(app, "VOCABULARY_PATH", vocabulary):
                 self.assertEqual(app.load_vocabulary(), [])
@@ -73,6 +89,13 @@ class VocabularyTests(unittest.TestCase):
             app.apply_vocabulary("Yana met yanas yesterday.", entries),
             "Janne met yanas yesterday.",
         )
+
+    def test_last_duplicate_rule_wins(self):
+        entries = [
+            {"spoken": "yana", "written": "First"},
+            {"spoken": "Yana", "written": "Janne"},
+        ]
+        self.assertEqual(app.apply_vocabulary("yana", entries), "Janne")
 
     def test_prefers_longer_phrases(self):
         entries = [
@@ -119,6 +142,17 @@ class PreloadTests(unittest.TestCase):
     def test_preload_rejects_an_unknown_model(self):
         with self.assertRaisesRegex(ValueError, "Unknown transcription model"):
             app.preload_model("missing")
+
+
+class WorkerProtocolTests(unittest.TestCase):
+    def test_protocol_version_is_current(self):
+        self.assertEqual(app.API_VERSION, 3)
+
+    def test_shutdown_requires_the_worker_token(self):
+        with patch.dict(app.os.environ, {"TIRO_WORKER_TOKEN": "secret"}):
+            self.assertFalse(app.shutdown_is_authorized(""))
+            self.assertFalse(app.shutdown_is_authorized("wrong"))
+            self.assertTrue(app.shutdown_is_authorized("secret"))
 
 
 if __name__ == "__main__":

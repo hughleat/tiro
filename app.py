@@ -5,6 +5,7 @@ import io
 import json
 import os
 import re
+import secrets
 import threading
 import time
 import wave
@@ -20,11 +21,12 @@ ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 AUDIO_DIR = DATA_DIR / "audio"
 HISTORY_PATH = DATA_DIR / "history.jsonl"
-VOCABULARY_PATH = DATA_DIR / "vocabulary.txt"
+VOCABULARY_PATH = DATA_DIR / "vocabulary.json"
 MODEL_CACHE = ROOT / ".cache" / "huggingface"
 MODEL_HUB_CACHE = MODEL_CACHE / "hub"
 SAMPLE_RATE = 16_000
 MAX_RECORDING_BYTES = 100 * 1024 * 1024
+API_VERSION = 3
 
 MODELS = {
     "compact": {
@@ -52,15 +54,19 @@ _history_lock = threading.Lock()
 
 def load_vocabulary() -> list[dict[str, str]]:
     try:
-        lines = VOCABULARY_PATH.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError):
+        payload = json.loads(VOCABULARY_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return []
-    entries = []
-    for line in lines:
-        spoken, separator, written = line.partition("=")
-        if separator and spoken.strip() and written.strip():
-            entries.append({"spoken": spoken.strip(), "written": written.strip()})
-    return entries
+    entries = payload.get("entries", []) if isinstance(payload, dict) else []
+    return [
+        {"spoken": entry["spoken"].strip(), "written": entry["written"].strip()}
+        for entry in entries
+        if isinstance(entry, dict)
+        and isinstance(entry.get("spoken"), str)
+        and isinstance(entry.get("written"), str)
+        and entry["spoken"].strip()
+        and entry["written"].strip()
+    ]
 
 
 def apply_vocabulary(text: str, entries: list[dict[str, str]]) -> str:
@@ -80,6 +86,11 @@ def apply_vocabulary(text: str, entries: list[dict[str, str]]) -> str:
         lambda match: replacements.get(match.group(0).casefold(), match.group(0)),
         text,
     )
+
+
+def shutdown_is_authorized(received_token: str) -> bool:
+    expected = os.environ.get("TIRO_WORKER_TOKEN", "")
+    return bool(expected) and secrets.compare_digest(received_token, expected)
 
 
 def json_response(
@@ -210,6 +221,7 @@ class TiroHandler(BaseHTTPRequestHandler):
             json_response(
                 self,
                 {
+                    "api_version": API_VERSION,
                     "ready": True,
                     "loaded_model": _model_id,
                     "models": MODELS,
@@ -224,6 +236,15 @@ class TiroHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if path == "/api/shutdown":
+            received = self.headers.get("X-Tiro-Worker-Token", "")
+            if not shutdown_is_authorized(received):
+                json_response(self, {"error": "Forbidden"}, HTTPStatus.FORBIDDEN)
+                return
+            json_response(self, {"stopping": True})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
+
         if path == "/api/preload":
             try:
                 model_key = self.headers.get("X-Parakeet-Model", "compact")
@@ -264,7 +285,7 @@ class TiroHandler(BaseHTTPRequestHandler):
 def main() -> None:
     os.environ.setdefault("HF_HOME", str(MODEL_CACHE))
     host = "127.0.0.1"
-    port = int(os.environ.get("TIRO_PORT", "8765"))
+    port = int(os.environ.get("TIRO_PORT", "8767"))
     server = ThreadingHTTPServer((host, port), TiroHandler)
     server.daemon_threads = True
     print(f"Tiro worker is running at http://{host}:{port}", flush=True)

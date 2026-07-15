@@ -1,5 +1,4 @@
 import AppKit
-import ServiceManagement
 
 final class SettingsWindowController: NSWindowController {
     var onModelChanged: ((DictationModel) -> Void)?
@@ -8,21 +7,19 @@ final class SettingsWindowController: NSWindowController {
     private let modelPicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private let autoPasteButton = NSButton(checkboxWithTitle: "Paste after transcription", target: nil, action: nil)
     private let launchAtLoginButton = NSButton(checkboxWithTitle: "Launch Tiro at login", target: nil, action: nil)
-    private let vocabularyView = NSTextView(frame: .zero)
+    private let vocabularyEditor = VocabularyEditorView()
     private let historyView = NSTextView(frame: .zero)
-    private var isLoadingVocabulary = false
-    private var vocabularyHasUnsavedChanges = false
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 680),
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 700),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Tiro"
         window.center()
-        window.minSize = NSSize(width: 480, height: 360)
+        window.minSize = NSSize(width: 480, height: 420)
         super.init(window: window)
         buildContent()
     }
@@ -30,7 +27,13 @@ final class SettingsWindowController: NSWindowController {
     required init?(coder: NSCoder) { nil }
 
     override func showWindow(_ sender: Any?) {
-        refresh()
+        if window?.isVisible == true {
+            refreshModel()
+            refreshLaunchAtLogin()
+            refreshHistory()
+        } else {
+            refresh()
+        }
         super.showWindow(sender)
         window?.makeKeyAndOrderFront(sender)
         NSApp.activate(ignoringOtherApps: true)
@@ -40,7 +43,7 @@ final class SettingsWindowController: NSWindowController {
         refreshModel()
         autoPasteButton.state = UserDefaults.standard.bool(forKey: "autoPaste") ? .on : .off
         refreshLaunchAtLogin()
-        loadVocabularyEditor()
+        vocabularyEditor.load()
         refreshHistory()
     }
 
@@ -59,7 +62,6 @@ final class SettingsWindowController: NSWindowController {
 
         let title = NSTextField(labelWithString: "Dictation Settings")
         title.font = NSFont.systemFont(ofSize: 22, weight: .semibold)
-
         let modelLabel = NSTextField(labelWithString: "Model")
         modelLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
         modelPicker.addItems(withTitles: DictationModel.all.map { "\($0.name) — \($0.detail)" })
@@ -70,48 +72,35 @@ final class SettingsWindowController: NSWindowController {
         autoPasteButton.action = #selector(autoPasteChanged)
         launchAtLoginButton.target = self
         launchAtLoginButton.action = #selector(launchAtLoginChanged)
-        launchAtLoginButton.allowsMixedState = true
-
-        let vocabularyLabel = NSTextField(labelWithString: "Vocabulary")
-        vocabularyLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        vocabularyView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        vocabularyView.textContainerInset = NSSize(width: 8, height: 8)
-        vocabularyView.delegate = self
-        let vocabularyScrollView = NSScrollView()
-        vocabularyScrollView.hasVerticalScroller = true
-        vocabularyScrollView.borderType = .bezelBorder
-        vocabularyScrollView.documentView = vocabularyView
 
         let historyLabel = NSTextField(labelWithString: "Recent Transcriptions")
         historyLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-
         historyView.isEditable = false
         historyView.isSelectable = true
         historyView.font = NSFont.systemFont(ofSize: 14)
         historyView.textContainerInset = NSSize(width: 10, height: 10)
-        let scrollView = NSScrollView()
-        scrollView.hasVerticalScroller = true
-        scrollView.borderType = .bezelBorder
-        scrollView.documentView = historyView
+        let historyScrollView = NSScrollView()
+        historyScrollView.hasVerticalScroller = true
+        historyScrollView.borderType = .bezelBorder
+        historyScrollView.documentView = historyView
 
         let stack = NSStackView(views: [
             title, modelLabel, modelPicker, autoPasteButton, launchAtLoginButton,
-            vocabularyLabel, vocabularyScrollView, historyLabel, scrollView
+            vocabularyEditor, historyLabel, historyScrollView
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
         stack.setCustomSpacing(22, after: title)
         stack.setCustomSpacing(18, after: launchAtLoginButton)
-        stack.setCustomSpacing(18, after: vocabularyScrollView)
+        stack.setCustomSpacing(18, after: vocabularyEditor)
         stack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(stack)
 
         modelPicker.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        scrollView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        vocabularyScrollView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        vocabularyScrollView.heightAnchor.constraint(equalToConstant: 110).isActive = true
-        scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 240).isActive = true
+        vocabularyEditor.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        historyScrollView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        historyScrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 240).isActive = true
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
             stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -24),
@@ -133,17 +122,8 @@ final class SettingsWindowController: NSWindowController {
     }
 
     @objc private func launchAtLoginChanged() {
-        if SMAppService.mainApp.status == .requiresApproval {
-            SMAppService.openSystemSettingsLoginItems()
-            refreshLaunchAtLogin()
-            return
-        }
         do {
-            if launchAtLoginButton.state == .on {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
-            }
+            try LoginItemManager.setEnabled(launchAtLoginButton.state == .on)
             refreshLaunchAtLogin()
         } catch {
             refreshLaunchAtLogin()
@@ -152,17 +132,7 @@ final class SettingsWindowController: NSWindowController {
     }
 
     private func refreshLaunchAtLogin() {
-        switch SMAppService.mainApp.status {
-        case .enabled:
-            launchAtLoginButton.title = "Launch Tiro at login"
-            launchAtLoginButton.state = .on
-        case .requiresApproval:
-            launchAtLoginButton.title = "Launch at login requires approval…"
-            launchAtLoginButton.state = .mixed
-        default:
-            launchAtLoginButton.title = "Launch Tiro at login"
-            launchAtLoginButton.state = .off
-        }
+        launchAtLoginButton.state = LoginItemManager.isEnabled ? .on : .off
     }
 
     private func loadHistory() -> String {
@@ -178,38 +148,5 @@ final class SettingsWindowController: NSWindowController {
             let model = entry.model.split(separator: "/").last.map(String.init) ?? entry.model
             return "\(entry.text)\n\(model) · \(String(format: "%.2fs", entry.transcription_seconds))"
         }.joined(separator: "\n\n")
-    }
-
-    private func loadVocabularyEditor() {
-        guard !vocabularyHasUnsavedChanges else { return }
-        isLoadingVocabulary = true
-        defer { isLoadingVocabulary = false }
-        do {
-            vocabularyView.string = try VocabularyFile.load()
-            vocabularyView.isEditable = true
-            vocabularyView.backgroundColor = .textBackgroundColor
-        } catch {
-            vocabularyView.string = "Vocabulary file could not be read."
-            vocabularyView.isEditable = false
-            NSLog("Could not load Tiro vocabulary: %@", error.localizedDescription)
-        }
-    }
-
-}
-
-extension SettingsWindowController: NSTextViewDelegate {
-    func textDidChange(_ notification: Notification) {
-        guard !isLoadingVocabulary,
-              notification.object as? NSTextView === vocabularyView else { return }
-        do {
-            try VocabularyFile.save(vocabularyView.string)
-            vocabularyHasUnsavedChanges = false
-            vocabularyView.backgroundColor = .textBackgroundColor
-        } catch {
-            vocabularyHasUnsavedChanges = true
-            vocabularyView.backgroundColor = NSColor.systemRed.withAlphaComponent(0.12)
-            window?.presentError(error)
-            NSLog("Could not save Tiro vocabulary: %@", error.localizedDescription)
-        }
     }
 }
