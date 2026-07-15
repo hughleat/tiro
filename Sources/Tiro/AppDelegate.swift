@@ -10,6 +10,8 @@ import ApplicationServices
     private let overlay = OverlayPanel()
     private let recordingSounds = RecordingSoundPlayer()
     private let hotkeys = HotkeyManager()
+    private let destinationTracker = DestinationTracker()
+    private let pasteCoordinator = PasteCoordinator()
     private lazy var settingsWindow = SettingsWindowController()
     private var statusItem: NSStatusItem!
     private var state: State = .idle
@@ -19,6 +21,8 @@ import ApplicationServices
     private var modelMenuItems: [NSMenuItem] = []
     private var permissionTimer: Timer?
     private var hotkeysStarted = false
+    private var destinationSession: DestinationSession?
+    private var shouldAutoPaste = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UserDefaults.standard.register(defaults: ["autoPaste": true, "soundFeedback": true])
@@ -142,6 +146,8 @@ import ApplicationServices
 
     private func startRecording() {
         guard state == .idle else { return }
+        destinationSession = destinationTracker.capture()
+        shouldAutoPaste = UserDefaults.standard.bool(forKey: "autoPaste")
         state = .starting
         menuToggleItem.title = "Cancel Starting"
         if UserDefaults.standard.bool(forKey: "soundFeedback") {
@@ -185,7 +191,7 @@ import ApplicationServices
                 defer { try? FileManager.default.removeItem(at: wavURL) }
                 do {
                     let response = try await worker.transcribe(wavURL: wavURL, model: model)
-                    await MainActor.run { complete(response, model: model) }
+                    await complete(response, model: model)
                 } catch {
                     await MainActor.run { presentError(error) }
                 }
@@ -198,12 +204,14 @@ import ApplicationServices
     private func cancelRecording() {
         if state == .starting {
             recordingSounds.cancelStart()
+            destinationSession = nil
             state = .idle
             menuToggleItem.title = "Start Recording"
             return
         }
         guard state == .recording else { return }
         recorder.cancel()
+        destinationSession = nil
         if UserDefaults.standard.bool(forKey: "soundFeedback") { recordingSounds.playStop() }
         state = .idle
         menuToggleItem.title = "Start Recording"
@@ -212,10 +220,21 @@ import ApplicationServices
         overlay.dismiss()
     }
 
-    private func complete(_ response: TranscriptionResponse, model: DictationModel) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(response.text, forType: .string)
+    private func complete(_ response: TranscriptionResponse, model: DictationModel) async {
+        let destination = destinationSession
+        destinationSession = nil
+        if !response.text.isEmpty {
+            if shouldAutoPaste, let destination {
+                do {
+                    try await pasteCoordinator.paste(response.text, to: destination)
+                } catch {
+                    copyToClipboard(response.text)
+                    NSLog("Could not auto-paste transcription: %@", error.localizedDescription)
+                }
+            } else {
+                copyToClipboard(response.text)
+            }
+        }
         state = .idle
         menuToggleItem.title = "Start Recording"
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Tiro")
@@ -226,14 +245,11 @@ import ApplicationServices
         if DictationModel.selected == model {
             modelStatusItem.title = "Model: Ready"
         }
-
-        if UserDefaults.standard.bool(forKey: "autoPaste"), !response.text.isEmpty {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { Self.paste() }
-        }
     }
 
     private func presentError(_ error: Error) {
         if recorder.isRecording { recorder.cancel() }
+        destinationSession = nil
         state = .idle
         menuToggleItem.title = "Start Recording"
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Tiro")
@@ -281,13 +297,8 @@ import ApplicationServices
         }
     }
 
-    private static func paste() {
-        guard let source = CGEventSource(stateID: .hidSystemState) else { return }
-        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true)
-        keyDown?.flags = .maskCommand
-        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
-        keyUp?.flags = .maskCommand
-        keyDown?.post(tap: .cghidEventTap)
-        keyUp?.post(tap: .cghidEventTap)
+    private func copyToClipboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 }
