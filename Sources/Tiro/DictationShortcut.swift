@@ -46,6 +46,20 @@ struct DictationShortcut: Codable, Equatable {
             }
         }
 
+        var deviceFlag: CGEventFlags {
+            let rawValue: UInt64 = switch self {
+            case .leftControl: 0x00000001
+            case .leftShift: 0x00000002
+            case .rightShift: 0x00000004
+            case .leftCommand: 0x00000008
+            case .rightCommand: 0x00000010
+            case .leftOption: 0x00000020
+            case .rightOption: 0x00000040
+            case .rightControl: 0x00002000
+            }
+            return CGEventFlags(rawValue: rawValue)
+        }
+
         init?(keyCode: UInt16) {
             guard let modifier = Self.allCases.first(where: { $0.keyCode == keyCode }) else { return nil }
             self = modifier

@@ -143,14 +143,7 @@ final class HotkeyManager {
                    let physicalKeyCode = UInt16(exactly: keyCode),
                    let changedModifier = DictationShortcut.ModifierKey(keyCode: physicalKeyCode),
                    changedModifier.eventFlag == modifier.eventFlag,
-                   !ModifierEventState.shouldRemainBlocked(
-                       familyFlagIsDown: event.flags.contains(modifier.eventFlag),
-                       physicalKeyIsDown: CGEventSource.keyState(
-                           .combinedSessionState,
-                           key: CGKeyCode(modifier.keyCode)
-                       ),
-                       changedKeyIsConfigured: physicalKeyCode == modifier.keyCode
-                   ) {
+                   !Self.isDown(modifier, in: event.flags) {
                     blockedModifierUntilRelease = nil
                 }
                 return Unmanaged.passUnretained(event)
@@ -181,14 +174,7 @@ final class HotkeyManager {
             guard type == .flagsChanged, keyCode == Int64(modifier.keyCode) else {
                 return Unmanaged.passUnretained(event)
             }
-            let isDown = ModifierEventState.isDown(
-                familyFlagIsDown: event.flags.contains(modifier.eventFlag),
-                physicalKeyIsDown: CGEventSource.keyState(
-                    .combinedSessionState,
-                    key: CGKeyCode(modifier.keyCode)
-                ),
-                wasDown: shortcutIsDown || modifierGestureCanceled
-            )
+            let isDown = Self.isDown(modifier, in: event.flags)
             if isDown {
                 if Self.otherModifierIsDown(excluding: modifier) {
                     modifierGestureCanceled = true
@@ -286,8 +272,20 @@ final class HotkeyManager {
                 || shortcutIsDown
         }
 
-        guard hasStaleState,
-              !CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(keyCode)) else {
+        let shortcutIsPhysicallyDown: Bool
+        switch shortcut.key {
+        case let .modifier(modifier):
+            shortcutIsPhysicallyDown = Self.isDown(
+                modifier,
+                in: CGEventSource.flagsState(.combinedSessionState)
+            )
+        case .ordinary:
+            shortcutIsPhysicallyDown = CGEventSource.keyState(
+                .combinedSessionState,
+                key: CGKeyCode(keyCode)
+            )
+        }
+        guard hasStaleState, !shortcutIsPhysicallyDown else {
             releasedShortcutMismatchCount = 0
             return
         }
@@ -306,7 +304,7 @@ final class HotkeyManager {
 
     private func blockHeldModifierIfNeeded() {
         guard case let .modifier(modifier) = shortcut.key,
-              CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(modifier.keyCode)) else {
+              Self.isDown(modifier, in: CGEventSource.flagsState(.combinedSessionState)) else {
             blockedModifierUntilRelease = nil
             return
         }
@@ -334,10 +332,21 @@ final class HotkeyManager {
     }
 
     private static func otherModifierIsDown(excluding configured: DictationShortcut.ModifierKey) -> Bool {
-        DictationShortcut.ModifierKey.allCases.contains { modifier in
+        let flags = CGEventSource.flagsState(.combinedSessionState)
+        return DictationShortcut.ModifierKey.allCases.contains { modifier in
             modifier != configured
-                && CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(modifier.keyCode))
+                && isDown(modifier, in: flags)
         }
+    }
+
+    private static func isDown(
+        _ modifier: DictationShortcut.ModifierKey,
+        in flags: CGEventFlags
+    ) -> Bool {
+        ModifierEventState.configuredModifierIsDown(
+            flags: flags.rawValue,
+            deviceMask: modifier.deviceFlag.rawValue
+        )
     }
 }
 

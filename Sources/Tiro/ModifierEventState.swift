@@ -1,12 +1,6 @@
 enum ModifierEventState {
-    static func isDown(
-        familyFlagIsDown: Bool,
-        physicalKeyIsDown: Bool,
-        wasDown: Bool
-    ) -> Bool {
-        wasDown
-            ? familyFlagIsDown && physicalKeyIsDown
-            : familyFlagIsDown || physicalKeyIsDown
+    static func configuredModifierIsDown(flags: UInt64, deviceMask: UInt64) -> Bool {
+        flags & deviceMask != 0
     }
 
     static func canceledGestureEnded(
@@ -14,13 +8,5 @@ enum ModifierEventState {
         changedKeyIsSameFamily: Bool
     ) -> Bool {
         changedKeyIsSameFamily && !familyFlagIsDown
-    }
-
-    static func shouldRemainBlocked(
-        familyFlagIsDown: Bool,
-        physicalKeyIsDown: Bool,
-        changedKeyIsConfigured: Bool
-    ) -> Bool {
-        familyFlagIsDown && (!changedKeyIsConfigured || physicalKeyIsDown)
     }
 }

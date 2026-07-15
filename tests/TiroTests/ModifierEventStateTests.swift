@@ -1,32 +1,22 @@
 @main
 struct ModifierEventStateTests {
     static func main() {
-        assert(ModifierEventState.isDown(
-            familyFlagIsDown: true,
-            physicalKeyIsDown: false,
-            wasDown: false
+        let commandFamily: UInt64 = 0x00100000
+        let leftCommand: UInt64 = 0x00000008
+        let rightCommand: UInt64 = 0x00000010
+        assert(ModifierEventState.configuredModifierIsDown(
+            flags: commandFamily | rightCommand,
+            deviceMask: rightCommand
         ))
-        assert(ModifierEventState.isDown(
-            familyFlagIsDown: false,
-            physicalKeyIsDown: true,
-            wasDown: false
+        assert(!ModifierEventState.configuredModifierIsDown(
+            flags: commandFamily | leftCommand,
+            deviceMask: rightCommand
         ))
-        assert(!ModifierEventState.isDown(
-            familyFlagIsDown: false,
-            physicalKeyIsDown: true,
-            wasDown: true
+        assert(!ModifierEventState.configuredModifierIsDown(
+            flags: 0,
+            deviceMask: rightCommand
         ))
-        let canceledGestureWaitingForRelease = true
-        assert(!ModifierEventState.isDown(
-            familyFlagIsDown: true,
-            physicalKeyIsDown: false,
-            wasDown: canceledGestureWaitingForRelease
-        ))
-        assert(ModifierEventState.isDown(
-            familyFlagIsDown: true,
-            physicalKeyIsDown: true,
-            wasDown: true
-        ))
+
         assert(ModifierEventState.canceledGestureEnded(
             familyFlagIsDown: false,
             changedKeyIsSameFamily: true
@@ -40,43 +30,6 @@ struct ModifierEventStateTests {
             changedKeyIsSameFamily: false
         ))
 
-        var initiallyHeldModifierIsBlocked = true
-        initiallyHeldModifierIsBlocked = initiallyHeldModifierIsBlocked
-            && ModifierEventState.shouldRemainBlocked(
-                familyFlagIsDown: true,
-                physicalKeyIsDown: true,
-                changedKeyIsConfigured: true
-            )
-        assert(initiallyHeldModifierIsBlocked)
-        initiallyHeldModifierIsBlocked = initiallyHeldModifierIsBlocked
-            && ModifierEventState.shouldRemainBlocked(
-                familyFlagIsDown: false,
-                physicalKeyIsDown: true,
-                changedKeyIsConfigured: true
-            )
-        assert(!initiallyHeldModifierIsBlocked)
-
-        var overlappingModifierIsBlocked = true
-        overlappingModifierIsBlocked = overlappingModifierIsBlocked
-            && ModifierEventState.shouldRemainBlocked(
-                familyFlagIsDown: true,
-                physicalKeyIsDown: true,
-                changedKeyIsConfigured: false
-            )
-        overlappingModifierIsBlocked = overlappingModifierIsBlocked
-            && ModifierEventState.shouldRemainBlocked(
-                familyFlagIsDown: true,
-                physicalKeyIsDown: false,
-                changedKeyIsConfigured: false
-            )
-        assert(overlappingModifierIsBlocked)
-        overlappingModifierIsBlocked = overlappingModifierIsBlocked
-            && ModifierEventState.shouldRemainBlocked(
-                familyFlagIsDown: false,
-                physicalKeyIsDown: false,
-                changedKeyIsConfigured: false
-            )
-        assert(!overlappingModifierIsBlocked)
         print("Modifier event state assertions passed")
     }
 }

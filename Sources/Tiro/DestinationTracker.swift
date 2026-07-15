@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon
 
 struct ApplicationIdentity {
     let bundleIdentifier: String?
@@ -26,7 +27,7 @@ struct DestinationSession {
     private let application: NSRunningApplication
     private let applicationElement: AXUIElement
     private let windowElement: AXUIElement
-    private let focusedElement: AXUIElement
+    private let focusedElement: AXUIElement?
 
     var processIdentifier: pid_t { application.processIdentifier }
     var isFrontmost: Bool {
@@ -34,22 +35,28 @@ struct DestinationSession {
     }
     var isCurrentPasteTargetAtDispatch: Bool {
         guard isFrontmost,
-              let currentElement = currentFocusedElement(
-                  for: applicationElement,
-                  processIdentifier: processIdentifier
-              ),
               let currentWindow = currentFocusedWindow(
                   for: applicationElement,
-                  focusedElement: currentElement
+                  focusedElement: nil
               ) else { return false }
-        return CFEqual(currentWindow, windowElement)
-            && CFEqual(currentElement, focusedElement)
+        guard CFEqual(currentWindow, windowElement) else { return false }
+        guard let focusedElement else {
+            return currentFocusedElement(
+                for: applicationElement,
+                processIdentifier: processIdentifier
+            ) == nil
+        }
+        guard let currentElement = currentFocusedElement(
+            for: applicationElement,
+            processIdentifier: processIdentifier
+        ) else { return false }
+        return CFEqual(currentElement, focusedElement)
     }
     init(
         application: NSRunningApplication,
         applicationElement: AXUIElement,
         windowElement: AXUIElement,
-        focusedElement: AXUIElement
+        focusedElement: AXUIElement?
     ) {
         self.application = application
         self.applicationElement = applicationElement
@@ -61,18 +68,19 @@ struct DestinationSession {
         guard !application.isTerminated,
               NSRunningApplication(processIdentifier: processIdentifier) != nil,
               belongsToApplication(windowElement),
-              belongsToApplication(focusedElement) else { return false }
+              focusedElement.map(belongsToApplication) ?? true else { return false }
 
         var role: CFTypeRef?
         return AXUIElementCopyAttributeValue(
-            focusedElement,
+            focusedElement ?? windowElement,
             kAXRoleAttribute as CFString,
             &role
         ) == .success
     }
 
     var isSecure: Bool {
-        var element: AXUIElement? = focusedElement
+        if IsSecureEventInputEnabled() { return true }
+        var element = focusedElement
 
         for _ in 0..<12 {
             guard let current = element else { return false }
@@ -104,6 +112,10 @@ struct DestinationSession {
                     windowElement
                 )
                 _ = AXUIElementPerformAction(windowElement, kAXRaiseAction as CFString)
+                guard let focusedElement else {
+                    if isFocused { return true }
+                    continue
+                }
                 let focusedViaApplication = AXUIElementSetAttributeValue(
                     applicationElement,
                     kAXFocusedUIElementAttribute as CFString,
@@ -125,7 +137,8 @@ struct DestinationSession {
     }
 
     func observePasteTarget(afterInserting text: String) -> PasteObservation {
-        guard let range = rangeAttribute(kAXSelectedTextRangeAttribute as CFString, of: focusedElement),
+        guard let focusedElement,
+              let range = rangeAttribute(kAXSelectedTextRangeAttribute as CFString, of: focusedElement),
               range.location >= 0,
               range.length >= 0 else {
             return PasteObservation(expectedValue: nil, expectedCharacterCount: nil)
@@ -164,7 +177,7 @@ struct DestinationSession {
     }
 
     func hasConsumedPaste(since observation: PasteObservation) -> Bool {
-        guard isFocused else { return false }
+        guard let focusedElement, isFocused else { return false }
         if let expectedValue = observation.expectedValue {
             return stringAttribute(kAXValueAttribute as CFString, of: focusedElement) == expectedValue
         }
@@ -178,6 +191,7 @@ struct DestinationSession {
     }
 
     func insertUsingAccessibility(_ text: String) -> AccessibilityInsertionResult {
+        guard let focusedElement else { return .unsupported }
         guard isAvailable, isFrontmost, isFocused, !isSecure else { return .uncertain }
         var isSettable = DarwinBoolean(false)
         let settableResult = AXUIElementIsAttributeSettable(
@@ -198,16 +212,23 @@ struct DestinationSession {
     }
 
     var isFocused: Bool {
-        guard let currentElement = currentFocusedElement(
+        guard let currentWindow = currentFocusedWindow(
                   for: applicationElement,
-                  processIdentifier: processIdentifier
-              ),
-              let currentWindow = currentFocusedWindow(
-                  for: applicationElement,
-                  focusedElement: currentElement
+                  focusedElement: nil
               )
         else { return false }
-        return CFEqual(currentWindow, windowElement) && CFEqual(currentElement, focusedElement)
+        guard CFEqual(currentWindow, windowElement) else { return false }
+        guard let focusedElement else {
+            return currentFocusedElement(
+                for: applicationElement,
+                processIdentifier: processIdentifier
+            ) == nil
+        }
+        guard let currentElement = currentFocusedElement(
+            for: applicationElement,
+            processIdentifier: processIdentifier
+        ) else { return false }
+        return CFEqual(currentElement, focusedElement)
     }
 
     private func belongsToApplication(_ element: AXUIElement) -> Bool {
@@ -240,10 +261,11 @@ final class DestinationTracker: NSObject {
 
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
         AXUIElementSetMessagingTimeout(appElement, 0.05)
-        guard let focusedElement = currentFocusedElement(
+        let focusedElement = currentFocusedElement(
             for: appElement,
             processIdentifier: application.processIdentifier
-        ) else { return nil }
+        )
+        // Some Electron editors expose their focused window but not the focused child.
         guard let window = currentFocusedWindow(
             for: appElement,
             focusedElement: focusedElement
@@ -320,7 +342,7 @@ private func currentFocusedElement(
 
 private func currentFocusedWindow(
     for applicationElement: AXUIElement,
-    focusedElement: AXUIElement
+    focusedElement: AXUIElement?
 ) -> AXUIElement? {
     if let window = elementAttribute(
         kAXFocusedWindowAttribute as CFString,
@@ -328,6 +350,7 @@ private func currentFocusedWindow(
     ) {
         return window
     }
+    guard let focusedElement else { return nil }
     AXUIElementSetMessagingTimeout(focusedElement, 0.05)
     return elementAttribute(kAXWindowAttribute as CFString, of: focusedElement)
 }
