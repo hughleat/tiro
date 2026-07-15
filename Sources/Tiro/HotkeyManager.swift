@@ -22,6 +22,7 @@ final class HotkeyManager {
     private var holdTriggered = false
     private var holdThresholdReached = false
     private var holdWorkItem: DispatchWorkItem?
+    private var releasedShortcutMismatchCount = 0
     private let escapeKeyCode: Int64 = 53
 
     init(shortcut: DictationShortcut = .load()) {
@@ -76,6 +77,24 @@ final class HotkeyManager {
         CGEvent.tapEnable(tap: tap, enable: true)
     }
 
+    func maintain() throws {
+        guard let eventTap,
+              runLoopSource != nil,
+              CFMachPortIsValid(eventTap) else {
+            stop()
+            try start()
+            NSLog("Reinstalled the global shortcut event tap.")
+            return
+        }
+
+        if !CGEvent.tapIsEnabled(tap: eventTap) {
+            resetAfterInterruption()
+            CGEvent.tapEnable(tap: eventTap, enable: true)
+            NSLog("Re-enabled the global shortcut event tap.")
+        }
+        repairMissedShortcutRelease()
+    }
+
     func stop() {
         cancelCurrentGesture()
         resetShortcutState()
@@ -88,10 +107,9 @@ final class HotkeyManager {
 
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            cancelCurrentGesture()
-            resetShortcutState()
-            blockHeldModifierIfNeeded()
+            resetAfterInterruption()
             if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: true) }
+            NSLog("Global shortcut event tap was disabled and re-enabled.")
             return Unmanaged.passUnretained(event)
         }
         if event.getIntegerValueField(.eventSourceUserData) == PasteEventGate.marker {
@@ -254,6 +272,46 @@ final class HotkeyManager {
         holdTriggered = false
         holdThresholdReached = false
         modifierGestureCanceled = false
+    }
+
+    private func resetAfterInterruption() {
+        cancelCurrentGesture()
+        resetShortcutState()
+        releasedShortcutMismatchCount = 0
+        blockHeldModifierIfNeeded()
+    }
+
+    private func repairMissedShortcutRelease() {
+        let keyCode: UInt16
+        let hasStaleState: Bool
+        switch shortcut.key {
+        case let .modifier(modifier):
+            keyCode = modifier.keyCode
+            hasStaleState = blockedModifierUntilRelease == modifier
+                || shortcutIsDown
+                || modifierGestureCanceled
+        case let .ordinary(shortcutKeyCode, _):
+            keyCode = shortcutKeyCode
+            hasStaleState = blockedOrdinaryKeyUntilRelease == shortcutKeyCode
+                || shortcutIsDown
+        }
+
+        guard hasStaleState,
+              !CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(keyCode)) else {
+            releasedShortcutMismatchCount = 0
+            return
+        }
+        releasedShortcutMismatchCount += 1
+        guard releasedShortcutMismatchCount >= 2 else { return }
+
+        if shortcutIsDown {
+            transitionShortcut(isDown: false)
+        }
+        modifierGestureCanceled = false
+        blockedModifierUntilRelease = nil
+        blockedOrdinaryKeyUntilRelease = nil
+        releasedShortcutMismatchCount = 0
+        NSLog("Recovered the global shortcut after a missed key release.")
     }
 
     private func blockHeldModifierIfNeeded() {

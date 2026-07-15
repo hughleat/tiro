@@ -150,11 +150,16 @@ import ApplicationServices
         }
 
         guard !isCapturingShortcut else { return }
-        guard !hotkeysStarted else { return }
         do {
-            try hotkeys.start()
-            hotkeysStarted = true
+            if hotkeysStarted {
+                try hotkeys.maintain()
+            } else {
+                try hotkeys.start()
+                hotkeysStarted = true
+            }
         } catch {
+            hotkeys.stop()
+            hotkeysStarted = false
             shortcutStatusItem.title = "\(hotkeys.shortcut.displayName) Shortcut Unavailable"
             shortcutStatusItem.state = .off
             NSLog("Could not install global dictation keys: %@", error.localizedDescription)
