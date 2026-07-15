@@ -282,10 +282,12 @@ import ApplicationServices
         let destination = destinationSession
         destinationSession = nil
         originApplication = nil
+        var completionOverlay = OverlayState.copied
         if !response.text.isEmpty {
             if shouldAutoPaste, let destination {
                 do {
-                    try await pasteCoordinator.paste(response.text, to: destination)
+                    let result = try await pasteCoordinator.paste(response.text, to: destination)
+                    completionOverlay = result == .confirmed ? .pasted : .pasteSent
                 } catch {
                     copyToClipboard(response.text)
                     NSLog("Could not auto-paste transcription: %@", error.localizedDescription)
@@ -299,7 +301,7 @@ import ApplicationServices
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Tiro")
         statusItem.button?.contentTintColor = nil
         settingsWindow.refreshHistory()
-        overlay.show(.success)
+        overlay.show(completionOverlay)
         overlay.dismiss(after: 0.8)
         if DictationModel.selected == model {
             modelStatusItem.title = "Model: Ready"

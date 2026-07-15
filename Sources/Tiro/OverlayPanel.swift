@@ -3,14 +3,18 @@ import AppKit
 enum OverlayState: Equatable {
     case recording
     case transcribing
-    case success
+    case pasted
+    case pasteSent
+    case copied
     case error
 
     var label: String {
         switch self {
         case .recording: return "Recording"
         case .transcribing: return "Transcribing"
-        case .success: return "Copied"
+        case .pasted: return "Pasted"
+        case .pasteSent: return "Paste sent"
+        case .copied: return "Copied"
         case .error: return "Transcription failed"
         }
     }
@@ -18,8 +22,8 @@ enum OverlayState: Equatable {
     var color: NSColor {
         switch self {
         case .recording, .error: return NSColor.systemRed
-        case .transcribing: return NSColor.systemOrange
-        case .success: return NSColor.systemGreen
+        case .transcribing, .pasteSent: return NSColor.systemOrange
+        case .pasted, .copied: return NSColor.systemGreen
         }
     }
 }

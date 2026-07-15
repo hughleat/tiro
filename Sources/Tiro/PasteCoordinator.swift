@@ -3,6 +3,11 @@ import ApplicationServices
 
 @MainActor
 final class PasteCoordinator {
+    enum PasteResult {
+        case confirmed
+        case dispatched
+    }
+
     enum PasteError: LocalizedError {
         case unavailableDestination
         case secureDestination
@@ -11,6 +16,8 @@ final class PasteCoordinator {
         case clipboardChanged
         case couldNotWritePasteboard
         case couldNotCreateKeyboardEvent
+        case keyboardEventRejected
+        case pasteNotConsumed
 
         var errorDescription: String? {
             switch self {
@@ -21,6 +28,8 @@ final class PasteCoordinator {
             case .clipboardChanged: "The clipboard changed before Tiro could paste."
             case .couldNotWritePasteboard: "The transcription could not be written to the clipboard."
             case .couldNotCreateKeyboardEvent: "The paste keyboard event could not be created."
+            case .keyboardEventRejected: "macOS rejected the paste keyboard event."
+            case .pasteNotConsumed: "The destination did not accept the pasted text."
             }
         }
     }
@@ -75,7 +84,7 @@ final class PasteCoordinator {
         self.pasteboard = pasteboard
     }
 
-    func paste(_ text: String, to destination: DestinationSession) async throws {
+    func paste(_ text: String, to destination: DestinationSession) async throws -> PasteResult {
         pendingRestoration = nil
 
         guard destination.isAvailable else { throw PasteError.unavailableDestination }
@@ -124,17 +133,24 @@ final class PasteCoordinator {
             throw PasteError.couldNotRestoreDestination
         }
         PasteEventGate.shared.arm(for: destination)
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
+        keyDown.post(tap: .cgAnnotatedSessionEventTap)
+        keyUp.post(tap: .cgAnnotatedSessionEventTap)
+        guard await pasteEventWasAccepted() else {
+            pendingRestoration = nil
+            throw PasteError.keyboardEventRejected
+        }
         guard observation.canConfirmConsumption else {
             pendingRestoration = nil
-            return
+            return .dispatched
         }
-        confirmConsumption(
+        guard await confirmConsumption(
             by: destination,
             since: observation,
             identifier: identifier
-        )
+        ) else {
+            throw PasteError.pasteNotConsumed
+        }
+        return .confirmed
     }
 
     private func makePasteEvent(keyDown: Bool) -> CGEvent? {
@@ -147,6 +163,16 @@ final class PasteCoordinator {
             value: PasteEventGate.marker
         )
         return event
+    }
+
+    private func pasteEventWasAccepted() async -> Bool {
+        for _ in 0..<20 {
+            if let accepted = PasteEventGate.shared.consumeResult() {
+                return accepted
+            }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        return false
     }
 
     private func restoreClipboardIfUnchanged(identifier: UUID) {
@@ -163,21 +189,19 @@ final class PasteCoordinator {
         by destination: DestinationSession,
         since observation: DestinationSession.PasteObservation,
         identifier: UUID
-    ) {
-        Task { [weak self] in
-            var delay: UInt64 = 20_000_000
-            for _ in 0..<8 {
-                try? await Task.sleep(nanoseconds: delay)
-                guard let self,
-                      self.pendingRestoration?.identifier == identifier else { return }
-                if destination.hasConsumedPaste(since: observation) {
-                    self.restoreClipboardIfUnchanged(identifier: identifier)
-                    return
-                }
-                delay = min(delay * 2, 400_000_000)
+    ) async -> Bool {
+        var delay: UInt64 = 20_000_000
+        for _ in 0..<8 {
+            try? await Task.sleep(nanoseconds: delay)
+            guard pendingRestoration?.identifier == identifier else { return false }
+            if destination.hasConsumedPaste(since: observation) {
+                restoreClipboardIfUnchanged(identifier: identifier)
+                return true
             }
-            self?.discardPendingRestoration(identifier: identifier)
+            delay = min(delay * 2, 400_000_000)
         }
+        discardPendingRestoration(identifier: identifier)
+        return false
     }
 
     private func discardPendingRestoration(identifier: UUID) {
