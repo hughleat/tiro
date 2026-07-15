@@ -46,8 +46,7 @@ MODELS = {
 
 _model = None
 _model_id: str | None = None
-_model_lock = threading.Lock()
-_transcribe_lock = threading.Lock()
+_operation_lock = threading.Lock()
 _history_lock = threading.Lock()
 
 
@@ -117,41 +116,46 @@ def decode_pcm_wav(wav_bytes: bytes, expected_sample_rate: int = SAMPLE_RATE) ->
     return samples
 
 
-def get_model(model_key: str):
+def _load_model(model_key: str):
     global _model, _model_id
     if model_key not in MODELS:
         raise ValueError(f"Unknown transcription model: {model_key}")
     selected = MODELS[model_key]
     wanted_id = selected["id"]
 
-    with _model_lock:
-        if _model is None or _model_id != wanted_id:
-            if _model is not None:
-                _model = None
-                _model_id = None
-                gc.collect()
-                import mlx.core as mx
+    if _model is None or _model_id != wanted_id:
+        if _model is not None:
+            _model = None
+            _model_id = None
+            gc.collect()
+            import mlx.core as mx
 
-                mx.clear_cache()
-            MODEL_HUB_CACHE.mkdir(parents=True, exist_ok=True)
-            if selected["backend"] == "qwen":
-                from mlx_audio.stt import load
+            mx.clear_cache()
+        MODEL_HUB_CACHE.mkdir(parents=True, exist_ok=True)
+        if selected["backend"] == "qwen":
+            from mlx_audio.stt import load
 
-                _model = load(wanted_id)
-            else:
-                from parakeet_mlx import from_pretrained
+            _model = load(wanted_id)
+        else:
+            from parakeet_mlx import from_pretrained
 
-                _model = from_pretrained(wanted_id, cache_dir=str(MODEL_HUB_CACHE))
-            _model_id = wanted_id
-        return _model, selected
+            _model = from_pretrained(wanted_id, cache_dir=str(MODEL_HUB_CACHE))
+        _model_id = wanted_id
+    return _model, selected
+
+
+def preload_model(model_key: str) -> dict[str, str]:
+    with _operation_lock:
+        _, selected = _load_model(model_key)
+    return {"loaded_model": selected["id"]}
 
 
 def transcribe(wav_bytes: bytes, model_key: str) -> dict:
     samples = decode_pcm_wav(wav_bytes)
 
     started = time.perf_counter()
-    with _transcribe_lock:
-        model, selected = get_model(model_key)
+    with _operation_lock:
+        model, selected = _load_model(model_key)
         import mlx.core as mx
 
         audio = mx.array(samples, dtype=mx.float32) / 32768.0
@@ -219,7 +223,23 @@ class TiroHandler(BaseHTTPRequestHandler):
         json_response(self, {"error": "Not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
-        if urlparse(self.path).path != "/api/transcribe":
+        path = urlparse(self.path).path
+        if path == "/api/preload":
+            try:
+                model_key = self.headers.get("X-Parakeet-Model", "compact")
+                json_response(self, preload_model(model_key))
+            except ValueError as exc:
+                json_response(self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                print(f"Model preload failed: {exc!r}", flush=True)
+                json_response(
+                    self,
+                    {"error": "Could not preload the transcription model."},
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
+        if path != "/api/transcribe":
             json_response(self, {"error": "Not found"}, HTTPStatus.NOT_FOUND)
             return
 

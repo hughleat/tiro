@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 
 final class SettingsWindowController: NSWindowController {
     var onModelChanged: ((DictationModel) -> Void)?
@@ -6,6 +7,7 @@ final class SettingsWindowController: NSWindowController {
 
     private let modelPicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private let autoPasteButton = NSButton(checkboxWithTitle: "Paste after transcription", target: nil, action: nil)
+    private let launchAtLoginButton = NSButton(checkboxWithTitle: "Launch Tiro at login", target: nil, action: nil)
     private let vocabularyView = NSTextView(frame: .zero)
     private let historyView = NSTextView(frame: .zero)
     private var isLoadingVocabulary = false
@@ -37,6 +39,7 @@ final class SettingsWindowController: NSWindowController {
     func refresh() {
         refreshModel()
         autoPasteButton.state = UserDefaults.standard.bool(forKey: "autoPaste") ? .on : .off
+        refreshLaunchAtLogin()
         loadVocabularyEditor()
         refreshHistory()
     }
@@ -65,6 +68,9 @@ final class SettingsWindowController: NSWindowController {
 
         autoPasteButton.target = self
         autoPasteButton.action = #selector(autoPasteChanged)
+        launchAtLoginButton.target = self
+        launchAtLoginButton.action = #selector(launchAtLoginChanged)
+        launchAtLoginButton.allowsMixedState = true
 
         let vocabularyLabel = NSTextField(labelWithString: "Vocabulary")
         vocabularyLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
@@ -89,14 +95,14 @@ final class SettingsWindowController: NSWindowController {
         scrollView.documentView = historyView
 
         let stack = NSStackView(views: [
-            title, modelLabel, modelPicker, autoPasteButton,
+            title, modelLabel, modelPicker, autoPasteButton, launchAtLoginButton,
             vocabularyLabel, vocabularyScrollView, historyLabel, scrollView
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
         stack.setCustomSpacing(22, after: title)
-        stack.setCustomSpacing(18, after: autoPasteButton)
+        stack.setCustomSpacing(18, after: launchAtLoginButton)
         stack.setCustomSpacing(18, after: vocabularyScrollView)
         stack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(stack)
@@ -124,6 +130,39 @@ final class SettingsWindowController: NSWindowController {
         let enabled = autoPasteButton.state == .on
         UserDefaults.standard.set(enabled, forKey: "autoPaste")
         onAutoPasteChanged?(enabled)
+    }
+
+    @objc private func launchAtLoginChanged() {
+        if SMAppService.mainApp.status == .requiresApproval {
+            SMAppService.openSystemSettingsLoginItems()
+            refreshLaunchAtLogin()
+            return
+        }
+        do {
+            if launchAtLoginButton.state == .on {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            refreshLaunchAtLogin()
+        } catch {
+            refreshLaunchAtLogin()
+            window?.presentError(error)
+        }
+    }
+
+    private func refreshLaunchAtLogin() {
+        switch SMAppService.mainApp.status {
+        case .enabled:
+            launchAtLoginButton.title = "Launch Tiro at login"
+            launchAtLoginButton.state = .on
+        case .requiresApproval:
+            launchAtLoginButton.title = "Launch at login requires approval…"
+            launchAtLoginButton.state = .mixed
+        default:
+            launchAtLoginButton.title = "Launch Tiro at login"
+            launchAtLoginButton.state = .off
+        }
     }
 
     private func loadHistory() -> String {

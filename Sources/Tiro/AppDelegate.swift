@@ -2,7 +2,7 @@ import AppKit
 import AVFoundation
 import ApplicationServices
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     private enum State { case idle, recording, transcribing }
 
     private let recorder = AudioRecorder()
@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var state: State = .idle
     private var menuToggleItem: NSMenuItem!
     private var shortcutStatusItem: NSMenuItem!
+    private var modelStatusItem: NSMenuItem!
     private var modelMenuItems: [NSMenuItem] = []
     private var permissionTimer: Timer?
     private var hotkeysStarted = false
@@ -25,7 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureStatusItem()
         configureSettings()
         requestPermissionsAndStart()
-        Task { try? await worker.ensureRunning() }
+        preloadSelectedModel()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -55,6 +56,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         modelItem.submenu = modelMenu
         menu.addItem(modelItem)
         updateModelChecks()
+        modelStatusItem = NSMenuItem(title: "Model: Loading…", action: nil, keyEquivalent: "")
+        modelStatusItem.isEnabled = false
+        menu.addItem(modelStatusItem)
 
         menu.addItem(.separator())
         shortcutStatusItem = NSMenuItem(
@@ -73,7 +77,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func configureSettings() {
-        settingsWindow.onModelChanged = { [weak self] _ in self?.updateModelChecks() }
+        settingsWindow.onModelChanged = { [weak self] _ in
+            self?.updateModelChecks()
+            self?.modelStatusItem.title = "Model: Loads on First Dictation"
+        }
     }
 
     private func requestPermissionsAndStart() {
@@ -87,7 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AVCaptureDevice.requestAccess(for: .audio) { _ in }
         installHotkeysWhenPermitted()
         permissionTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            self?.installHotkeysWhenPermitted()
+            Task { @MainActor in self?.installHotkeysWhenPermitted() }
         }
     }
 
@@ -158,7 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 defer { try? FileManager.default.removeItem(at: wavURL) }
                 do {
                     let response = try await worker.transcribe(wavURL: wavURL, model: model)
-                    await MainActor.run { complete(response) }
+                    await MainActor.run { complete(response, model: model) }
                 } catch {
                     await MainActor.run { presentError(error) }
                 }
@@ -178,7 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.dismiss()
     }
 
-    private func complete(_ response: TranscriptionResponse) {
+    private func complete(_ response: TranscriptionResponse, model: DictationModel) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(response.text, forType: .string)
@@ -189,6 +196,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow.refreshHistory()
         overlay.show(.success)
         overlay.dismiss(after: 0.8)
+        if DictationModel.selected == model {
+            modelStatusItem.title = "Model: Ready"
+        }
 
         if UserDefaults.standard.bool(forKey: "autoPaste"), !response.text.isEmpty {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { Self.paste() }
@@ -216,12 +226,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DictationModel.select(model)
         updateModelChecks()
         settingsWindow.refreshModel()
+        modelStatusItem.title = "Model: Loads on First Dictation"
     }
 
     private func updateModelChecks() {
         let selected = DictationModel.selected
         for item in modelMenuItems {
             item.state = (item.representedObject as? String) == selected.key ? .on : .off
+        }
+    }
+
+    private func preloadSelectedModel() {
+        let model = DictationModel.selected
+        modelStatusItem.title = "Model: Loading…"
+        Task {
+            do {
+                try await worker.preload(model: model)
+                if DictationModel.selected == model {
+                    modelStatusItem.title = "Model: Ready"
+                }
+            } catch {
+                if DictationModel.selected == model {
+                    modelStatusItem.title = "Model: Preload Failed; Will Retry"
+                }
+                NSLog("Could not preload %@: %@", model.name, error.localizedDescription)
+            }
         }
     }
 

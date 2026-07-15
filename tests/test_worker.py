@@ -1,6 +1,7 @@
 import io
 import json
 import tempfile
+import threading
 import unittest
 import wave
 from array import array
@@ -87,6 +88,37 @@ class VocabularyTests(unittest.TestCase):
     def test_matches_unicode_case_fold_expansions(self):
         entries = [{"spoken": "Straße", "written": "Street"}]
         self.assertEqual(app.apply_vocabulary("STRAẞE", entries), "Street")
+
+
+class PreloadTests(unittest.TestCase):
+    def test_preload_loads_requested_model(self):
+        selected = {"id": app.MODELS["compact"]["id"]}
+        with patch.object(app, "_load_model", return_value=(object(), selected)) as loader:
+            payload = app.preload_model("compact")
+        loader.assert_called_once_with("compact")
+        self.assertEqual(payload, {"loaded_model": selected["id"]})
+
+    def test_preload_uses_the_inference_operation_lock(self):
+        started = threading.Event()
+
+        def load(_):
+            started.set()
+            return object(), {"id": "test-model"}
+
+        with patch.object(app, "_load_model", side_effect=load):
+            app._operation_lock.acquire()
+            try:
+                thread = threading.Thread(target=app.preload_model, args=("compact",))
+                thread.start()
+                self.assertFalse(started.wait(0.05))
+            finally:
+                app._operation_lock.release()
+            thread.join(timeout=1)
+        self.assertTrue(started.is_set())
+
+    def test_preload_rejects_an_unknown_model(self):
+        with self.assertRaisesRegex(ValueError, "Unknown transcription model"):
+            app.preload_model("missing")
 
 
 if __name__ == "__main__":

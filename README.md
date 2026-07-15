@@ -13,6 +13,8 @@ Add personal vocabulary in Settings using one `heard phrase = written phrase` ru
 
 The global shortcut and automatic paste require macOS Accessibility permission. Recording requires Microphone permission. Tiro shows the shortcut permission state in its menu.
 
+Tiro can launch automatically at login from Settings. It also warms the selected transcription model in the background at startup so the first dictation does not pay the model-loading delay.
+
 ## Models
 
 - `mlx-community/parakeet-tdt_ctc-110m`: compact English model; the default.

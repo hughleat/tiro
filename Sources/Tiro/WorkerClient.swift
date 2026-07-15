@@ -1,6 +1,6 @@
 import Foundation
 
-final class WorkerClient {
+@MainActor final class WorkerClient {
     private let baseURL = URL(string: "http://127.0.0.1:8765")!
     private var process: Process?
     private var logHandle: FileHandle?
@@ -64,6 +64,7 @@ final class WorkerClient {
         try await ensureRunning()
         var request = URLRequest(url: baseURL.appendingPathComponent("api/transcribe"))
         request.httpMethod = "POST"
+        request.timeoutInterval = 1_800
         request.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
         request.setValue(model.key, forHTTPHeaderField: "X-Parakeet-Model")
         request.httpBody = try Data(contentsOf: wavURL)
@@ -76,6 +77,21 @@ final class WorkerClient {
             throw WorkerError.server(message)
         }
         return try JSONDecoder().decode(TranscriptionResponse.self, from: data)
+    }
+
+    func preload(model: DictationModel) async throws {
+        try await ensureRunning()
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/preload"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 1_800
+        request.setValue(model.key, forHTTPHeaderField: "X-Parakeet-Model")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw WorkerError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            let message = (try? JSONDecoder().decode(ErrorResponse.self, from: data).error)
+                ?? "Model preload failed with status \(http.statusCode)."
+            throw WorkerError.server(message)
+        }
     }
 
     private func isHealthy() async -> Bool {
