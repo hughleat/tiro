@@ -20,6 +20,10 @@ enum AppPaths {
         projectRoot.appendingPathComponent("data/history.jsonl")
     }
 
+    static var vocabularyFile: URL {
+        projectRoot.appendingPathComponent("data/vocabulary.txt")
+    }
+
     static var workerLog: URL {
         projectRoot.appendingPathComponent("data/worker.log")
     }

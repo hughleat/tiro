@@ -4,6 +4,7 @@ import gc
 import io
 import json
 import os
+import re
 import threading
 import time
 import wave
@@ -19,6 +20,7 @@ ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 AUDIO_DIR = DATA_DIR / "audio"
 HISTORY_PATH = DATA_DIR / "history.jsonl"
+VOCABULARY_PATH = DATA_DIR / "vocabulary.txt"
 MODEL_CACHE = ROOT / ".cache" / "huggingface"
 MODEL_HUB_CACHE = MODEL_CACHE / "hub"
 SAMPLE_RATE = 16_000
@@ -47,6 +49,38 @@ _model_id: str | None = None
 _model_lock = threading.Lock()
 _transcribe_lock = threading.Lock()
 _history_lock = threading.Lock()
+
+
+def load_vocabulary() -> list[dict[str, str]]:
+    try:
+        lines = VOCABULARY_PATH.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return []
+    entries = []
+    for line in lines:
+        spoken, separator, written = line.partition("=")
+        if separator and spoken.strip() and written.strip():
+            entries.append({"spoken": spoken.strip(), "written": written.strip()})
+    return entries
+
+
+def apply_vocabulary(text: str, entries: list[dict[str, str]]) -> str:
+    rules = {
+        entry["spoken"].casefold(): (entry["spoken"], entry["written"])
+        for entry in entries
+    }
+    if not rules:
+        return text
+    replacements = {key: written for key, (_, written) in rules.items()}
+    alternatives = sorted((spoken for spoken, _ in rules.values()), key=len, reverse=True)
+    pattern = re.compile(
+        r"(?<!\w)(?:" + "|".join(map(re.escape, alternatives)) + r")(?!\w)",
+        re.IGNORECASE,
+    )
+    return pattern.sub(
+        lambda match: replacements.get(match.group(0).casefold(), match.group(0)),
+        text,
+    )
 
 
 def json_response(
@@ -134,13 +168,16 @@ def transcribe(wav_bytes: bytes, model_key: str) -> dict:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     audio_path = AUDIO_DIR / f"{stamp}.wav"
     audio_path.write_bytes(wav_bytes)
+    raw_text = result.text.strip()
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "model": selected["id"],
         "audio_file": str(audio_path.relative_to(ROOT)),
         "transcription_seconds": round(elapsed, 3),
-        "text": result.text.strip(),
+        "text": apply_vocabulary(raw_text, load_vocabulary()),
     }
+    if entry["text"] != raw_text:
+        entry["raw_text"] = raw_text
     with _history_lock:
         with HISTORY_PATH.open("a", encoding="utf-8") as history:
             history.write(json.dumps(entry, ensure_ascii=False) + "\n")

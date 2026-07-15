@@ -27,6 +27,27 @@ struct HistoryEntry: Codable {
     let audio_file: String
     let transcription_seconds: Double
     let text: String
+    let raw_text: String?
+}
+
+enum VocabularyFile {
+    static let initialText = "yarna = Janne\nyana = Janne\njana = Janne\n"
+
+    static func load(from url: URL = AppPaths.vocabularyFile) throws -> String {
+        if FileManager.default.fileExists(atPath: url.path) {
+            return try String(contentsOf: url, encoding: .utf8)
+        }
+        try save(initialText, to: url)
+        return initialText
+    }
+
+    static func save(_ text: String, to url: URL = AppPaths.vocabularyFile) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try text.write(to: url, atomically: true, encoding: .utf8)
+    }
 }
 
 struct TranscriptionResponse: Decodable {

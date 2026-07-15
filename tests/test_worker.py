@@ -45,5 +45,49 @@ class HistoryTests(unittest.TestCase):
                 )
 
 
+class VocabularyTests(unittest.TestCase):
+    def test_loads_only_valid_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vocabulary = Path(directory) / "vocabulary.txt"
+            vocabulary.write_text(" yana = Janne \nunfinished\n = ignored\n")
+            with patch.object(app, "VOCABULARY_PATH", vocabulary):
+                self.assertEqual(
+                    app.load_vocabulary(),
+                    [{"spoken": "yana", "written": "Janne"}],
+                )
+
+    def test_unreadable_text_is_ignored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vocabulary = Path(directory) / "vocabulary.txt"
+            vocabulary.write_bytes(b"\xff\xfe")
+            with patch.object(app, "VOCABULARY_PATH", vocabulary):
+                self.assertEqual(app.load_vocabulary(), [])
+
+    def test_replaces_whole_words_without_chaining(self):
+        entries = [
+            {"spoken": "yana", "written": "Janne"},
+            {"spoken": "Janne", "written": "Someone else"},
+        ]
+        self.assertEqual(
+            app.apply_vocabulary("Yana met yanas yesterday.", entries),
+            "Janne met yanas yesterday.",
+        )
+
+    def test_prefers_longer_phrases(self):
+        entries = [
+            {"spoken": "new", "written": "old"},
+            {"spoken": "new york", "written": "New York"},
+        ]
+        self.assertEqual(app.apply_vocabulary("new york", entries), "New York")
+
+    def test_unusual_unicode_case_match_does_not_crash(self):
+        entries = [{"spoken": "i", "written": "me"}]
+        self.assertEqual(app.apply_vocabulary("İ", entries), "İ")
+
+    def test_matches_unicode_case_fold_expansions(self):
+        entries = [{"spoken": "Straße", "written": "Street"}]
+        self.assertEqual(app.apply_vocabulary("STRAẞE", entries), "Street")
+
+
 if __name__ == "__main__":
     unittest.main()

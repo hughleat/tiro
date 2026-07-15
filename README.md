@@ -9,6 +9,8 @@ Tiro is a private, local dictation app for Apple Silicon Macs. A native menu-bar
 - Press Escape to cancel a recording.
 - Use the waveform menu-bar icon to record, select a model, change automatic paste, or view history.
 
+Add personal vocabulary in Settings using one `heard phrase = written phrase` rule per line. Tiro applies these rules locally before copying, pasting, and saving the transcript.
+
 The global shortcut and automatic paste require macOS Accessibility permission. Recording requires Microphone permission. Tiro shows the shortcut permission state in its menu.
 
 ## Models

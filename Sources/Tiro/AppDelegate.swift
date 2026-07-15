@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UserDefaults.standard.register(defaults: ["autoPaste": true])
+        _ = try? VocabularyFile.load()
         NSApp.setActivationPolicy(.accessory)
         configureStatusItem()
         configureSettings()
@@ -185,7 +186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuToggleItem.title = "Start Recording"
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Tiro")
         statusItem.button?.contentTintColor = nil
-        settingsWindow.refresh()
+        settingsWindow.refreshHistory()
         overlay.show(.success)
         overlay.dismiss(after: 0.8)
 
@@ -214,7 +215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               let model = DictationModel.all.first(where: { $0.key == key }) else { return }
         DictationModel.select(model)
         updateModelChecks()
-        settingsWindow.refresh()
+        settingsWindow.refreshModel()
     }
 
     private func updateModelChecks() {
