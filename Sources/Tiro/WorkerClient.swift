@@ -81,13 +81,7 @@ import Foundation
         request.setValue(model.key, forHTTPHeaderField: "X-Parakeet-Model")
         request.httpBody = try Data(contentsOf: wavURL)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw WorkerError.invalidResponse }
-        guard (200..<300).contains(http.statusCode) else {
-            let message = (try? JSONDecoder().decode(ErrorResponse.self, from: data).error)
-                ?? "Transcription failed with status \(http.statusCode)."
-            throw WorkerError.server(message)
-        }
+        let data = try await send(request, operation: "Transcription")
         return try JSONDecoder().decode(TranscriptionResponse.self, from: data)
     }
 
@@ -97,13 +91,65 @@ import Foundation
         request.httpMethod = "POST"
         request.timeoutInterval = 1_800
         request.setValue(model.key, forHTTPHeaderField: "X-Parakeet-Model")
+        _ = try await send(request, operation: "Model preload")
+    }
+
+    func searchHistory(query: String = "", limit: Int = 200) async throws -> [HistoryEntry] {
+        try await ensureRunning()
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("api/history"),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "limit", value: String(max(1, min(limit, 200))))
+        ]
+        guard let url = components.url else { throw WorkerError.invalidResponse }
+        let data = try await send(URLRequest(url: url), operation: "History search")
+        return try JSONDecoder().decode(HistoryResponse.self, from: data).entries
+    }
+
+    func historyAudio(id: String) async throws -> Data {
+        try await ensureRunning()
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("api/history/audio"),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [URLQueryItem(name: "id", value: id)]
+        guard let url = components.url else { throw WorkerError.invalidResponse }
+        return try await send(URLRequest(url: url), operation: "Audio replay")
+    }
+
+    func deleteHistoryEntry(id: String) async throws {
+        try await authenticatedPost(path: "api/history/delete", body: HistoryIDRequest(id: id))
+    }
+
+    func setHistoryRetention(days: Int) async throws {
+        guard [0, 7, 30, 90].contains(days) else {
+            throw WorkerError.server("Retention must be Forever, 7, 30, or 90 days.")
+        }
+        try await authenticatedPost(path: "api/history/retention", body: RetentionRequest(days: days))
+    }
+
+    private func authenticatedPost<Body: Encodable>(path: String, body: Body) async throws {
+        try await ensureRunning()
+        var request = URLRequest(url: baseURL.appendingPathComponent(path))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(try workerToken(), forHTTPHeaderField: "X-Tiro-Worker-Token")
+        request.httpBody = try JSONEncoder().encode(body)
+        _ = try await send(request, operation: "History update")
+    }
+
+    private func send(_ request: URLRequest, operation: String) async throws -> Data {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw WorkerError.invalidResponse }
         guard (200..<300).contains(http.statusCode) else {
             let message = (try? JSONDecoder().decode(ErrorResponse.self, from: data).error)
-                ?? "Model preload failed with status \(http.statusCode)."
+                ?? "\(operation) failed with status \(http.statusCode)."
             throw WorkerError.server(message)
         }
+        return data
     }
 
     private func isHealthy() async -> Bool {
@@ -117,7 +163,7 @@ import Foundation
                   let status = try? JSONDecoder().decode(WorkerStatus.self, from: data) else {
                 return .unavailable
             }
-            return status.api_version == 3 ? .compatible : .incompatible
+            return status.api_version == 4 ? .compatible : .incompatible
         } catch {
             return .unavailable
         }
@@ -161,6 +207,18 @@ import Foundation
 
 private struct WorkerStatus: Decodable {
     let api_version: Int
+}
+
+private struct HistoryResponse: Decodable {
+    let entries: [HistoryEntry]
+}
+
+private struct HistoryIDRequest: Encodable {
+    let id: String
+}
+
+private struct RetentionRequest: Encodable {
+    let days: Int
 }
 
 private enum WorkerState {

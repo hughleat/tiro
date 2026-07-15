@@ -12,9 +12,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let launchAtLoginButton = NSButton(checkboxWithTitle: "Launch Tiro at login", target: nil, action: nil)
     private let shortcutRecorder = ShortcutRecorderView()
     private let vocabularyEditor = VocabularyEditorView()
-    private let historyView = NSTextView(frame: .zero)
+    private let historyView: HistoryView
 
-    init() {
+    init(workerClient: WorkerClient) {
+        historyView = HistoryView(workerClient: workerClient)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 620, height: 700),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -23,7 +24,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         )
         window.title = "Tiro"
         window.center()
-        window.minSize = NSSize(width: 480, height: 420)
+        window.minSize = NSSize(width: 480, height: 500)
         super.init(window: window)
         window.delegate = self
         buildContent()
@@ -68,7 +69,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func refreshHistory() {
-        historyView.string = loadHistory()
+        historyView.refresh()
     }
 
     private func buildContent() {
@@ -103,19 +104,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         let historyLabel = NSTextField(labelWithString: "Recent Transcriptions")
         historyLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        historyView.isEditable = false
-        historyView.isSelectable = true
-        historyView.font = NSFont.systemFont(ofSize: 14)
-        historyView.textContainerInset = NSSize(width: 10, height: 10)
-        let historyScrollView = NSScrollView()
-        historyScrollView.hasVerticalScroller = true
-        historyScrollView.borderType = .bezelBorder
-        historyScrollView.documentView = historyView
-
         let stack = NSStackView(views: [
             title, modelLabel, modelPicker, shortcutLabel, shortcutRecorder,
             autoPasteButton, soundFeedbackButton, launchAtLoginButton,
-            vocabularyEditor, historyLabel, historyScrollView
+            vocabularyEditor, historyLabel, historyView
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -124,18 +116,32 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.setCustomSpacing(18, after: launchAtLoginButton)
         stack.setCustomSpacing(18, after: vocabularyEditor)
         stack.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(stack)
+
+        let documentView = FlippedView()
+        documentView.translatesAutoresizingMaskIntoConstraints = false
+        documentView.addSubview(stack)
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.drawsBackground = false
+        scrollView.documentView = documentView
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(scrollView)
 
         modelPicker.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         shortcutRecorder.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         vocabularyEditor.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        historyScrollView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        historyScrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 240).isActive = true
+        historyView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -24),
-            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 24),
-            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -24)
+            scrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
+            documentView.heightAnchor.constraint(greaterThanOrEqualTo: scrollView.contentView.heightAnchor),
+            stack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor, constant: -24),
+            stack.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 24),
+            stack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -24)
         ])
     }
 
@@ -168,19 +174,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private func refreshLaunchAtLogin() {
         launchAtLoginButton.state = LoginItemManager.isEnabled ? .on : .off
     }
+}
 
-    private func loadHistory() -> String {
-        guard let contents = try? String(contentsOf: AppPaths.historyFile, encoding: .utf8) else {
-            return "No transcriptions yet."
-        }
-        let decoder = JSONDecoder()
-        let entries = contents.split(separator: "\n").compactMap {
-            try? decoder.decode(HistoryEntry.self, from: Data($0.utf8))
-        }
-        guard !entries.isEmpty else { return "No transcriptions yet." }
-        return entries.suffix(30).reversed().map { entry in
-            let model = entry.model.split(separator: "/").last.map(String.init) ?? entry.model
-            return "\(entry.text)\n\(model) · \(String(format: "%.2fs", entry.transcription_seconds))"
-        }.joined(separator: "\n\n")
-    }
+private final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
 }

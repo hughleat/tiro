@@ -22,12 +22,53 @@ struct DictationModel: Hashable {
 }
 
 struct HistoryEntry: Codable {
+    let id: String
     let timestamp: String
     let model: String
-    let audio_file: String
     let transcription_seconds: Double
     let text: String
     let raw_text: String?
+    let audio_available: Bool
+
+    private let audio_file: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case timestamp
+        case model
+        case audio_file
+        case transcription_seconds
+        case text
+        case raw_text
+        case audio_available
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        timestamp = try values.decodeIfPresent(String.self, forKey: .timestamp) ?? ""
+        model = try values.decodeIfPresent(String.self, forKey: .model) ?? ""
+        transcription_seconds = try values.decodeIfPresent(Double.self, forKey: .transcription_seconds) ?? 0
+        text = try values.decodeIfPresent(String.self, forKey: .text) ?? ""
+        raw_text = try values.decodeIfPresent(String.self, forKey: .raw_text)
+        audio_file = try values.decodeIfPresent(String.self, forKey: .audio_file)
+        audio_available = try values.decodeIfPresent(Bool.self, forKey: .audio_available)
+            ?? !(audio_file ?? "").isEmpty
+        id = try values.decodeIfPresent(String.self, forKey: .id)
+            ?? audio_file
+            ?? [timestamp, model, text].joined(separator: "|")
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(timestamp, forKey: .timestamp)
+        try values.encode(model, forKey: .model)
+        try values.encode(transcription_seconds, forKey: .transcription_seconds)
+        try values.encode(text, forKey: .text)
+        try values.encodeIfPresent(raw_text, forKey: .raw_text)
+        try values.encode(audio_available, forKey: .audio_available)
+        try values.encodeIfPresent(audio_file, forKey: .audio_file)
+    }
 }
 
 enum VocabularyFile {

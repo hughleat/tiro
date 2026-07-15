@@ -12,7 +12,7 @@ import ApplicationServices
     private let hotkeys = HotkeyManager()
     private let destinationTracker = DestinationTracker()
     private let pasteCoordinator = PasteCoordinator()
-    private lazy var settingsWindow = SettingsWindowController()
+    private lazy var settingsWindow = SettingsWindowController(workerClient: worker)
     private var statusItem: NSStatusItem!
     private var state: State = .idle
     private var menuToggleItem: NSMenuItem!
