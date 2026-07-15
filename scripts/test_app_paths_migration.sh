@@ -57,7 +57,7 @@ env \
 [[ "$(cat "$CHECKOUT/.cache/huggingface/hub/model/weights.bin")" == 'offline-model' ]]
 [[ -f "$SUPPORT/.legacy-project-data-migrated-v4" ]]
 [[ "$(cat "$SUPPORT/.legacy-project-root")" -ef "$CHECKOUT" ]]
-rg -q "models=$MODELS" "$TEMP_ROOT/output"
+grep -q "models=$MODELS" "$TEMP_ROOT/output"
 
 # Installed releases can recover the checkout remembered by an earlier development run.
 rm "$SUPPORT/.legacy-project-data-migrated-v4"

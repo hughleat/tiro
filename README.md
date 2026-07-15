@@ -43,15 +43,21 @@ Development runs remember a validated checkout in `~/Library/Application Support
 
 ## Development
 
-Python 3.11 or newer and the project-local virtual environment are required for the worker. Build and test with:
+Install `uv`, then create the pinned project environment from the lockfile:
 
 ```sh
-.venv/bin/python -m unittest discover -s tests
-./scripts/test_app_paths_migration.sh
-./scripts/test_snippet_edit_state.sh
-./scripts/build_native_app.sh development
+brew install uv
+uv sync --python 3.14.6 --frozen --extra bundle
+```
+
+Build and test with:
+
+```sh
+./scripts/test_all.sh
 open "dist/Tiro.app"
 ```
+
+The aggregate check runs the worker suite, data-migration assertions, native snippet-state assertions, and a signed development build.
 
 The development app does not embed Python. It uses `.venv/bin/python scripts/worker_entry.py` from `TIRO_PROJECT_ROOT` (or the checkout inferred from `dist/Tiro.app`) so development and release share the same data-location behavior.
 
@@ -61,9 +67,10 @@ The release build uses PyInstaller `onedir` to embed the Python interpreter, `ap
 
 ```sh
 ./scripts/build_native_app.sh release
+./scripts/smoke_release.sh
 ```
 
-The sync may download missing build packages. If the locked environment or runtime imports are unavailable, the command exits with an actionable error. Models themselves are not bundled; users explicitly download and remove them in Tiro's Models settings, and their files remain in Application Support.
+The build sync may download missing packages. The smoke check starts the packaged worker against temporary data, verifies API compatibility, and shuts it down. If the locked environment or runtime imports are unavailable, either command exits with an actionable error. Models themselves are not bundled; users explicitly download and remove them in Tiro's Models settings, and their files remain in Application Support.
 
 `WorkerClient.startAndWait()` must select `AppPaths.embeddedWorkerExecutable` when it is executable and use no script argument for it. Otherwise it must retain `.venv/bin/python` as the development executable and pass `AppPaths.developmentWorkerEntryPoint.path` as its sole argument. For either launch path it must set `process.environment = AppPaths.workerEnvironment()`, then add `TIRO_WORKER_TOKEN`, and use `AppPaths.applicationSupportDirectory` as `currentDirectoryURL`. These are the only native launch changes required by the packaged worker.
 
