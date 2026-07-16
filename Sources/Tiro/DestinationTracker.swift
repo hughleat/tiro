@@ -7,17 +7,30 @@ struct ApplicationIdentity {
     let applicationName: String?
 }
 
-@MainActor
-struct DestinationSession {
-    struct PasteObservation {
-        let expectedValue: String?
-        let expectedCharacterCount: Int?
+struct PasteObservation {
+    let expectedValue: String?
+    let expectedCharacterCount: Int?
 
-        var canConfirmConsumption: Bool {
-            expectedValue != nil || expectedCharacterCount != nil
-        }
+    var canConfirmConsumption: Bool {
+        expectedValue != nil || expectedCharacterCount != nil
     }
+}
 
+@MainActor
+protocol PasteDestination {
+    var isAvailable: Bool { get }
+    var isSecure: Bool { get }
+    var isFrontmost: Bool { get }
+    var isFocused: Bool { get }
+    var isCurrentPasteTargetAtDispatch: Bool { get }
+
+    func restore() async -> Bool
+    func observePasteTarget(afterInserting text: String) -> PasteObservation
+    func hasConsumedPaste(since observation: PasteObservation) -> Bool
+}
+
+@MainActor
+struct DestinationSession: PasteDestination {
     private let application: NSRunningApplication
     private let applicationElement: AXUIElement
     private let windowElement: AXUIElement

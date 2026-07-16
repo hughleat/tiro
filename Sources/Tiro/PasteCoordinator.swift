@@ -2,11 +2,31 @@ import AppKit
 import ApplicationServices
 
 @MainActor
+protocol PasteboardAccess {
+    var changeCount: Int { get }
+    var pasteboardItems: [NSPasteboardItem]? { get }
+
+    @discardableResult func clearContents() -> Int
+    func setString(_ string: String, forType dataType: NSPasteboard.PasteboardType) -> Bool
+    func writeObjects(_ objects: [any NSPasteboardWriting]) -> Bool
+}
+
+extension NSPasteboard: PasteboardAccess {}
+
+@MainActor
 final class PasteCoordinator {
     enum PasteResult {
         case confirmed
         case dispatched
     }
+
+    enum EventDispatchResult {
+        case accepted
+        case couldNotCreateEvent
+        case rejected
+    }
+
+    typealias EventDispatcher = @MainActor (any PasteDestination) async -> EventDispatchResult
 
     enum PasteError: LocalizedError {
         case unavailableDestination
@@ -17,7 +37,6 @@ final class PasteCoordinator {
         case couldNotWritePasteboard
         case couldNotCreateKeyboardEvent
         case keyboardEventRejected
-        case pasteNotConsumed
 
         var errorDescription: String? {
             switch self {
@@ -29,16 +48,16 @@ final class PasteCoordinator {
             case .couldNotWritePasteboard: "The transcription could not be written to the clipboard."
             case .couldNotCreateKeyboardEvent: "The paste keyboard event could not be created."
             case .keyboardEventRejected: "macOS rejected the paste keyboard event."
-            case .pasteNotConsumed: "The destination did not accept the pasted text."
             }
         }
     }
 
+    @MainActor
     private struct PasteboardSnapshot {
         let items: [[NSPasteboard.PasteboardType: Data]]
         let changeCount: Int
 
-        init?(_ pasteboard: NSPasteboard) {
+        init?(_ pasteboard: any PasteboardAccess) {
             changeCount = pasteboard.changeCount
             var capturedItems: [[NSPasteboard.PasteboardType: Data]] = []
 
@@ -55,7 +74,7 @@ final class PasteCoordinator {
             items = capturedItems
         }
 
-        func restore(to pasteboard: NSPasteboard) {
+        func restore(to pasteboard: any PasteboardAccess) {
             let restoredItems = items.map { capturedTypes in
                 let item = NSPasteboardItem()
                 for (type, data) in capturedTypes {
@@ -66,7 +85,7 @@ final class PasteCoordinator {
 
             pasteboard.clearContents()
             if !restoredItems.isEmpty {
-                pasteboard.writeObjects(restoredItems)
+                _ = pasteboard.writeObjects(restoredItems)
             }
         }
     }
@@ -77,14 +96,24 @@ final class PasteCoordinator {
         let identifier: UUID
     }
 
-    private let pasteboard: NSPasteboard
+    private let pasteboard: any PasteboardAccess
+    private let eventDispatcher: EventDispatcher
+    private let confirmationDelays: [UInt64]
     private var pendingRestoration: PendingRestoration?
 
-    init(pasteboard: NSPasteboard = .general) {
+    init(
+        pasteboard: any PasteboardAccess = NSPasteboard.general,
+        eventDispatcher: EventDispatcher? = nil,
+        confirmationDelays: [UInt64]? = nil
+    ) {
         self.pasteboard = pasteboard
+        self.eventDispatcher = eventDispatcher ?? Self.dispatchPasteEvent
+        self.confirmationDelays = confirmationDelays
+            ?? [20_000_000, 40_000_000, 80_000_000, 160_000_000,
+                320_000_000, 400_000_000, 400_000_000, 400_000_000]
     }
 
-    func paste(_ text: String, to destination: DestinationSession) async throws -> PasteResult {
+    func paste(_ text: String, to destination: any PasteDestination) async throws -> PasteResult {
         pendingRestoration = nil
 
         guard destination.isAvailable else { throw PasteError.unavailableDestination }
@@ -128,33 +157,42 @@ final class PasteCoordinator {
             pendingRestoration = nil
             throw PasteError.couldNotRestoreDestination
         }
-        guard let keyDown = makePasteEvent(keyDown: true),
-              let keyUp = makePasteEvent(keyDown: false) else {
+        switch await eventDispatcher(destination) {
+        case .couldNotCreateEvent:
             pendingRestoration = nil
             throw PasteError.couldNotCreateKeyboardEvent
-        }
-        PasteEventGate.shared.arm(for: destination)
-        keyDown.post(tap: .cgAnnotatedSessionEventTap)
-        keyUp.post(tap: .cgAnnotatedSessionEventTap)
-        guard await pasteEventWasAccepted() else {
+        case .rejected:
             pendingRestoration = nil
             throw PasteError.keyboardEventRejected
+        case .accepted:
+            break
         }
         guard observation.canConfirmConsumption else {
             pendingRestoration = nil
             return .dispatched
         }
-        guard await confirmConsumption(
+        let wasConfirmed = await confirmConsumption(
             by: destination,
             since: observation,
             identifier: identifier
-        ) else {
-            throw PasteError.pasteNotConsumed
-        }
-        return .confirmed
+        )
+        return wasConfirmed ? .confirmed : .dispatched
     }
 
-    private func makePasteEvent(keyDown: Bool) -> CGEvent? {
+    private static func dispatchPasteEvent(
+        to destination: any PasteDestination
+    ) async -> EventDispatchResult {
+        guard let keyDown = makePasteEvent(keyDown: true),
+              let keyUp = makePasteEvent(keyDown: false) else {
+            return .couldNotCreateEvent
+        }
+        PasteEventGate.shared.arm(for: destination)
+        keyDown.post(tap: .cgAnnotatedSessionEventTap)
+        keyUp.post(tap: .cgAnnotatedSessionEventTap)
+        return await pasteEventWasAccepted() ? .accepted : .rejected
+    }
+
+    private static func makePasteEvent(keyDown: Bool) -> CGEvent? {
         guard let source = CGEventSource(stateID: .hidSystemState),
               let event = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: keyDown)
         else { return nil }
@@ -166,7 +204,7 @@ final class PasteCoordinator {
         return event
     }
 
-    private func pasteEventWasAccepted() async -> Bool {
+    private static func pasteEventWasAccepted() async -> Bool {
         for _ in 0..<20 {
             if let accepted = PasteEventGate.shared.consumeResult() {
                 return accepted
@@ -187,19 +225,17 @@ final class PasteCoordinator {
     }
 
     private func confirmConsumption(
-        by destination: DestinationSession,
-        since observation: DestinationSession.PasteObservation,
+        by destination: any PasteDestination,
+        since observation: PasteObservation,
         identifier: UUID
     ) async -> Bool {
-        var delay: UInt64 = 20_000_000
-        for _ in 0..<8 {
+        for delay in confirmationDelays {
             try? await Task.sleep(nanoseconds: delay)
             guard pendingRestoration?.identifier == identifier else { return false }
             if destination.hasConsumedPaste(since: observation) {
                 restoreClipboardIfUnchanged(identifier: identifier)
                 return true
             }
-            delay = min(delay * 2, 400_000_000)
         }
         discardPendingRestoration(identifier: identifier)
         return false

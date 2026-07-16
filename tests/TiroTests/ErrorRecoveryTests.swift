@@ -1,8 +1,69 @@
+import AppKit
 import Foundation
 import Testing
 @testable import Tiro
 
 struct ErrorRecoveryTests {
+    @Test @MainActor
+    func acceptedPasteWithoutAccessibilityConfirmationIsStillDispatched() async throws {
+        let pasteboard = makePasteboard(containing: "previous clipboard")
+        let coordinator = PasteCoordinator(
+            pasteboard: pasteboard,
+            eventDispatcher: { _ in .accepted },
+            confirmationDelays: [0]
+        )
+
+        let result = try await coordinator.paste(
+            "dictated text",
+            to: PasteDestinationStub(consumptionConfirmed: false)
+        )
+
+        #expect(result == .dispatched)
+        #expect(pasteboard.string == "dictated text")
+    }
+
+    @Test @MainActor
+    func confirmedPasteRestoresPreviousClipboard() async throws {
+        let pasteboard = makePasteboard(containing: "previous clipboard")
+        let coordinator = PasteCoordinator(
+            pasteboard: pasteboard,
+            eventDispatcher: { _ in .accepted },
+            confirmationDelays: [0]
+        )
+
+        let result = try await coordinator.paste(
+            "dictated text",
+            to: PasteDestinationStub(consumptionConfirmed: true)
+        )
+
+        #expect(result == .confirmed)
+        #expect(pasteboard.string == "previous clipboard")
+    }
+
+    @Test @MainActor
+    func rejectedPasteEventStillThrows() async {
+        let pasteboard = makePasteboard(containing: "previous clipboard")
+        let coordinator = PasteCoordinator(
+            pasteboard: pasteboard,
+            eventDispatcher: { _ in .rejected }
+        )
+
+        await #expect(throws: PasteCoordinator.PasteError.self) {
+            try await coordinator.paste(
+                "dictated text",
+                to: PasteDestinationStub(consumptionConfirmed: false)
+            )
+        }
+    }
+
+    @MainActor
+    private func makePasteboard(containing text: String) -> PasteboardStub {
+        let pasteboard = PasteboardStub()
+        pasteboard.clearContents()
+        _ = pasteboard.setString(text, forType: .string)
+        return pasteboard
+    }
+
     @Test(arguments: [
         (RecoveryCategory.microphonePermission, RecoveryAction.openMicrophoneSettings),
         (.microphoneUnavailable, .retryTranscription),
@@ -37,5 +98,60 @@ struct ErrorRecoveryTests {
             #expect(!state.announcement.isEmpty)
             #expect(state.announcement.count < 60)
         }
+    }
+}
+
+@MainActor
+private final class PasteboardStub: PasteboardAccess {
+    private(set) var changeCount = 0
+    private(set) var pasteboardItems: [NSPasteboardItem]? = []
+
+    var string: String? {
+        pasteboardItems?.first?.string(forType: .string)
+    }
+
+    @discardableResult
+    func clearContents() -> Int {
+        changeCount += 1
+        pasteboardItems = []
+        return changeCount
+    }
+
+    func setString(
+        _ string: String,
+        forType dataType: NSPasteboard.PasteboardType
+    ) -> Bool {
+        let item = NSPasteboardItem()
+        item.setString(string, forType: dataType)
+        pasteboardItems = [item]
+        changeCount += 1
+        return true
+    }
+
+    func writeObjects(_ objects: [any NSPasteboardWriting]) -> Bool {
+        pasteboardItems = objects.compactMap { $0 as? NSPasteboardItem }
+        changeCount += 1
+        return pasteboardItems?.count == objects.count
+    }
+}
+
+@MainActor
+private struct PasteDestinationStub: PasteDestination {
+    let consumptionConfirmed: Bool
+
+    var isAvailable: Bool { true }
+    var isSecure: Bool { false }
+    var isFrontmost: Bool { true }
+    var isFocused: Bool { true }
+    var isCurrentPasteTargetAtDispatch: Bool { true }
+
+    func restore() async -> Bool { true }
+
+    func observePasteTarget(afterInserting text: String) -> PasteObservation {
+        PasteObservation(expectedValue: text, expectedCharacterCount: nil)
+    }
+
+    func hasConsumedPaste(since observation: PasteObservation) -> Bool {
+        consumptionConfirmed
     }
 }

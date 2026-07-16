@@ -5,7 +5,7 @@ final class PasteEventGate {
     static let shared = PasteEventGate()
     nonisolated static let marker: Int64 = 0x5449524F
 
-    private var destination: DestinationSession?
+    private var destination: (any PasteDestination)?
     private var keyDownWasAllowed = false
     private var result: Bool?
     private var eventTap: CFMachPort?
@@ -68,7 +68,7 @@ final class PasteEventGate {
         result = nil
     }
 
-    func arm(for destination: DestinationSession) {
+    func arm(for destination: any PasteDestination) {
         self.destination = destination
         keyDownWasAllowed = false
         result = nil
