@@ -20,6 +20,10 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
     private let workerClient: WorkerClient
     private let table = NSTableView()
     private let stateLabel = NSTextField(labelWithString: "")
+    private let stateProgress = NSProgressIndicator()
+    private let stateButton = NSButton()
+    private enum StateAction { case retry }
+    private var stateAction: StateAction?
     private var models: [ManagedModel] = []
     private var operations: [String: Operation] = [:]
     private var loadTask: Task<Void, Never>?
@@ -44,7 +48,7 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
 
     func refresh() {
         loadTask?.cancel()
-        if models.isEmpty { showState("Loading models...") }
+        if models.isEmpty { showState("Loading models...", loading: true) }
         loadTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -53,7 +57,9 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
                 apply(loaded)
             } catch {
                 guard !Task.isCancelled else { return }
-                if models.isEmpty { showState("Could not load models.\n\(error.localizedDescription)") }
+                if models.isEmpty {
+                    showState("Could not load models.\n\(error.localizedDescription)", action: .retry)
+                }
             }
         }
     }
@@ -98,9 +104,21 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         stateLabel.lineBreakMode = .byWordWrapping
         stateLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        stateProgress.style = .spinning
+        stateProgress.controlSize = .small
+        stateProgress.isDisplayedWhenStopped = false
+        stateButton.bezelStyle = .rounded
+        stateButton.target = self
+        stateButton.action = #selector(performStateAction)
+        let stateStack = NSStackView(views: [stateProgress, stateLabel, stateButton])
+        stateStack.orientation = .vertical
+        stateStack.alignment = .centerX
+        stateStack.spacing = 10
+        stateStack.translatesAutoresizingMaskIntoConstraints = false
+
         let container = NSView()
         container.addSubview(scrollView)
-        container.addSubview(stateLabel)
+        container.addSubview(stateStack)
         addArrangedSubview(container)
         container.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         container.heightAnchor.constraint(greaterThanOrEqualToConstant: 178).isActive = true
@@ -109,10 +127,10 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
             scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: container.topAnchor),
             scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            stateLabel.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 24),
-            stateLabel.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -24),
-            stateLabel.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            stateLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor)
+            stateStack.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 24),
+            stateStack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -24),
+            stateStack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            stateStack.centerYAnchor.constraint(equalTo: container.centerYAnchor)
         ])
     }
 
@@ -122,7 +140,8 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
             (knownOrder[$0.key] ?? Int.max, $0.name) < (knownOrder[$1.key] ?? Int.max, $1.name)
         }
         table.reloadData()
-        showState(models.isEmpty ? "No models are available." : nil)
+        showState(models.isEmpty ? "No models are available." : nil,
+                  action: models.isEmpty ? .retry : nil)
         onModelsChanged?(models)
         restoreSafeSelection()
         if models.contains(where: { $0.downloading || $0.deleting }) { startPolling() }
@@ -151,10 +170,21 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         }
     }
 
-    private func showState(_ message: String?) {
+    private func showState(_ message: String?, loading: Bool = false, action: StateAction? = nil) {
         stateLabel.stringValue = message ?? ""
         stateLabel.isHidden = message == nil
         table.isHidden = message != nil
+        stateAction = action
+        stateButton.isHidden = action == nil
+        stateButton.title = "Retry"
+        loading ? stateProgress.startAnimation(nil) : stateProgress.stopAnimation(nil)
+    }
+
+    @objc private func performStateAction() {
+        switch stateAction {
+        case .retry: refresh()
+        case nil: break
+        }
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { models.count }
@@ -341,6 +371,7 @@ private final class ModelRowView: NSTableCellView {
         detailLabel.stringValue = [model.detail, model.sizeDescription].filter { !$0.isEmpty }.joined(separator: " · ")
         let serverState = model.state?.replacingOccurrences(of: "_", with: " ").capitalized
         statusLabel.stringValue = operation
+            ?? (isSelectedModel ? "Selected" : nil)
             ?? (model.downloadError == nil ? serverState : "Download failed")
             ?? (model.installed ? "Installed" : "Not installed")
         statusLabel.textColor = model.installed ? .secondaryLabelColor : .tertiaryLabelColor
@@ -378,5 +409,9 @@ private final class ModelRowView: NSTableCellView {
             actionButton.toolTip = model.downloadError ?? label
         }
         actionButton.setAccessibilityLabel(label)
+        let selectionStatus = isSelectedModel ? "Selected model" : (model.installed ? "Installed" : "Not installed")
+        setAccessibilityLabel(model.name)
+        setAccessibilityValue("\(selectionStatus), \(detailLabel.stringValue), \(statusLabel.stringValue)")
+        setAccessibilitySelected(isSelectedModel)
     }
 }

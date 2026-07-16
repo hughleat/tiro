@@ -2,19 +2,23 @@ import AppKit
 
 enum OverlayState: Equatable {
     case recording
+    case startingUp
     case transcribing
     case pasted
     case pasteSent
     case copied
+    case pasteFailed
     case error
 
     var label: String {
         switch self {
         case .recording: return "Recording"
+        case .startingUp: return "Tiro is starting"
         case .transcribing: return "Transcribing"
         case .pasted: return "Pasted"
         case .pasteSent: return "Paste sent"
         case .copied: return "Copied"
+        case .pasteFailed: return "Copied, paste failed"
         case .error: return "Transcription failed"
         }
     }
@@ -22,8 +26,21 @@ enum OverlayState: Equatable {
     var color: NSColor {
         switch self {
         case .recording, .error: return NSColor.systemRed
-        case .transcribing, .pasteSent: return NSColor.systemOrange
+        case .startingUp, .transcribing, .pasteSent, .pasteFailed: return NSColor.systemOrange
         case .pasted, .copied: return NSColor.systemGreen
+        }
+    }
+
+    var announcement: String {
+        switch self {
+        case .recording: return "Tiro is recording."
+        case .startingUp: return "Tiro is starting. Try dictating again shortly."
+        case .transcribing: return "Tiro is transcribing."
+        case .pasted: return "Dictation pasted."
+        case .pasteSent: return "Paste sent."
+        case .copied: return "Dictation copied to the clipboard."
+        case .pasteFailed: return "Automatic paste failed. Dictation copied to the clipboard."
+        case .error: return "Dictation failed."
         }
     }
 }
@@ -50,12 +67,16 @@ final class OverlayPanel: NSPanel {
     }
 
     func show(_ state: OverlayState) {
+        let shouldAnnounce = !isVisible || statusView.state != state
         pendingDismissal?.cancel()
         pendingDismissal = nil
         statusView.state = state
         statusView.stopRecordingFeedback()
         positionOnActiveScreen()
         orderFrontRegardless()
+        if shouldAnnounce {
+            statusView.announce(state)
+        }
     }
 
     func showRecording(levelProvider: @escaping () -> Float) {
@@ -133,6 +154,17 @@ final class OverlayStatusView: NSView {
         displayedLevel = 0
         setAccessibilityLabel("Tiro status: \(state.label)")
         setAccessibilityChildren([])
+    }
+
+    func announce(_ state: OverlayState) {
+        NSAccessibility.post(
+            element: self,
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: state.announcement,
+                .priority: NSAccessibilityPriorityLevel.high.rawValue,
+            ]
+        )
     }
 
     private func refreshRecordingFeedback() {

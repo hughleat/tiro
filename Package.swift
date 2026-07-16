@@ -22,9 +22,11 @@ let package = Package(
                 "SnippetEditStateTests.swift",
             ],
             sources: [
+                "ErrorRecoveryTests.swift",
                 "WorkerAPITests.swift",
                 "WorkerProcessTests.swift",
                 "WorkerTransportTests.swift",
+                "SetupReadinessTests.swift",
             ]
         )
     ],

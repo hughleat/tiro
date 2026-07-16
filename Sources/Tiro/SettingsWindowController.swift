@@ -18,6 +18,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let historyView: HistoryView
     private let modelManagementView: ModelManagementView
     private let modelComparisonView: ModelComparisonView
+    private let permissionSettingsView = PermissionSettingsView()
+    private var navigationController: SettingsNavigationController?
 
     init(workerClient: WorkerClient) {
         vocabularyEditor = VocabularyEditorView(workerClient: workerClient)
@@ -89,7 +91,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         suggestionsView.refresh()
         modelComparisonView.refresh()
         refreshHistory()
+        permissionSettingsView.refresh()
     }
+
+    func showGeneralSettings() { showSettings(.general) }
+    func showModelsSettings() { showSettings(.models) }
+    func showPermissionsSettings() { showSettings(.permissions) }
 
     func refreshModel() {
         dictationPreferencesView.setModel(DictationModel.selected)
@@ -135,15 +142,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             ])
         )
         let history = SettingsPageViewController(title: "History", contentView: historyView)
+        let permissions = SettingsPageViewController(title: "Permissions", contentView: permissionSettingsView)
         let about = SettingsPageViewController(title: "About", contentView: makeAboutView())
         let navigation = SettingsNavigationController(items: [
-            .init(title: "General", symbolName: "gearshape", viewController: general),
-            .init(title: "Models", symbolName: "square.stack.3d.up", viewController: models),
-            .init(title: "Vocabulary", symbolName: "text.book.closed", viewController: vocabulary),
-            .init(title: "History", symbolName: "clock.arrow.circlepath", viewController: history),
-            .init(title: "About", symbolName: "info.circle", viewController: about)
+            .init(section: .general, title: "General", symbolName: "gearshape", viewController: general),
+            .init(section: .models, title: "Models", symbolName: "square.stack.3d.up", viewController: models),
+            .init(section: .permissions, title: "Permissions", symbolName: "lock.shield", viewController: permissions),
+            .init(section: .vocabulary, title: "Vocabulary", symbolName: "text.book.closed", viewController: vocabulary),
+            .init(section: .history, title: "History", symbolName: "clock.arrow.circlepath", viewController: history),
+            .init(section: .about, title: "About", symbolName: "info.circle", viewController: about)
         ])
+        navigationController = navigation
         contentViewController = navigation
+    }
+
+    private func showSettings(_ section: SettingsSection) {
+        showWindow(nil)
+        navigationController?.show(section)
     }
 
     private func makeGeneralView() -> NSView {

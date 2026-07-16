@@ -1,8 +1,18 @@
 import AppKit
 
+enum SettingsSection: String {
+    case general
+    case models
+    case permissions
+    case vocabulary
+    case history
+    case about
+}
+
 @MainActor
 final class SettingsNavigationController: NSSplitViewController, NSTableViewDataSource, NSTableViewDelegate {
     struct Item {
+        let section: SettingsSection
         let title: String
         let symbolName: String
         let viewController: NSViewController
@@ -19,6 +29,13 @@ final class SettingsNavigationController: NSSplitViewController, NSTableViewData
     }
 
     required init?(coder: NSCoder) { nil }
+
+    func show(_ section: SettingsSection) {
+        guard let index = items.firstIndex(where: { $0.section == section }) else { return }
+        loadViewIfNeeded()
+        tableView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        showItem(at: index)
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()

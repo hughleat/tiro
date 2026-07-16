@@ -13,13 +13,16 @@ import ApplicationServices
     private let destinationTracker = DestinationTracker()
     private let pasteCoordinator = PasteCoordinator()
     private lazy var settingsWindow = SettingsWindowController(workerClient: worker)
+    private var onboardingWindow: OnboardingWindowController?
     private var statusItem: NSStatusItem!
     private var state: State = .idle
     private var menuToggleItem: NSMenuItem!
     private var shortcutStatusItem: NSMenuItem!
+    private var pasteRecoveryItem: NSMenuItem!
     private var modelStatusItem: NSMenuItem!
     private var modelMenuItems: [NSMenuItem] = []
     private var installedModelKeys: Set<String> = []
+    private var modelInventoryStatus = ModelInventoryStatus.loading
     private var modelStartupTask: Task<Void, Never>?
     private var permissionTimer: Timer?
     private var hotkeysStarted = false
@@ -34,8 +37,11 @@ import ApplicationServices
         NSApp.setActivationPolicy(.accessory)
         configureStatusItem()
         configureSettings()
-        requestPermissionsAndStart()
+        configurePermissionsAndStart()
         prepareInstalledModel()
+        if !UserDefaults.standard.bool(forKey: "setupCompleted") {
+            showSetup()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -79,9 +85,20 @@ import ApplicationServices
         )
         shortcutStatusItem.target = self
         menu.addItem(shortcutStatusItem)
+        pasteRecoveryItem = NSMenuItem(
+            title: "Auto-paste needs Accessibility permission...",
+            action: #selector(showPermissionsSettings),
+            keyEquivalent: ""
+        )
+        pasteRecoveryItem.target = self
+        pasteRecoveryItem.isHidden = true
+        menu.addItem(pasteRecoveryItem)
         let settings = NSMenuItem(title: "Settings & History…", action: #selector(showSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
+        let setup = NSMenuItem(title: "Setup…", action: #selector(showSetup), keyEquivalent: "")
+        setup.target = self
+        menu.addItem(setup)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Tiro", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
@@ -120,7 +137,7 @@ import ApplicationServices
         }
     }
 
-    private func requestPermissionsAndStart() {
+    private func configurePermissionsAndStart() {
         hotkeys.onTap = { [weak self] in self?.toggleRecording() }
         hotkeys.onHoldStart = { [weak self] in self?.startRecording(playStartSound: false) == true }
         hotkeys.onHoldEnd = { [weak self] in self?.stopRecording() }
@@ -130,12 +147,12 @@ import ApplicationServices
             self?.state == .starting || self?.state == .recording
         }
 
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
-        AVCaptureDevice.requestAccess(for: .audio) { _ in }
         installHotkeysWhenPermitted()
         permissionTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.installHotkeysWhenPermitted() }
+            Task { @MainActor in
+                self?.installHotkeysWhenPermitted()
+                self?.refreshSetupPermissions()
+            }
         }
     }
 
@@ -184,6 +201,17 @@ import ApplicationServices
         NSWorkspace.shared.open(url)
     }
 
+    private func requestMicrophoneAccess() {
+        if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] _ in
+                Task { @MainActor in self?.refreshSetupPermissions() }
+            }
+            return
+        }
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     @objc private func toggleRecording() {
         switch state {
         case .idle: startRecording()
@@ -196,9 +224,21 @@ import ApplicationServices
     @discardableResult
     private func startRecording(playStartSound: Bool = true) -> Bool {
         guard state == .idle else { return false }
-        guard installedModelKeys.contains(DictationModel.selected.key) else {
-            modelStatusItem.title = "Model: Download One in Settings"
+        switch modelInventoryStatus {
+        case .loading:
+            modelStatusItem.title = "Model: Checking Installed Models..."
+            overlay.show(.startingUp)
+            overlay.dismiss(after: 1.2)
             return false
+        case .unavailable:
+            presentRecovery(ErrorRecovery.presentation(for: .workerUnavailable))
+            return false
+        case .missing:
+            modelStatusItem.title = "Model: Download One in Settings"
+            presentRecovery(ErrorRecovery.presentation(for: .missingModel))
+            return false
+        case .available:
+            break
         }
         shouldAutoPaste = UserDefaults.standard.bool(forKey: "autoPaste")
         originApplication = destinationTracker.captureApplicationIdentity()
@@ -301,8 +341,12 @@ import ApplicationServices
                 do {
                     let result = try await pasteCoordinator.paste(response.text, to: destination)
                     completionOverlay = result == .confirmed ? .pasted : .pasteSent
+                    pasteRecoveryItem.isHidden = true
                 } catch {
                     copyToClipboard(response.text)
+                    completionOverlay = .pasteFailed
+                    pasteRecoveryItem.isHidden = ErrorRecovery.presentation(for: error).action
+                        != .openAccessibilitySettings
                     NSLog("Could not auto-paste transcription: %@", error.localizedDescription)
                 }
             } else {
@@ -332,10 +376,88 @@ import ApplicationServices
         overlay.show(.error)
         overlay.dismiss(after: 2.0)
         NSLog("Tiro error: %@", error.localizedDescription)
+        presentRecovery(ErrorRecovery.presentation(
+            for: error,
+            microphoneAuthorized: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        ))
+    }
+
+    private func presentRecovery(_ presentation: RecoveryPresentation) {
+        guard presentation.action != .retryTranscription else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = presentation.title
+        alert.informativeText = presentation.detail
+        alert.addButton(withTitle: recoveryButtonTitle(for: presentation.action))
+        alert.addButton(withTitle: "Dismiss")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        performRecovery(presentation.action)
+    }
+
+    private func recoveryButtonTitle(for action: RecoveryAction) -> String {
+        switch action {
+        case .openMicrophoneSettings, .openAccessibilitySettings: return "Open Permissions"
+        case .openModels: return "Open Models"
+        case .retryWorker: return "Retry"
+        case .retryTranscription: return "OK"
+        }
+    }
+
+    private func performRecovery(_ action: RecoveryAction) {
+        switch action {
+        case .openMicrophoneSettings, .openAccessibilitySettings:
+            settingsWindow.showPermissionsSettings()
+        case .openModels:
+            settingsWindow.showModelsSettings()
+        case .retryWorker:
+            prepareInstalledModel()
+        case .retryTranscription:
+            break
+        }
     }
 
     @objc private func showSettings() {
         settingsWindow.showWindow(nil)
+    }
+
+    @objc private func showPermissionsSettings() {
+        settingsWindow.showPermissionsSettings()
+    }
+
+    @objc private func showSetup() {
+        let controller = onboardingWindow ?? makeOnboardingWindow()
+        onboardingWindow = controller
+        controller.updatePermissions(
+            microphone: AVCaptureDevice.authorizationStatus(for: .audio),
+            accessibilityAllowed: AXIsProcessTrusted()
+        )
+        controller.showWindow(nil)
+    }
+
+    private func makeOnboardingWindow() -> OnboardingWindowController {
+        let controller = OnboardingWindowController(
+            workerClient: worker,
+            shortcutName: hotkeys.shortcut.displayName
+        )
+        controller.onRequestMicrophone = { [weak self] in self?.requestMicrophoneAccess() }
+        controller.onOpenAccessibility = { [weak self] in self?.openAccessibilitySettings() }
+        controller.onModelsChanged = { [weak self] models in
+            self?.applyModelInventory(models)
+        }
+        controller.onDownloadCompleted = { [weak self] in self?.prepareInstalledModel() }
+        controller.onComplete = {
+            UserDefaults.standard.set(true, forKey: "setupCompleted")
+        }
+        return controller
+    }
+
+    private func refreshSetupPermissions() {
+        guard let onboardingWindow, onboardingWindow.window?.isVisible == true else { return }
+        onboardingWindow.updatePermissions(
+            microphone: AVCaptureDevice.authorizationStatus(for: .audio),
+            accessibilityAllowed: AXIsProcessTrusted()
+        )
     }
 
     @objc private func selectModel(_ sender: NSMenuItem) {
@@ -360,6 +482,7 @@ import ApplicationServices
     }
 
     private func prepareInstalledModel() {
+        modelInventoryStatus = .loading
         modelStatusItem.title = "Model: Checking Installed Models…"
         modelStartupTask?.cancel()
         modelStartupTask = Task { [weak self] in
@@ -379,6 +502,7 @@ import ApplicationServices
                 }
             } catch {
                 guard !Task.isCancelled else { return }
+                modelInventoryStatus = modelInventoryStatus.afterPreparationFailure
                 modelStatusItem.title = "Model: Installed Models Unavailable"
                 updateModelChecks()
                 NSLog("Could not prepare an installed model: %@", error.localizedDescription)
@@ -397,9 +521,11 @@ import ApplicationServices
         }
         updateModelChecks()
         guard installedModelKeys.contains(selected.key) else {
+            modelInventoryStatus = .missing
             modelStatusItem.title = "Model: None Installed"
             return nil
         }
+        modelInventoryStatus = .available
         if models.first(where: { $0.key == selected.key })?.loaded == true {
             modelStatusItem.title = "Model: Ready"
         } else {
