@@ -128,34 +128,6 @@ final class PasteCoordinator {
             pendingRestoration = nil
             throw PasteError.couldNotRestoreDestination
         }
-        switch destination.insertUsingAccessibility(text) {
-        case .inserted:
-            guard observation.canConfirmConsumption else {
-                pendingRestoration = nil
-                throw PasteError.pasteNotConsumed
-            }
-            guard await confirmConsumption(
-                by: destination,
-                since: observation,
-                identifier: identifier
-            ) else {
-                throw PasteError.pasteNotConsumed
-            }
-            return .confirmed
-        case .uncertain:
-            if observation.canConfirmConsumption,
-               await confirmConsumption(
-                   by: destination,
-                   since: observation,
-                   identifier: identifier
-               ) {
-                return .confirmed
-            }
-            pendingRestoration = nil
-            throw PasteError.pasteNotConsumed
-        case .unsupported:
-            break
-        }
         guard let keyDown = makePasteEvent(keyDown: true),
               let keyUp = makePasteEvent(keyDown: false) else {
             pendingRestoration = nil

@@ -58,8 +58,10 @@ final class PermissionSettingsView: NSStackView {
 
         microphone.onAction = { [weak self] in self?.requestMicrophone() }
         accessibility.onAction = { [weak self] in self?.requestAccessibility() }
-        [microphone, divider(), accessibility].forEach(addArrangedSubview)
+        let separator = divider()
+        [microphone, separator, accessibility].forEach(addArrangedSubview)
         microphone.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        separator.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         accessibility.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
 
         observers.append(NotificationCenter.default.addObserver(
@@ -76,7 +78,6 @@ final class PermissionSettingsView: NSStackView {
         let line = NSBox()
         line.boxType = .separator
         line.heightAnchor.constraint(equalToConstant: 1).isActive = true
-        line.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         return line
     }
 

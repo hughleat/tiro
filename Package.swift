@@ -27,6 +27,7 @@ let package = Package(
                 "WorkerProcessTests.swift",
                 "WorkerTransportTests.swift",
                 "SetupReadinessTests.swift",
+                "SettingsConstructionTests.swift",
             ]
         )
     ],

@@ -12,7 +12,7 @@ import ApplicationServices
     private let hotkeys = HotkeyManager()
     private let destinationTracker = DestinationTracker()
     private let pasteCoordinator = PasteCoordinator()
-    private lazy var settingsWindow = SettingsWindowController(workerClient: worker)
+    private lazy var settingsWindow = makeSettingsWindow()
     private var onboardingWindow: OnboardingWindowController?
     private var statusItem: NSStatusItem!
     private var state: State = .idle
@@ -39,7 +39,6 @@ import ApplicationServices
         _ = try? VocabularyFile.load()
         NSApp.setActivationPolicy(.accessory)
         configureStatusItem()
-        configureSettings()
         configurePermissionsAndStart()
         prepareInstalledModel()
         if !UserDefaults.standard.bool(forKey: "setupCompleted") {
@@ -118,17 +117,18 @@ import ApplicationServices
         statusItem.menu = menu
     }
 
-    private func configureSettings() {
-        settingsWindow.onModelChanged = { [weak self] model in
+    private func makeSettingsWindow() -> SettingsWindowController {
+        let controller = SettingsWindowController(workerClient: worker)
+        controller.onModelChanged = { [weak self] model in
             self?.updateModelChecks()
             if self?.installedModelKeys.contains(model.key) == true {
                 self?.modelStatusItem.title = "Model: Loads on First Dictation"
             }
         }
-        settingsWindow.onModelsChanged = { [weak self] models in
+        controller.onModelsChanged = { [weak self] models in
             self?.applyModelInventory(models)
         }
-        settingsWindow.onShortcutChanged = { [weak self] shortcut in
+        controller.onShortcutChanged = { [weak self] shortcut in
             guard let self else { return }
             do {
                 try shortcut.save()
@@ -138,7 +138,7 @@ import ApplicationServices
                 self.presentError(error)
             }
         }
-        settingsWindow.onShortcutCaptureChanged = { [weak self] isCapturing, suppressedKeys in
+        controller.onShortcutCaptureChanged = { [weak self] isCapturing, suppressedKeys in
             guard let self else { return }
             self.isCapturingShortcut = isCapturing
             if isCapturing {
@@ -149,12 +149,13 @@ import ApplicationServices
                 self.installHotkeysWhenPermitted()
             }
         }
-        settingsWindow.onPrivacySettingsLoaded = { [weak self] in
+        controller.onPrivacySettingsLoaded = { [weak self] in
             guard self?.awaitingPrivacyReview == true else { return }
             self?.awaitingPrivacyReview = false
             UserDefaults.standard.set(true, forKey: "privacyMigrationNoticeReviewed")
             self?.privacyNoticeItem.isHidden = true
         }
+        return controller
     }
 
     private func configurePermissionsAndStart() {
@@ -197,6 +198,7 @@ import ApplicationServices
                 try PasteEventGate.shared.start()
                 try hotkeys.start()
                 hotkeysStarted = true
+                NSLog("Installed the global dictation shortcut.")
             }
         } catch {
             hotkeys.stop()

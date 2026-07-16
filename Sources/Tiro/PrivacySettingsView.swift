@@ -128,10 +128,12 @@ final class PrivacySettingsView: NSStackView {
         statusRow.orientation = .horizontal
         statusRow.alignment = .centerY
         statusRow.spacing = 10
+        let historyDivider = divider()
+        let recordingsDivider = divider()
 
         for view in [
-            localOnly, storageLabel, historyRow, divider(), recordingsRow, divider(), retentionRow,
-            existingLabel, deleteRow, statusRow,
+            localOnly, storageLabel, historyRow, historyDivider, recordingsRow,
+            recordingsDivider, retentionRow, existingLabel, deleteRow, statusRow,
         ] {
             addArrangedSubview(view)
         }
@@ -141,7 +143,10 @@ final class PrivacySettingsView: NSStackView {
         setCustomSpacing(10, after: existingLabel)
         setCustomSpacing(14, after: deleteRow)
 
-        for view in [localOnly, historyRow, recordingsRow, retentionRow, deleteRow, statusRow] {
+        for view in [
+            localOnly, historyRow, historyDivider, recordingsRow, recordingsDivider,
+            retentionRow, deleteRow, statusRow,
+        ] {
             view.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }
         render()
@@ -175,7 +180,6 @@ final class PrivacySettingsView: NSStackView {
     private func divider() -> NSBox {
         let line = NSBox()
         line.boxType = .separator
-        line.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         return line
     }
 

@@ -18,12 +18,6 @@ struct DestinationSession {
         }
     }
 
-    enum AccessibilityInsertionResult {
-        case inserted
-        case unsupported
-        case uncertain
-    }
-
     private let application: NSRunningApplication
     private let applicationElement: AXUIElement
     private let windowElement: AXUIElement
@@ -188,27 +182,6 @@ struct DestinationSession {
             ) == expectedCharacterCount
         }
         return false
-    }
-
-    func insertUsingAccessibility(_ text: String) -> AccessibilityInsertionResult {
-        guard let focusedElement else { return .unsupported }
-        guard isAvailable, isFrontmost, isFocused, !isSecure else { return .uncertain }
-        var isSettable = DarwinBoolean(false)
-        let settableResult = AXUIElementIsAttributeSettable(
-            focusedElement,
-            kAXSelectedTextAttribute as CFString,
-            &isSettable
-        )
-        if settableResult == .attributeUnsupported || settableResult == .notImplemented {
-            return .unsupported
-        }
-        guard settableResult == .success else { return .uncertain }
-        guard isSettable.boolValue else { return .unsupported }
-        return AXUIElementSetAttributeValue(
-            focusedElement,
-            kAXSelectedTextAttribute as CFString,
-            text as CFString
-        ) == .success ? .inserted : .uncertain
     }
 
     var isFocused: Bool {
