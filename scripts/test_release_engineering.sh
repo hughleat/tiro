@@ -3,7 +3,10 @@ set -euo pipefail
 
 ROOT="${0:A:h:h}"
 
-zsh -n "$ROOT/scripts/build_native_app.sh" "$ROOT/scripts/smoke_release.sh"
+zsh -n \
+    "$ROOT/scripts/build_native_app.sh" \
+    "$ROOT/scripts/setup_local_signing.sh" \
+    "$ROOT/scripts/smoke_release.sh"
 rg -q -F 'api_version raw "$TEMP_ROOT/status.json")" == "7"' "$ROOT/scripts/smoke_release.sh"
 plutil -lint "$ROOT/native/Info.plist" "$ROOT/native/Tiro.entitlements" >/dev/null
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.audio-input' "$ROOT/native/Tiro.entitlements")" == "true" ]]
@@ -12,6 +15,22 @@ help="$($ROOT/scripts/build_native_app.sh --help)"
 print -r -- "$help" | rg -q 'distribution'
 print -r -- "$help" | rg -q -- '--notary-profile'
 print -r -- "$help" | rg -q -- '--build-number'
+print -r -- "$help" | rg -q 'setup_local_signing.sh'
+
+rg -q -F 'Tiro Local Development' "$ROOT/scripts/setup_local_signing.sh"
+rg -q -F 'extendedKeyUsage = codeSigning' "$ROOT/scripts/setup_local_signing.sh"
+rg -q -F 'security add-trusted-cert -r trustRoot -p codeSign' "$ROOT/scripts/setup_local_signing.sh"
+rg -q -F 'security delete-identity -Z "$fingerprint" -t "$KEYCHAIN"' "$ROOT/scripts/setup_local_signing.sh"
+rg -q -F 'codesign --verify --strict "$work/signing-test"' "$ROOT/scripts/setup_local_signing.sh"
+rg -q -F 'TIRO_LOCAL_SIGNING_IDENTITY' "$ROOT/scripts/build_native_app.sh"
+rg -q -F 'TIRO_LOCAL_SIGNING_KEYCHAIN' "$ROOT/scripts/build_native_app.sh"
+
+missing_keychain_output="$(TIRO_LOCAL_SIGNING_KEYCHAIN="$ROOT/does-not-exist.keychain" \
+    "$ROOT/scripts/build_native_app.sh" development 2>&1 || true)"
+if [[ "$missing_keychain_output" != *"local signing keychain not found"* ]]; then
+    print -u2 "development build accepted a missing local signing keychain"
+    exit 1
+fi
 
 if "$ROOT/scripts/build_native_app.sh" development --version invalid >/dev/null 2>&1; then
     print -u2 "invalid release version was accepted"

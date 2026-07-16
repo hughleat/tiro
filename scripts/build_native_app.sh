@@ -8,6 +8,8 @@ BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$ROOT/nativ
 OUTPUT_DIR="$ROOT/dist"
 ARCHIVE_DIR="$ROOT/dist/releases"
 SIGNING_IDENTITY="${TIRO_SIGNING_IDENTITY:-}"
+LOCAL_SIGNING_IDENTITY="${TIRO_LOCAL_SIGNING_IDENTITY:-Tiro Local Development}"
+LOCAL_SIGNING_KEYCHAIN="${TIRO_LOCAL_SIGNING_KEYCHAIN:-$HOME/Library/Keychains/login.keychain-db}"
 NOTARY_PROFILE="${TIRO_NOTARY_PROFILE:-}"
 ENTITLEMENTS="$ROOT/native/Tiro.entitlements"
 SKIP_NOTARIZATION=0
@@ -19,8 +21,8 @@ usage() {
 usage: build_native_app.sh [development|release|distribution] [options]
 
 Modes:
-  development   Native app using the checkout worker; ad-hoc signed (default)
-  release       Self-contained local app; ad-hoc signed
+  development   Native app using the checkout worker; locally signed (default)
+  release       Self-contained local app; locally signed
   distribution Self-contained Developer ID app, archive, and checksum
 
 Options:
@@ -34,9 +36,13 @@ Options:
   --skip-notarization        Signing test only; artifact is not ready to distribute
   -h, --help                 Show this help
 
+TIRO_LOCAL_SIGNING_IDENTITY selects the certificate used for local builds. Run
+scripts/setup_local_signing.sh once to create the default identity. If it is not
+available, local builds fall back to ad-hoc signing.
+
 TIRO_SIGNING_IDENTITY and TIRO_NOTARY_PROFILE provide credential-free defaults for
-the corresponding options. Store notarization credentials with notarytool rather
-than placing secrets in this script or the repository.
+distribution. Store notarization credentials with notarytool rather than placing
+secrets in this script or the repository.
 USAGE
 }
 
@@ -94,6 +100,13 @@ done
     || fail "--build-number must begin with an integer and contain only integers and periods"
 [[ -f "$ENTITLEMENTS" ]] || fail "entitlements file not found: $ENTITLEMENTS"
 
+if [[ "$MODE" != "distribution" ]]; then
+    [[ -f "$LOCAL_SIGNING_KEYCHAIN" ]] \
+        || fail "local signing keychain not found: $LOCAL_SIGNING_KEYCHAIN"
+    LOCAL_IDENTITIES="$(security find-identity -v -p codesigning "$LOCAL_SIGNING_KEYCHAIN" 2>&1)" \
+        || fail "could not read the local signing keychain: $LOCAL_SIGNING_KEYCHAIN"
+fi
+
 APP="$OUTPUT_DIR/Tiro.app"
 
 if [[ "$MODE" == "distribution" ]]; then
@@ -145,18 +158,41 @@ build_worker() {
     "$PYTHON" "$ROOT/scripts/validate_macos_compatibility.py" --update "$APP"
 }
 
-sign_ad_hoc() {
-    # The stable requirement helps local rebuilds retain Accessibility permission.
-    codesign --force --deep --sign - \
-        --requirements '=designated => identifier "local.tiro.dictation"' \
-        "$APP"
+sign_locally() {
+    local identity_matches identity_count fingerprint certificate_matches
+
+    identity_matches="$(print -r -- "$LOCAL_IDENTITIES" | grep -F -- "\"$LOCAL_SIGNING_IDENTITY\"" || true)"
+    if [[ -n "$identity_matches" ]]; then
+        identity_count="$(print -r -- "$identity_matches" | wc -l | tr -d ' ')"
+        [[ "$identity_count" == "1" ]] \
+            || fail "multiple local Tiro signing identities are installed"
+        fingerprint="$(print -r -- "$identity_matches" | awk '{print $2}')"
+        sign_nested_code \
+            --force \
+            --keychain "$LOCAL_SIGNING_KEYCHAIN" \
+            --sign "$fingerprint"
+        return
+    fi
+
+    certificate_matches="$(security find-certificate -a -c "$LOCAL_SIGNING_IDENTITY" -Z "$LOCAL_SIGNING_KEYCHAIN" 2>/dev/null \
+        | awk -v label="\"labl\"<blob>=\"$LOCAL_SIGNING_IDENTITY\"" '
+            /^SHA-1 hash:/ { fingerprint = $3 }
+            index($0, label) { print fingerprint }
+        ' || true)"
+    if [[ -n "$certificate_matches" ]]; then
+        fail "the local signing identity is installed but unusable; unlock the keychain and rerun scripts/setup_local_signing.sh"
+    fi
+
+    print -u2 "warning: local signing identity not found; Accessibility permission may reset after rebuilds"
+    print -u2 "run scripts/setup_local_signing.sh to create it"
+    sign_nested_code --force --sign -
 }
 
-sign_for_distribution() {
+sign_nested_code() {
     local candidate bundle
     local -a sign_args
 
-    sign_args=(--force --sign "$SIGNING_IDENTITY" --options runtime --timestamp)
+    sign_args=("$@")
 
     # Sign every nested Mach-O before any enclosing code bundle, then sign the app.
     while IFS= read -r -d '' candidate; do
@@ -174,6 +210,14 @@ sign_for_distribution() {
 
     codesign "${sign_args[@]}" --entitlements "$ENTITLEMENTS" "$APP"
     codesign --verify --deep --strict --verbose=2 "$APP"
+}
+
+sign_for_distribution() {
+    sign_nested_code \
+        --force \
+        --sign "$SIGNING_IDENTITY" \
+        --options runtime \
+        --timestamp
 }
 
 create_archive() {
@@ -236,7 +280,7 @@ if [[ "$MODE" != "development" ]]; then
 fi
 
 if [[ "$MODE" != "distribution" ]]; then
-    sign_ad_hoc
+    sign_locally
     print "$APP"
     exit 0
 fi

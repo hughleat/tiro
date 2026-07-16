@@ -2,8 +2,8 @@
 
 Tiro has three native build modes:
 
-- `development` builds the native app only and applies an ad-hoc signature.
-- `release` embeds the Python worker and applies an ad-hoc signature for local testing.
+- `development` builds the native app only and uses the local Tiro signing identity when installed.
+- `release` embeds the Python worker and uses the same local identity for testing.
 - `distribution` embeds the worker, signs nested Mach-O code inside-out with a Developer ID Application identity and hardened runtime, notarizes and staples the app, verifies it with Gatekeeper, and emits a ZIP plus SHA-256 checksum.
 
 The source `native/Info.plist` contains development defaults. Pass release metadata explicitly so the packaged copy is changed without rewriting source files:
@@ -48,7 +48,7 @@ The pipeline verifies nested signatures with `codesign`, waits for notarization,
   --expected-build 42
 ```
 
-For a credentialed signing rehearsal without notarization, pass `--skip-notarization`. The resulting archive includes `-unnotarized` in its name and is not suitable for distribution. Ad-hoc local validation remains:
+For a credentialed signing rehearsal without notarization, pass `--skip-notarization`. The resulting archive includes `-unnotarized` in its name and is not suitable for distribution. Local validation remains:
 
 ```sh
 ./scripts/build_native_app.sh release
