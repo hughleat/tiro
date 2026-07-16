@@ -14,6 +14,11 @@ cd "$ROOT"
 "$ROOT/scripts/test_app_paths_migration.sh"
 "$ROOT/scripts/test_hotkey_state.sh"
 "$ROOT/scripts/test_snippet_edit_state.sh"
+"$ROOT/scripts/test_private_file_permissions.sh"
+"$ROOT/scripts/test_release_engineering.sh"
+"$ROOT/scripts/test_swift_worker.sh"
 "$ROOT/scripts/build_native_app.sh" development
+"$ROOT/scripts/build_native_app.sh" release
+"$ROOT/scripts/smoke_release.sh"
 
 print "All Tiro checks passed"

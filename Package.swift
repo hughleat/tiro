@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "ParakeetDictation",
+    name: "Tiro",
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "Tiro", targets: ["Tiro"])
@@ -12,6 +12,20 @@ let package = Package(
         .executableTarget(
             name: "Tiro",
             path: "Sources/Tiro"
+        ),
+        .testTarget(
+            name: "TiroTests",
+            dependencies: ["Tiro"],
+            path: "Tests/TiroTests",
+            exclude: [
+                "ModifierEventStateTests.swift",
+                "SnippetEditStateTests.swift",
+            ],
+            sources: [
+                "WorkerAPITests.swift",
+                "WorkerProcessTests.swift",
+                "WorkerTransportTests.swift",
+            ]
         )
     ],
     swiftLanguageModes: [.v5]

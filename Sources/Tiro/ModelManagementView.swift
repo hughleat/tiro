@@ -103,7 +103,7 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         container.addSubview(stateLabel)
         addArrangedSubview(container)
         container.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-        container.heightAnchor.constraint(equalToConstant: 178).isActive = true
+        container.heightAnchor.constraint(greaterThanOrEqualToConstant: 178).isActive = true
         NSLayoutConstraint.activate([
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),

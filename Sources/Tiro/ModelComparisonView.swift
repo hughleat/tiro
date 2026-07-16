@@ -149,7 +149,7 @@ final class ModelComparisonView: NSStackView {
         recordingRow.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         actionRow.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         resultsContainer.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-        resultsContainer.heightAnchor.constraint(equalToConstant: 208).isActive = true
+        resultsContainer.heightAnchor.constraint(greaterThanOrEqualToConstant: 208).isActive = true
         updateCompareButton()
     }
 

@@ -94,7 +94,7 @@ final class SnippetEditorView: NSStackView, NSTableViewDataSource, NSTableViewDe
         addArrangedSubview(scrollView)
         addArrangedSubview(controls)
         scrollView.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-        scrollView.heightAnchor.constraint(equalToConstant: 130).isActive = true
+        scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 130).isActive = true
     }
 
     private func column(identifier: String, title: String) -> NSTableColumn {

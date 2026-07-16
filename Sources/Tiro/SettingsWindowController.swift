@@ -27,14 +27,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         modelManagementView = ModelManagementView(workerClient: workerClient)
         modelComparisonView = ModelComparisonView(workerClient: workerClient)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 700),
+            contentRect: NSRect(x: 0, y: 0, width: 860, height: 640),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Tiro"
+        window.title = "Tiro Settings"
         window.center()
-        window.minSize = NSSize(width: 480, height: 500)
+        window.minSize = NSSize(width: 720, height: 520)
+        window.setFrameAutosaveName("TiroSettingsWindow")
         super.init(window: window)
         window.delegate = self
         modelManagementView.onModelChanged = { [weak self] model in
@@ -100,19 +101,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func buildContent() {
-        guard let contentView = window?.contentView else { return }
-
-        let title = NSTextField(labelWithString: "Dictation Settings")
-        title.font = NSFont.systemFont(ofSize: 22, weight: .semibold)
-        let modelLabel = NSTextField(labelWithString: "Models")
-        modelLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        let comparisonLabel = NSTextField(labelWithString: "Compare Models")
-        comparisonLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        let behaviorLabel = NSTextField(labelWithString: "Dictation")
-        behaviorLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-
-        let shortcutLabel = NSTextField(labelWithString: "Shortcut")
-        shortcutLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
         shortcutRecorder.onShortcutChanged = { [weak self] shortcut in
             self?.onShortcutChanged?(shortcut)
         }
@@ -130,58 +118,91 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         launchAtLoginButton.target = self
         launchAtLoginButton.action = #selector(launchAtLoginChanged)
 
-        let historyLabel = NSTextField(labelWithString: "Recent Transcriptions")
-        historyLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        let general = SettingsPageViewController(title: "General", contentView: makeGeneralView())
+        let models = SettingsPageViewController(
+            title: "Models",
+            contentView: SettingsTabbedContentView(tabs: [
+                .init(title: "Model Library", view: modelManagementView),
+                .init(title: "Compare", view: modelComparisonView)
+            ])
+        )
+        let vocabulary = SettingsPageViewController(
+            title: "Vocabulary",
+            contentView: SettingsTabbedContentView(tabs: [
+                .init(title: "Replacements", view: vocabularyEditor),
+                .init(title: "Snippets", view: snippetEditor),
+                .init(title: "Suggestions", view: suggestionsView)
+            ])
+        )
+        let history = SettingsPageViewController(title: "History", contentView: historyView)
+        let about = SettingsPageViewController(title: "About", contentView: makeAboutView())
+        let navigation = SettingsNavigationController(items: [
+            .init(title: "General", symbolName: "gearshape", viewController: general),
+            .init(title: "Models", symbolName: "square.stack.3d.up", viewController: models),
+            .init(title: "Vocabulary", symbolName: "text.book.closed", viewController: vocabulary),
+            .init(title: "History", symbolName: "clock.arrow.circlepath", viewController: history),
+            .init(title: "About", symbolName: "info.circle", viewController: about)
+        ])
+        contentViewController = navigation
+    }
+
+    private func makeGeneralView() -> NSView {
+        let dictationLabel = sectionLabel("Dictation")
+        let shortcutLabel = sectionLabel("Shortcut")
         let stack = NSStackView(views: [
-            title, modelLabel, modelManagementView, comparisonLabel, modelComparisonView,
-            behaviorLabel, dictationPreferencesView,
+            dictationLabel, dictationPreferencesView,
             shortcutLabel, shortcutRecorder,
             autoPasteButton, soundFeedbackButton, launchAtLoginButton,
-            snippetEditor, vocabularyEditor, suggestionsView, historyLabel, historyView
+            NSView()
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
-        stack.setCustomSpacing(22, after: title)
-        stack.setCustomSpacing(18, after: modelManagementView)
-        stack.setCustomSpacing(18, after: modelComparisonView)
-        stack.setCustomSpacing(18, after: dictationPreferencesView)
-        stack.setCustomSpacing(18, after: launchAtLoginButton)
-        stack.setCustomSpacing(18, after: snippetEditor)
-        stack.setCustomSpacing(18, after: vocabularyEditor)
-        stack.setCustomSpacing(18, after: suggestionsView)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        let documentView = FlippedView()
-        documentView.translatesAutoresizingMaskIntoConstraints = false
-        documentView.addSubview(stack)
-        let scrollView = NSScrollView()
-        scrollView.hasVerticalScroller = true
-        scrollView.drawsBackground = false
-        scrollView.documentView = documentView
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(scrollView)
-
-        modelManagementView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        modelComparisonView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        stack.setCustomSpacing(20, after: dictationPreferencesView)
+        stack.setCustomSpacing(18, after: shortcutRecorder)
         dictationPreferencesView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        snippetEditor.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         shortcutRecorder.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        vocabularyEditor.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        suggestionsView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        historyView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        NSLayoutConstraint.activate([
-            scrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            scrollView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
-            documentView.heightAnchor.constraint(greaterThanOrEqualTo: scrollView.contentView.heightAnchor),
-            stack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor, constant: -24),
-            stack.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 24),
-            stack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -24)
-        ])
+        return stack
+    }
+
+    private func makeAboutView() -> NSView {
+        let icon = NSImageView(image: NSApp.applicationIconImage)
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.widthAnchor.constraint(equalToConstant: 96).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 96).isActive = true
+        let name = NSTextField(labelWithString: "Tiro")
+        name.font = .systemFont(ofSize: 20, weight: .semibold)
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        let versionLabel = NSTextField(labelWithString: Self.versionText(version: version, build: build))
+        versionLabel.textColor = .secondaryLabelColor
+        let details = NSStackView(views: [name, versionLabel])
+        details.orientation = .vertical
+        details.alignment = .leading
+        details.spacing = 4
+        let row = NSStackView(views: [icon, details, NSView()])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 18
+        let stack = NSStackView(views: [row, NSView()])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        return stack
+    }
+
+    private func sectionLabel(_ title: String) -> NSTextField {
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        return label
+    }
+
+    private static func versionText(version: String?, build: String?) -> String {
+        switch (version, build) {
+        case let (version?, build?) where version != build: return "Version \(version) (\(build))"
+        case let (version?, _): return "Version \(version)"
+        case let (_, build?): return "Build \(build)"
+        default: return "Local development build"
+        }
     }
 
     @objc private func autoPasteChanged() {
@@ -207,8 +228,4 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private func refreshLaunchAtLogin() {
         launchAtLoginButton.state = LoginItemManager.isEnabled ? .on : .off
     }
-}
-
-private final class FlippedView: NSView {
-    override var isFlipped: Bool { true }
 }

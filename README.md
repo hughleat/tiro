@@ -63,7 +63,7 @@ The development app does not embed Python. It uses `.venv/bin/python scripts/wor
 
 ## Self-contained App
 
-The release build uses PyInstaller `onedir` to embed the Python interpreter, `app.py`, MLX libraries, and their Python dependencies under `Tiro.app/Contents/Resources/worker/`. It synchronizes the project-local `.venv` exactly from `uv.lock`, including the `bundle` dependencies, then builds with:
+The release build uses PyInstaller `onedir` to embed the Python interpreter, `scripts/worker_entry.py`, MLX libraries, and their Python dependencies under `Tiro.app/Contents/Resources/worker/`. It synchronizes the project-local `.venv` exactly from `uv.lock`, including the `bundle` dependencies, then builds with:
 
 ```sh
 ./scripts/build_native_app.sh release
@@ -72,10 +72,10 @@ The release build uses PyInstaller `onedir` to embed the Python interpreter, `ap
 
 The build sync may download missing packages. The smoke check starts the packaged worker against temporary data, verifies API compatibility, and shuts it down. If the locked environment or runtime imports are unavailable, either command exits with an actionable error. Models themselves are not bundled; users explicitly download and remove them in Tiro's Models settings, and their files remain in Application Support.
 
-`WorkerClient.startAndWait()` must select `AppPaths.embeddedWorkerExecutable` when it is executable and use no script argument for it. Otherwise it must retain `.venv/bin/python` as the development executable and pass `AppPaths.developmentWorkerEntryPoint.path` as its sole argument. For either launch path it must set `process.environment = AppPaths.workerEnvironment()`, then add `TIRO_WORKER_TOKEN`, and use `AppPaths.applicationSupportDirectory` as `currentDirectoryURL`. These are the only native launch changes required by the packaged worker.
+`WorkerProcess` owns worker startup and compatibility checks. It selects the embedded worker in release builds and `.venv/bin/python scripts/worker_entry.py` during development, while `WorkerAPI` owns authenticated HTTP requests and `WorkerTransport` translates HTTP failures. The worker token and all mutable files are created with private permissions.
 
 ### macOS support policy
 
 macOS 14 remains the native source baseline, but a self-contained release can only support the highest minimum required by all native libraries embedded from its Python environment. After PyInstaller runs, the build scans every bundled Mach-O `LC_BUILD_VERSION`, raises the built app's `LSMinimumSystemVersion` to that maximum, and validates the result before signing. This deliberately favors a truthful, runnable artifact over claiming compatibility that its MLX wheel cannot provide. With the dependencies currently installed on this macOS 26 machine, MLX requires macOS 26.2, so this machine can run the result and the release bundle will declare 26.2 rather than falsely declaring 14.0. Building on an environment whose complete native dependency set supports an older macOS version produces that lower truthful minimum, never below the macOS 14 baseline.
 
-The script applies an ad-hoc signature with a stable designated requirement for local builds, which helps preserve Accessibility permission across rebuilds. This is not distributable signing: public release still requires a Developer ID Application identity, hardened runtime and appropriate entitlements, signing nested code in inside-out order, notarization, and stapling. Those credentialed steps are intentionally not automated here.
+Development and local release builds use an ad-hoc signature with a stable designated requirement, which helps preserve Accessibility permission across rebuilds. Distribution builds use the hardened runtime and sign nested code inside-out. A distribution build can also submit to Apple's notary service, staple the accepted ticket, verify Gatekeeper acceptance, and emit a ZIP plus SHA-256 checksum. See [`docs/RELEASING.md`](docs/RELEASING.md) for the credentialed commands and release checklist.

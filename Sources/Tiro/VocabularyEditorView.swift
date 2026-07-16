@@ -123,7 +123,7 @@ final class VocabularyEditorView: NSStackView, NSTableViewDataSource, NSTableVie
 
         profilePicker.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         scrollView.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-        scrollView.heightAnchor.constraint(equalToConstant: 160).isActive = true
+        scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
     }
 
     private func column(identifier: String, title: String) -> NSTableColumn {

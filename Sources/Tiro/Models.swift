@@ -373,13 +373,12 @@ enum VocabularyFile {
     }
 
     static func save(_ entries: [VocabularyEntry], to url: URL = AppPaths.vocabularyFile) throws {
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(VocabularyDocument(entries: entries)).write(to: url, options: .atomic)
+        try PrivateFilePermissions.write(
+            encoder.encode(VocabularyDocument(entries: entries)),
+            to: url
+        )
     }
 
     private static func parseLegacy(_ text: String) -> [VocabularyEntry] {

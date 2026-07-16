@@ -9,27 +9,22 @@ from pathlib import Path
 if not getattr(sys, "frozen", False):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import app
+from tiro_worker import common, server
 
 
 def configure_paths() -> None:
-    data_dir = Path(os.environ["TIRO_DATA_DIR"]).expanduser().resolve()
-    model_dir = Path(os.environ["TIRO_MODEL_DIR"]).expanduser().resolve()
+    data_root = Path(os.environ["TIRO_DATA_DIR"]).expanduser()
+    model_root = Path(os.environ["TIRO_MODEL_DIR"]).expanduser()
+    common._reject_symbolic_link(data_root)
+    common._reject_symbolic_link(model_root)
+    data_dir = data_root.resolve()
+    model_dir = model_root.resolve()
 
-    app.ROOT = data_dir.parent
-    app.DATA_DIR = data_dir
-    app.AUDIO_DIR = data_dir / "audio"
-    app.HISTORY_PATH = data_dir / "history.jsonl"
-    app.RETENTION_PATH = data_dir / "retention.json"
-    app.VOCABULARY_PATH = data_dir / "vocabulary.json"
-    app.PROFILES_PATH = data_dir / "profiles.json"
-    app.SUGGESTIONS_PATH = data_dir / "suggestions.json"
-    app.SNIPPETS_PATH = data_dir / "snippets.json"
-    app.MODEL_CACHE = model_dir
-    app.MODEL_HUB_CACHE = model_dir / "hub"
+    common.configure_paths(data_dir, model_dir)
     os.environ["HF_HOME"] = str(model_dir)
+    common.ensure_private_paths()
 
 
 if __name__ == "__main__":
     configure_paths()
-    app.main()
+    server.main()
