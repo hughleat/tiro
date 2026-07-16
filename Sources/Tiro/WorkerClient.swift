@@ -92,11 +92,28 @@ import Foundation
         }
     }
 
-    func setHistoryRetention(days: Int) async throws {
-        guard [0, 7, 30, 90].contains(days) else {
-            throw WorkerError.server("Retention must be Forever, 7, 30, or 90 days.")
+    func privacySettings() async throws -> PrivacySettings {
+        try await api.privacySettings()
+    }
+
+    func updatePrivacySettings(_ settings: PrivacySettings) async throws -> PrivacySettings {
+        try Self.validatePrivacySettings(settings)
+        return try await serializedMutation {
+            try await self.api.updatePrivacySettings(settings)
         }
-        try await serializedMutation { try await self.api.setHistoryRetention(days: days) }
+    }
+
+    func deleteAllHistory() async throws {
+        try await serializedMutation { try await self.api.deleteAllHistory() }
+    }
+
+    nonisolated static func validatePrivacySettings(_ settings: PrivacySettings) throws {
+        guard !settings.store_recordings || settings.store_history else {
+            throw WorkerError.server("Recordings can only be kept when transcription history is saved.")
+        }
+        guard [0, 1, 7, 30, 90].contains(settings.retention_days) else {
+            throw WorkerError.server("Retention must be Forever, 1, 7, 30, or 90 days.")
+        }
     }
 
     func vocabularyProfiles() async throws -> VocabularyProfilesDocument {

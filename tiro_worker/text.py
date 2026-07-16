@@ -579,11 +579,6 @@ def _reconcile_suggestions_locked(lines: list[str]) -> dict:
             if "accepting_scope" in decision:
                 suggestion["accepting_scope"] = decision["accepting_scope"]
         reconciled.append(suggestion)
-    for decision in decisions.values():
-        decision = dict(decision)
-        decision["transcription_ids"] = []
-        decision["count"] = 0
-        reconciled.append(decision)
     document = {"version": 1, "suggestions": reconciled}
     _save_suggestions_locked(document)
     return document

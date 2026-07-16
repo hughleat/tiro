@@ -44,17 +44,24 @@ def history_environment():
         root = Path(directory)
         data = root / "data"
         audio = data / "audio"
+        transient_audio = data / "transient-audio"
         data.mkdir()
         audio.mkdir()
+        transient_audio.mkdir()
         stack.enter_context(patch.object(common, "ROOT", root))
         stack.enter_context(patch.object(common, "DATA_DIR", data))
         stack.enter_context(patch.object(common, "AUDIO_DIR", audio))
+        stack.enter_context(patch.object(common, "TRANSIENT_AUDIO_DIR", transient_audio))
         stack.enter_context(patch.object(common, "HISTORY_PATH", data / "history.jsonl"))
         stack.enter_context(patch.object(common, "RETENTION_PATH", data / "retention.json"))
+        stack.enter_context(patch.object(common, "PRIVACY_PATH", data / "privacy.json"))
         stack.enter_context(patch.object(common, "VOCABULARY_PATH", data / "vocabulary.json"))
         stack.enter_context(patch.object(common, "PROFILES_PATH", data / "profiles.json"))
         stack.enter_context(patch.object(common, "SUGGESTIONS_PATH", data / "suggestions.json"))
         stack.enter_context(patch.object(common, "SNIPPETS_PATH", data / "snippets.json"))
+        common.PRIVACY_PATH.write_text(
+            '{"store_history":true,"store_recordings":true,"retention_days":0}\n'
+        )
         yield root, audio, common.HISTORY_PATH
 
 
@@ -103,7 +110,7 @@ class DecodeWavTests(unittest.TestCase):
 
 
 class HistoryTests(unittest.TestCase):
-    def test_migration_is_stable_and_preserves_unknown_and_malformed_lines(self):
+    def test_migration_is_stable_without_leaving_a_plaintext_backup(self):
         with history_environment() as (_, _, history):
             original = (
                 '{"timestamp":"2025-01-01T00:00:00+00:00",'
@@ -121,11 +128,11 @@ class HistoryTests(unittest.TestCase):
             self.assertEqual(entry["id"], expected)
             self.assertEqual(entry["unknown"], {"x": 1})
             self.assertEqual(first.splitlines()[1], "not-json at all")
-            self.assertEqual(history.with_name("history.jsonl.bak").read_text(), original)
+            self.assertFalse(history.with_name("history.jsonl.bak").exists())
 
             storage.migrate_history()
             self.assertEqual(history.read_text(), first)
-            self.assertEqual(history.with_name("history.jsonl.bak").read_text(), original)
+            self.assertFalse(history.with_name("history.jsonl.bak").exists())
 
     def test_migration_ids_are_framed_unique_and_duplicate_repair_is_stable(self):
         with history_environment() as (_, _, history):
@@ -299,6 +306,130 @@ class HistoryMutationTests(unittest.TestCase):
             self.assertFalse(staged.exists())
 
 
+class PrivacyStorageTests(unittest.TestCase):
+    def test_new_install_defaults_are_private_and_persisted(self):
+        with history_environment():
+            common.PRIVACY_PATH.unlink()
+            settings = storage.load_privacy_settings()
+
+            self.assertEqual(settings, {
+                "store_history": False,
+                "store_recordings": False,
+                "retention_days": 30,
+            })
+            self.assertEqual(json.loads(common.PRIVACY_PATH.read_text()), settings)
+
+    def test_legacy_install_migrates_without_deleting_data(self):
+        with history_environment() as (_, _, history):
+            common.PRIVACY_PATH.unlink()
+            history.write_text("malformed legacy history\n")
+            common.RETENTION_PATH.write_text('{"days":7}\n')
+
+            self.assertEqual(storage.load_privacy_settings(), {
+                "store_history": True,
+                "store_recordings": True,
+                "retention_days": 7,
+            })
+            self.assertEqual(history.read_text(), "malformed legacy history\n")
+
+    def test_privacy_validation_requires_exact_fields_and_invariant(self):
+        valid = {"store_history": True, "store_recordings": False, "retention_days": 1}
+        with history_environment():
+            self.assertEqual(storage.update_privacy_settings(valid)["retention_days"], 1)
+            invalid = [
+                {**valid, "extra": False},
+                {"store_history": True, "store_recordings": False},
+                {**valid, "store_history": 1},
+                {**valid, "retention_days": True},
+                {**valid, "retention_days": 2},
+                {"store_history": False, "store_recordings": True, "retention_days": 30},
+            ]
+            for settings in invalid:
+                with self.subTest(settings=settings), self.assertRaises(ValueError):
+                    storage.update_privacy_settings(settings)
+
+    def test_privacy_update_rolls_back_when_retention_fails(self):
+        with history_environment() as (_, audio, history):
+            recording = audio / "old.wav"
+            recording.write_bytes(b"old")
+            history.write_text(
+                '{"id":"old","timestamp":"2000-01-01T00:00:00Z",'
+                '"audio_file":"data/audio/old.wav"}\n'
+            )
+            previous = common.PRIVACY_PATH.read_text()
+            real_atomic_write = common._atomic_write
+
+            def fail_history(path, content):
+                if path == common.HISTORY_PATH:
+                    raise OSError("history write failed")
+                return real_atomic_write(path, content)
+
+            with patch.object(common, "_atomic_write", side_effect=fail_history):
+                with self.assertRaisesRegex(OSError, "history write failed"):
+                    storage.update_privacy_settings({
+                        "store_history": True,
+                        "store_recordings": False,
+                        "retention_days": 7,
+                    })
+            self.assertEqual(common.PRIVACY_PATH.read_text(), previous)
+            self.assertTrue(recording.exists())
+
+    def test_delete_all_removes_every_history_artifact_and_is_idempotent(self):
+        with history_environment() as (_, audio, history):
+            history.write_text("malformed\n")
+            history.with_name("history.jsonl.bak").write_text("sensitive backup")
+            (audio / "orphan.wav").write_bytes(b"orphan")
+            (audio / (common.STAGED_AUDIO_PREFIX + "staged")).write_bytes(b"staged")
+            (common.TRANSIENT_AUDIO_DIR / "crash-left.wav").write_bytes(b"temporary")
+            nested = audio / "nested"
+            nested.mkdir()
+            (nested / "recording.wav").write_bytes(b"nested")
+            common.SUGGESTIONS_PATH.write_text(
+                '{"version":1,"suggestions":[{"spoken":"secret"}]}\n'
+            )
+            common.VOCABULARY_PATH.write_text('{"entries":[{"spoken":"a","written":"b"}]}')
+            policy = common.PRIVACY_PATH.read_text()
+
+            storage.delete_all_history()
+            storage.delete_all_history()
+
+            self.assertEqual(history.read_text(), "")
+            self.assertFalse(history.with_name("history.jsonl.bak").exists())
+            self.assertEqual(list(audio.rglob("*")), [])
+            self.assertEqual(list(common.TRANSIENT_AUDIO_DIR.rglob("*")), [])
+            self.assertEqual(
+                json.loads(common.SUGGESTIONS_PATH.read_text()),
+                {"version": 1, "suggestions": []},
+            )
+            self.assertTrue(common.VOCABULARY_PATH.exists())
+            self.assertEqual(common.PRIVACY_PATH.read_text(), policy)
+
+    def test_delete_all_never_restores_data_after_later_cleanup_failure(self):
+        with history_environment() as (_, audio, history):
+            history.write_text("sensitive malformed history\n")
+            backup = history.with_name("history.jsonl.bak")
+            backup.write_text("sensitive backup")
+            (audio / "orphan.wav").write_bytes(b"audio")
+            common.SUGGESTIONS_PATH.write_text('{"version":1,"suggestions":[]}\n')
+            path_type = type(backup)
+            real_unlink = path_type.unlink
+
+            def fail_backup(path, *args, **kwargs):
+                if path == backup:
+                    raise PermissionError("backup busy")
+                return real_unlink(path, *args, **kwargs)
+
+            with patch.object(path_type, "unlink", new=fail_backup):
+                with self.assertRaisesRegex(PermissionError, "backup busy"):
+                    storage.delete_all_history()
+
+            self.assertEqual(history.read_text(), "")
+            self.assertEqual(list(audio.iterdir()), [])
+            self.assertTrue(backup.exists())
+            storage.delete_all_history()
+            self.assertFalse(backup.exists())
+
+
 class RetentionTests(unittest.TestCase):
     def test_prunes_only_entries_older_than_boundary_and_cleans_audio(self):
         now = datetime(2026, 7, 15, 12, tzinfo=timezone.utc)
@@ -311,19 +442,53 @@ class RetentionTests(unittest.TestCase):
                 {"id": "old", "timestamp": (now - timedelta(days=7, seconds=1)).isoformat(), "audio_file": "data/audio/old.wav"},
                 {"id": "boundary", "timestamp": (now - timedelta(days=7)).isoformat(), "audio_file": "data/audio/boundary.wav"},
                 {"id": "invalid", "timestamp": "not-a-date"},
+                {"id": "overflow", "timestamp": "9999-12-31T23:59:59-23:59"},
             ]
             history.write_text(
                 json.dumps(entries[0]) + "\nmalformed\n" +
-                json.dumps(entries[1]) + "\n" + json.dumps(entries[2]) + "\n"
+                json.dumps(entries[1]) + "\n" + json.dumps(entries[2]) + "\n" +
+                json.dumps(entries[3]) + "\n"
             )
-            self.assertEqual(storage.set_retention(7, now), 1)
+            self.assertEqual(storage.set_retention(7, now), 4)
             self.assertFalse(old_audio.exists())
             self.assertTrue(boundary_audio.exists())
             remaining = history.read_text()
-            self.assertIn("malformed", remaining)
             self.assertIn('"id": "boundary"', remaining)
-            self.assertIn('"id": "invalid"', remaining)
+            self.assertNotIn("malformed", remaining)
+            self.assertNotIn('"id": "invalid"', remaining)
+            self.assertNotIn('"id": "overflow"', remaining)
             self.assertEqual(storage.load_retention_days(), 7)
+
+    def test_finite_retention_removes_migration_backup(self):
+        with history_environment() as (_, _, history):
+            history.write_text('{"id":"old","timestamp":"2000-01-01T00:00:00Z"}\n')
+            backup = history.with_name("history.jsonl.bak")
+            backup.write_text("sensitive backup")
+
+            storage.set_retention(7)
+
+            self.assertFalse(backup.exists())
+
+    def test_retention_clears_suggestions_if_reconciliation_fails(self):
+        with history_environment() as (_, _, history):
+            history.write_text(
+                '{"id":"old","timestamp":"2000-01-01T00:00:00Z",'
+                '"corrected_text":"private correction"}\n'
+            )
+            common.SUGGESTIONS_PATH.write_text(
+                '{"version":1,"suggestions":[{"spoken":"private"}]}\n'
+            )
+            with patch.object(
+                text_service,
+                "_reconcile_suggestions_locked",
+                side_effect=ValueError("malformed suggestion cache"),
+            ):
+                storage.set_retention(7)
+
+            self.assertEqual(
+                json.loads(common.SUGGESTIONS_PATH.read_text()),
+                {"version": 1, "suggestions": []},
+            )
 
     def test_zero_disables_pruning_and_invalid_choice_is_rejected(self):
         with history_environment() as (_, _, history):
@@ -331,7 +496,7 @@ class RetentionTests(unittest.TestCase):
             self.assertEqual(storage.set_retention(0), 0)
             self.assertIn("old", history.read_text())
             with self.assertRaisesRegex(ValueError, "one of"):
-                storage.set_retention(1)
+                storage.set_retention(8)
 
     def test_audio_cleanup_does_not_escape_audio_directory(self):
         with history_environment() as (root, _, history):
@@ -373,7 +538,9 @@ class RetentionTests(unittest.TestCase):
                 '"audio_file":"data/audio/second.wav"}\n',
             ])
             history.write_text(original)
-            storage._persist_retention_days(30)
+            privacy = storage.load_privacy_settings()
+            privacy["retention_days"] = 30
+            storage._persist_privacy_locked(privacy)
             real_replace = os.replace
 
             def fail_second_stage(source, destination):
@@ -423,7 +590,9 @@ class RetentionTests(unittest.TestCase):
                 '"audio_file":"data/audio/old.wav"}\n'
             )
             history.write_text(original)
-            storage._persist_retention_days(30)
+            privacy = storage.load_privacy_settings()
+            privacy["retention_days"] = 30
+            storage._persist_privacy_locked(privacy)
             real_atomic_write = common._atomic_write
 
             def fail_history(path, content):
@@ -444,15 +613,15 @@ class RetentionTests(unittest.TestCase):
             first_persisting = threading.Event()
             release_first = threading.Event()
             second_finished = threading.Event()
-            real_persist = storage._persist_retention_days
+            real_persist = storage._persist_privacy_locked
 
-            def controlled_persist(days):
-                if days == 0:
+            def controlled_persist(settings):
+                if settings["retention_days"] == 0:
                     first_persisting.set()
                     release_first.wait(1)
-                real_persist(days)
+                real_persist(settings)
 
-            with patch.object(storage, "_persist_retention_days", side_effect=controlled_persist):
+            with patch.object(storage, "_persist_privacy_locked", side_effect=controlled_persist):
                 first = threading.Thread(target=storage.set_retention, args=(0,))
                 second = threading.Thread(
                     target=lambda: (storage.set_retention(7), second_finished.set())
@@ -472,6 +641,37 @@ class RetentionTests(unittest.TestCase):
 
 
 class TranscriptionHistoryTests(unittest.TestCase):
+    def test_transcription_obeys_each_valid_storage_policy(self):
+        policies = [
+            ({"store_history": False, "store_recordings": False, "retention_days": 30}, False, False),
+            ({"store_history": True, "store_recordings": False, "retention_days": 30}, True, False),
+            ({"store_history": True, "store_recordings": True, "retention_days": 30}, True, True),
+        ]
+        for policy, expects_history, expects_audio in policies:
+            with self.subTest(policy=policy), history_environment() as (_, audio, history), patch.object(
+                model_service, "decode_pcm_wav", return_value=array("h", [1])
+            ), patch.object(
+                model_service, "_installed_model_snapshots", return_value={"compact": Path("/cache/model")}
+            ), patch.object(
+                model_service, "_generate_transcript", return_value="hello"
+            ), patch.object(
+                text_service, "apply_spoken_formatting", side_effect=lambda value, _: value
+            ), patch.object(
+                text_service, "vocabulary_for_origin", return_value=[]
+            ), patch.object(
+                text_service, "load_snippets", return_value=[]
+            ):
+                common.PRIVACY_PATH.write_text(json.dumps(policy))
+                entry = model_service.transcribe(make_wav(), "compact")
+
+                self.assertEqual(entry["text"], "hello")
+                self.assertEqual(history.exists() and bool(history.read_text()), expects_history)
+                self.assertEqual(bool(list(audio.glob("*.wav"))), expects_audio)
+                self.assertEqual("audio_file" in entry, expects_audio)
+                if expects_history:
+                    persisted = json.loads(history.read_text())
+                    self.assertEqual("audio_file" in persisted, expects_audio)
+
     def test_postprocessing_failure_removes_uncommitted_audio(self):
         with history_environment() as (_, audio, _), patch.object(
             model_service, "decode_pcm_wav", return_value=array("h", [1])
@@ -857,6 +1057,9 @@ class WorkerEntryTests(unittest.TestCase):
             self.assertEqual(
                 common.SNIPPETS_PATH, Path(directory).resolve() / "data/snippets.json"
             )
+            self.assertEqual(
+                common.PRIVACY_PATH, Path(directory).resolve() / "data/privacy.json"
+            )
 
     def test_configure_paths_and_state_writes_are_private(self):
         with history_environment(), tempfile.TemporaryDirectory() as directory, patch.dict(
@@ -865,10 +1068,18 @@ class WorkerEntryTests(unittest.TestCase):
         ):
             worker_entry.configure_paths()
             text_service.save_profiles({"version": 1, "profiles": []})
+            storage.load_privacy_settings()
 
-            for path in (common.DATA_DIR, common.AUDIO_DIR, common.MODEL_CACHE, common.MODEL_HUB_CACHE):
+            for path in (
+                common.DATA_DIR,
+                common.AUDIO_DIR,
+                common.TRANSIENT_AUDIO_DIR,
+                common.MODEL_CACHE,
+                common.MODEL_HUB_CACHE,
+            ):
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(common.PROFILES_PATH.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(common.PRIVACY_PATH.stat().st_mode), 0o600)
 
     def test_configure_paths_rejects_symlinked_data_root(self):
         with history_environment(), tempfile.TemporaryDirectory() as directory:
@@ -1113,6 +1324,22 @@ class CorrectionSuggestionTests(unittest.TestCase):
             stored = json.loads(common.SUGGESTIONS_PATH.read_text())["suggestions"][0]
             self.assertTrue(stored["dismissed"])
 
+    def test_deleting_all_supporting_history_erases_dismissed_suggestion_text(self):
+        with history_environment():
+            for entry_id in ("one", "two"):
+                self._write_entry(entry_id, "hello yana")
+                text_service.correct_history_entry(entry_id, "hello Janne")
+            suggestion_id = text_service.get_suggestions()[0]["id"]
+            self.assertTrue(text_service.dismiss_suggestion(suggestion_id))
+
+            storage.delete_history_entry("one")
+            storage.delete_history_entry("two")
+
+            self.assertEqual(
+                json.loads(common.SUGGESTIONS_PATH.read_text())["suggestions"],
+                [],
+            )
+
     def test_uses_raw_spoken_form_when_vocabulary_changed_delivered_text(self):
         with history_environment():
             common.VOCABULARY_PATH.write_text(json.dumps({"entries": [
@@ -1142,9 +1369,12 @@ class CorrectionSuggestionTests(unittest.TestCase):
             self.assertFalse(common.PROFILES_PATH.exists())
             storage.delete_history_entry("one")
             storage.delete_history_entry("two")
-            self.assertEqual(text_service.accept_suggestion(suggestion_id, "profile"), "global")
-            with self.assertRaisesRegex(ValueError, "already accepted"):
-                text_service.dismiss_suggestion(suggestion_id)
+            self.assertIsNone(text_service.accept_suggestion(suggestion_id, "profile"))
+            self.assertFalse(text_service.dismiss_suggestion(suggestion_id))
+            self.assertEqual(
+                json.loads(common.SUGGESTIONS_PATH.read_text())["suggestions"],
+                [],
+            )
 
         with history_environment():
             for entry_id in ("one", "two"):
@@ -2152,31 +2382,30 @@ class HistoryEndpointTests(unittest.TestCase):
             )
             self.assertEqual(status, 404)
 
-    def test_delete_and_retention_require_valid_token(self):
+    def test_history_and_privacy_mutations_require_valid_token(self):
         with history_environment() as (_, _, history), worker_server() as address:
             history.write_text('{"id":"entry"}\n')
             for path, payload in [
                 ("/api/history/delete", {"id": "entry"}),
-                ("/api/history/retention", {"days": 7}),
+                ("/api/history/delete-all", {"confirm": True}),
+                ("/api/privacy", {
+                    "store_history": False,
+                    "store_recordings": False,
+                    "retention_days": 30,
+                }),
             ]:
                 self.assertEqual(request(address, "POST", path, payload)[0], 403)
                 self.assertEqual(request(address, "POST", path, payload, "wrong")[0], 403)
 
-    def test_authenticated_delete_and_retention_responses(self):
+    def test_authenticated_delete_response(self):
         with history_environment() as (_, _, history), worker_server() as address:
             history.write_text("".join([
                 '{"id":"delete-me"}\n',
-                '{"id":"old","timestamp":"2000-01-01T00:00:00Z"}\n',
             ]))
             status, _, body = request(
                 address, "POST", "/api/history/delete", {"id": "delete-me"}, "secret"
             )
             self.assertEqual((status, json.loads(body)), (200, {"deleted": True}))
-            status, _, body = request(
-                address, "POST", "/api/history/retention", {"days": 7}, "secret"
-            )
-            self.assertEqual(status, 200)
-            self.assertEqual(json.loads(body), {"days": 7, "pruned": 1})
 
     def test_delete_succeeds_when_final_unlink_waits_for_reconciliation(self):
         with history_environment() as (_, audio, history), worker_server() as address:
@@ -2221,7 +2450,7 @@ class HistoryEndpointTests(unittest.TestCase):
             oversized = b"x" * (common.MAX_JSON_BODY_BYTES + 1)
             connection.request(
                 "POST",
-                "/api/history/retention",
+                "/api/privacy",
                 body=oversized,
                 headers={"X-Tiro-Worker-Token": "secret"},
             )
@@ -2244,14 +2473,48 @@ class HistoryEndpointTests(unittest.TestCase):
             self.assertEqual(response.status, 411)
             self.assertIn("Content-Length", json.loads(body)["error"])
 
-    def test_retention_rejects_bool_and_unsupported_days(self):
+    def test_privacy_get_and_update_are_authenticated(self):
         with history_environment(), worker_server() as address:
-            for days in (True, 8):
-                status, _, body = request(
-                    address, "POST", "/api/history/retention", {"days": days}, "secret"
+            self.assertEqual(request(address, "GET", "/api/privacy")[0], 403)
+            status, _, body = request(address, "GET", "/api/privacy", token="secret")
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body), {
+                "store_history": True,
+                "store_recordings": True,
+                "retention_days": 0,
+            })
+            settings = {
+                "store_history": True,
+                "store_recordings": False,
+                "retention_days": 1,
+            }
+            status, _, body = request(
+                address, "POST", "/api/privacy", settings, "secret"
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body), {**settings, "pruned": 0})
+
+    def test_delete_all_requires_exact_confirmation_and_clears_history(self):
+        with history_environment() as (_, audio, history), worker_server() as address:
+            history.write_text("malformed sensitive history\n")
+            (audio / "orphan.wav").write_bytes(b"audio")
+            for payload in ({}, {"confirm": False}, {"confirm": True, "extra": True}):
+                status, _, _ = request(
+                    address, "POST", "/api/history/delete-all", payload, "secret"
                 )
                 self.assertEqual(status, 400)
-                self.assertIn("0, 7, 30, or 90", json.loads(body)["error"])
+            self.assertTrue(history.read_text())
+
+            status, _, body = request(
+                address,
+                "POST",
+                "/api/history/delete-all",
+                {"confirm": True},
+                "secret",
+            )
+            self.assertEqual((status, json.loads(body)), (200, {"deleted": True}))
+            self.assertEqual(history.read_text(), "")
+            self.assertEqual(list(audio.iterdir()), [])
 
 
 class VocabularySuggestionEndpointTests(unittest.TestCase):
@@ -2466,7 +2729,7 @@ class FinalFeatureEndpointTests(unittest.TestCase):
 
 class WorkerProtocolTests(unittest.TestCase):
     def test_protocol_version_is_current(self):
-        self.assertEqual(common.API_VERSION, 6)
+        self.assertEqual(common.API_VERSION, 7)
 
     def test_status_reports_protocol_version(self):
         with history_environment(), worker_server() as address:
@@ -2475,7 +2738,7 @@ class WorkerProtocolTests(unittest.TestCase):
                 address, "GET", "/api/status", token="secret"
             )
             self.assertEqual(status, 200)
-            self.assertEqual(json.loads(body)["api_version"], 6)
+            self.assertEqual(json.loads(body)["api_version"], 7)
 
     def test_status_reports_current_loaded_model(self):
         with history_environment(), patch.object(model_service, "_model_id", "loaded-now"), worker_server() as address:

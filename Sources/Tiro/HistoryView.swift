@@ -6,19 +6,13 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
     NSTableViewDelegate, AVAudioPlayerDelegate {
     var onCorrectionSaved: (() -> Void)?
 
-    private enum DefaultsKey {
-        static let retentionDays = "historyRetentionDays"
-    }
-
     private let workerClient: WorkerClient
     private let searchField = NSSearchField()
-    private let retentionPicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private let table = NSTableView()
     private let stateLabel = NSTextField(labelWithString: "")
     private var entries: [HistoryEntry] = []
     private var searchTask: Task<Void, Never>?
     private var audioTask: Task<Void, Never>?
-    private var retentionTask: Task<Void, Never>?
     private var correctionTask: Task<Void, Never>?
     private var requestGeneration = 0
     private var audioPlayer: AVAudioPlayer?
@@ -35,7 +29,6 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
     deinit {
         searchTask?.cancel()
         audioTask?.cancel()
-        retentionTask?.cancel()
         correctionTask?.cancel()
     }
 
@@ -52,16 +45,7 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
         searchField.delegate = self
         searchField.setAccessibilityLabel("Search transcription history")
 
-        retentionPicker.addItems(withTitles: ["Forever", "7 days", "30 days", "90 days"])
-        retentionPicker.target = self
-        retentionPicker.action = #selector(retentionChanged)
-        retentionPicker.toolTip = "Keep transcription history"
-        retentionPicker.setAccessibilityLabel("History retention")
-        selectRetention(days: UserDefaults.standard.integer(forKey: DefaultsKey.retentionDays))
-
-        let retentionLabel = NSTextField(labelWithString: "Keep")
-        retentionLabel.textColor = .secondaryLabelColor
-        let controls = NSStackView(views: [searchField, retentionLabel, retentionPicker])
+        let controls = NSStackView(views: [searchField])
         controls.orientation = .horizontal
         controls.alignment = .centerY
         controls.spacing = 8
@@ -327,61 +311,6 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
                 window?.presentError(error)
             }
         }
-    }
-
-    @objc private func retentionChanged() {
-        let days = [0, 7, 30, 90][retentionPicker.indexOfSelectedItem]
-        let previousDays = UserDefaults.standard.integer(forKey: DefaultsKey.retentionDays)
-        guard days != 0 else {
-            applyRetention(days: days, previousDays: previousDays)
-            return
-        }
-
-        let alert = NSAlert()
-        alert.messageText = "Keep only the last \(days) days?"
-        alert.informativeText = "Older transcripts and recordings will be permanently deleted."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Apply")
-        alert.addButton(withTitle: "Cancel")
-        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
-            guard let self else { return }
-            if response == .alertFirstButtonReturn {
-                self.applyRetention(days: days, previousDays: previousDays)
-            } else {
-                self.selectRetention(days: previousDays)
-            }
-        }
-        if let window {
-            alert.beginSheetModal(for: window, completionHandler: completion)
-        } else {
-            completion(alert.runModal())
-        }
-    }
-
-    private func applyRetention(days: Int, previousDays: Int) {
-        UserDefaults.standard.set(days, forKey: DefaultsKey.retentionDays)
-        retentionPicker.isEnabled = false
-        retentionTask?.cancel()
-        retentionTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await workerClient.setHistoryRetention(days: days)
-                guard !Task.isCancelled else { return }
-                retentionPicker.isEnabled = true
-                refresh()
-            } catch {
-                guard !Task.isCancelled else { return }
-                UserDefaults.standard.set(previousDays, forKey: DefaultsKey.retentionDays)
-                selectRetention(days: previousDays)
-                retentionPicker.isEnabled = true
-                window?.presentError(error)
-            }
-        }
-    }
-
-    private func selectRetention(days: Int) {
-        let options = [0, 7, 30, 90]
-        retentionPicker.selectItem(at: options.firstIndex(of: days) ?? 0)
     }
 
     private static func parseDate(_ value: String) -> Date? {

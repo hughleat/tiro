@@ -5,7 +5,6 @@ import binascii
 import json
 import math
 import os
-import shutil
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -134,10 +133,12 @@ def _migrate_history_locked() -> list[str]:
         migrated[index] = _serialize_entry(entry, line)
         changed = True
     if changed:
-        backup = common.HISTORY_PATH.with_name(common.HISTORY_PATH.name + ".bak")
-        if not backup.exists():
-            shutil.copyfile(common.HISTORY_PATH, backup)
         common._atomic_write(common.HISTORY_PATH, "".join(migrated))
+    backup = common.HISTORY_PATH.with_name(common.HISTORY_PATH.name + ".bak")
+    try:
+        backup.unlink()
+    except FileNotFoundError:
+        pass
     return migrated
 
 
@@ -345,6 +346,19 @@ def _finalize_staged_audio(staged: list[tuple[Path, Path]]) -> None:
             )
 
 
+def _refresh_suggestions_without_stale_evidence(kept_lines: list[str]) -> None:
+    from . import text
+
+    with _state_lock:
+        try:
+            text._reconcile_suggestions_locked(kept_lines)
+        except (OSError, ValueError):
+            common._atomic_write(
+                common.SUGGESTIONS_PATH,
+                '{"version":1,"suggestions":[]}\n',
+            )
+
+
 def delete_history_entry(entry_id: str) -> bool:
     with _history_lock:
         lines = _migrate_history_locked()
@@ -360,9 +374,7 @@ def delete_history_entry(entry_id: str) -> bool:
             return False
         staged = _commit_history_with_staged_audio([removed_entry], kept)
         _finalize_staged_audio(staged)
-        from .text import _refresh_suggestions_after_history_locked
-
-        _refresh_suggestions_after_history_locked(kept)
+        _refresh_suggestions_without_stale_evidence(kept)
     return True
 
 
@@ -371,24 +383,106 @@ def _parse_timestamp(value: object) -> datetime | None:
         return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
-def load_retention_days() -> int:
+_PRIVACY_FIELDS = {"store_history", "store_recordings", "retention_days"}
+_NEW_INSTALL_PRIVACY = {
+    "store_history": False,
+    "store_recordings": False,
+    "retention_days": 30,
+}
+
+
+def _validated_privacy(payload: object) -> dict:
+    if not isinstance(payload, dict) or set(payload) != _PRIVACY_FIELDS:
+        raise ValueError(
+            "privacy settings require exactly store_history, store_recordings, "
+            "and retention_days"
+        )
+    store_history = payload["store_history"]
+    store_recordings = payload["store_recordings"]
+    retention_days = payload["retention_days"]
+    if not isinstance(store_history, bool) or not isinstance(store_recordings, bool):
+        raise ValueError("store_history and store_recordings must be booleans")
+    if isinstance(retention_days, bool) or retention_days not in RETENTION_DAYS:
+        raise ValueError("retention_days must be one of 0, 1, 7, 30, or 90")
+    if store_recordings and not store_history:
+        raise ValueError("store_recordings requires store_history")
+    return {
+        "store_history": store_history,
+        "store_recordings": store_recordings,
+        "retention_days": retention_days,
+    }
+
+
+def _legacy_retention_days() -> int:
     try:
         payload = json.loads(common.RETENTION_PATH.read_text(encoding="utf-8"))
         days = payload.get("days") if isinstance(payload, dict) else None
     except (OSError, UnicodeError, json.JSONDecodeError):
         return 0
-    return days if days in RETENTION_DAYS else 0
+    return days if not isinstance(days, bool) and days in RETENTION_DAYS else 0
 
 
-def _persist_retention_days(days: int) -> None:
-    common._atomic_write(common.RETENTION_PATH, json.dumps({"days": days}) + "\n")
+def _persist_privacy_locked(settings: dict) -> None:
+    common._atomic_write(
+        common.PRIVACY_PATH,
+        json.dumps(settings, separators=(",", ":")) + "\n",
+    )
+
+
+def _load_privacy_locked() -> dict:
+    try:
+        payload = json.loads(common.PRIVACY_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        legacy = common.HISTORY_PATH.exists() or common.RETENTION_PATH.exists()
+        settings = (
+            {
+                "store_history": True,
+                "store_recordings": True,
+                "retention_days": _legacy_retention_days(),
+            }
+            if legacy
+            else dict(_NEW_INSTALL_PRIVACY)
+        )
+        _persist_privacy_locked(settings)
+        return settings
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("privacy settings are malformed or unavailable") from exc
+    return _validated_privacy(payload)
+
+
+def load_privacy_settings() -> dict:
+    with _history_lock:
+        return _load_privacy_locked()
+
+
+def load_retention_days() -> int:
+    return load_privacy_settings()["retention_days"]
+
+
+def _retention_changes_locked(days: int, current: datetime) -> tuple[list[str], list[dict]]:
+    lines = _migrate_history_locked()
+    if days == 0:
+        return lines, []
+    cutoff = current.astimezone(timezone.utc).timestamp() - days * 86400
+    kept = []
+    removed = []
+    for line in lines:
+        entry = _parse_history_line(line)
+        timestamp = _parse_timestamp(entry.get("timestamp")) if entry else None
+        if entry is None:
+            removed.append({})
+        elif timestamp is None or timestamp.timestamp() < cutoff:
+            removed.append(entry)
+        else:
+            kept.append(line)
+    return kept, removed
 
 
 def apply_retention(days: int | None = None, now: datetime | None = None) -> int:
@@ -397,76 +491,104 @@ def apply_retention(days: int | None = None, now: datetime | None = None) -> int
         current = current.replace(tzinfo=timezone.utc)
     with _history_lock:
         if days is None:
-            days = load_retention_days()
+            days = _load_privacy_locked()["retention_days"]
+        if isinstance(days, bool) or days not in RETENTION_DAYS:
+            raise ValueError("days must be one of 0, 1, 7, 30, or 90")
         if days == 0:
             return 0
-        cutoff = current.astimezone(timezone.utc).timestamp() - days * 86400
-        lines = _migrate_history_locked()
-        kept = []
-        removed = []
-        for line in lines:
-            entry = _parse_history_line(line)
-            timestamp = _parse_timestamp(entry.get("timestamp")) if entry else None
-            if entry is not None and timestamp is not None and timestamp.timestamp() < cutoff:
-                removed.append(entry)
-            else:
-                kept.append(line)
+        kept, removed = _retention_changes_locked(days, current)
         if removed:
             staged = _commit_history_with_staged_audio(removed, kept)
             _finalize_staged_audio(staged)
-            from .text import _refresh_suggestions_after_history_locked
-
-            _refresh_suggestions_after_history_locked(kept)
+            _refresh_suggestions_without_stale_evidence(kept)
     return len(removed)
 
 
 def set_retention(days: int, now: datetime | None = None) -> int:
-    if days not in RETENTION_DAYS:
-        raise ValueError("days must be one of 0, 7, 30, or 90")
+    if isinstance(days, bool) or days not in RETENTION_DAYS:
+        raise ValueError("days must be one of 0, 1, 7, 30, or 90")
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
-    cutoff = current.astimezone(timezone.utc).timestamp() - days * 86400
     with _history_lock:
-        lines = _migrate_history_locked()
-        kept = []
-        removed = []
-        if days:
-            for line in lines:
-                entry = _parse_history_line(line)
-                timestamp = _parse_timestamp(entry.get("timestamp")) if entry else None
-                if (
-                    entry is not None
-                    and timestamp is not None
-                    and timestamp.timestamp() < cutoff
-                ):
-                    removed.append(entry)
-                else:
-                    kept.append(line)
-        else:
-            kept = lines
+        settings = _load_privacy_locked()
+        settings["retention_days"] = days
+        return _update_privacy_locked(settings, current)["pruned"]
 
-        retention_existed = common.RETENTION_PATH.exists()
-        try:
-            previous_retention = common.RETENTION_PATH.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            previous_retention = ""
-        _persist_retention_days(days)
-        try:
-            if removed:
-                staged = _commit_history_with_staged_audio(removed, kept)
-        except Exception:
-            if retention_existed:
-                common._atomic_write(common.RETENTION_PATH, previous_retention)
-            else:
-                try:
-                    common.RETENTION_PATH.unlink()
-                except FileNotFoundError:
-                    pass
-            raise
+
+def update_privacy_settings(payload: object, now: datetime | None = None) -> dict:
+    settings = _validated_privacy(payload)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    with _history_lock:
+        return _update_privacy_locked(settings, current)
+
+
+def _update_privacy_locked(settings: dict, current: datetime) -> dict:
+    kept, removed = _retention_changes_locked(settings["retention_days"], current)
+    existed = common.PRIVACY_PATH.exists()
+    previous = common.PRIVACY_PATH.read_text(encoding="utf-8") if existed else ""
+    _persist_privacy_locked(settings)
+    try:
         if removed:
-            _finalize_staged_audio(staged)
-            from .text import _refresh_suggestions_after_history_locked
+            staged = _commit_history_with_staged_audio(removed, kept)
+    except Exception:
+        if existed:
+            common._atomic_write(common.PRIVACY_PATH, previous)
+        else:
+            try:
+                common.PRIVACY_PATH.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+    if removed:
+        _finalize_staged_audio(staged)
+        _refresh_suggestions_without_stale_evidence(kept)
+    return {**settings, "pruned": len(removed)}
 
-            _refresh_suggestions_after_history_locked(kept)
-        return len(removed)
+
+def delete_all_history() -> None:
+    """Remove Tiro history monotonically; retries finish any partial cleanup."""
+    with _history_lock:
+        common._atomic_write(common.HISTORY_PATH, "")
+        failures = []
+        backup = common.HISTORY_PATH.with_name(common.HISTORY_PATH.name + ".bak")
+        try:
+            backup.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            failures.append(exc)
+
+        for audio_directory in (common.AUDIO_DIR, common.TRANSIENT_AUDIO_DIR):
+            if not audio_directory.exists():
+                continue
+            for directory, names, files in os.walk(audio_directory, topdown=False):
+                folder = Path(directory)
+                for name in files:
+                    try:
+                        (folder / name).unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError as exc:
+                        failures.append(exc)
+                for name in names:
+                    child = folder / name
+                    try:
+                        child.unlink() if child.is_symlink() else child.rmdir()
+                    except FileNotFoundError:
+                        pass
+                    except OSError as exc:
+                        failures.append(exc)
+
+        try:
+            with _state_lock:
+                common._atomic_write(
+                    common.SUGGESTIONS_PATH,
+                    '{"version":1,"suggestions":[]}\n',
+                )
+        except OSError as exc:
+            failures.append(exc)
+        if failures:
+            raise failures[0]

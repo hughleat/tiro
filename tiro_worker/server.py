@@ -140,6 +140,17 @@ class TiroHandler(BaseHTTPRequestHandler):
                 return
             json_response(self, {"entries": storage.recent_history(limit, query)})
             return
+        if path == "/api/privacy":
+            try:
+                json_response(self, storage.load_privacy_settings())
+            except (OSError, ValueError) as exc:
+                common._log_exception("Privacy settings unavailable", exc)
+                json_response(
+                    self,
+                    {"error": "Privacy settings are malformed or unavailable."},
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
         if path == "/api/history/audio":
             entry_id = parse_qs(parsed_url.query).get("id", [""])[-1]
             if not entry_id or not self._send_audio(entry_id):
@@ -178,7 +189,7 @@ class TiroHandler(BaseHTTPRequestHandler):
 
         mutation_paths = {
             "/api/history/delete",
-            "/api/history/retention",
+            "/api/history/delete-all",
             "/api/history/correction",
             "/api/vocabulary/profiles",
             "/api/suggestions/accept",
@@ -189,6 +200,7 @@ class TiroHandler(BaseHTTPRequestHandler):
             "/api/models/compare/cancel",
             "/api/snippets",
             "/api/snippets/delete",
+            "/api/privacy",
         }
         if path in mutation_paths:
             try:
@@ -205,11 +217,13 @@ class TiroHandler(BaseHTTPRequestHandler):
                         )
                         return
                     json_response(self, {"deleted": True})
-                elif path == "/api/history/retention":
-                    days = payload.get("days")
-                    if isinstance(days, bool) or not isinstance(days, int):
-                        raise ValueError("days must be one of 0, 7, 30, or 90")
-                    json_response(self, {"days": days, "pruned": storage.set_retention(days)})
+                elif path == "/api/history/delete-all":
+                    if set(payload) != {"confirm"} or payload["confirm"] is not True:
+                        raise ValueError("confirm must be true")
+                    storage.delete_all_history()
+                    json_response(self, {"deleted": True})
+                elif path == "/api/privacy":
+                    json_response(self, storage.update_privacy_settings(payload))
                 elif path == "/api/history/correction":
                     entry_id = payload.get("id")
                     corrected_text = payload.get("corrected_text")

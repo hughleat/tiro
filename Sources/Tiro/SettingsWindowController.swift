@@ -6,6 +6,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onAutoPasteChanged: ((Bool) -> Void)?
     var onShortcutChanged: ((DictationShortcut) -> Void)?
     var onShortcutCaptureChanged: ((Bool, Set<UInt16>) -> Void)?
+    var onPrivacySettingsLoaded: (() -> Void)?
 
     private let autoPasteButton = NSButton(checkboxWithTitle: "Paste after transcription", target: nil, action: nil)
     private let soundFeedbackButton = NSButton(checkboxWithTitle: "Recording feedback", target: nil, action: nil)
@@ -19,6 +20,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let modelManagementView: ModelManagementView
     private let modelComparisonView: ModelComparisonView
     private let permissionSettingsView = PermissionSettingsView()
+    private let privacySettingsView: PrivacySettingsView
     private var navigationController: SettingsNavigationController?
 
     init(workerClient: WorkerClient) {
@@ -28,6 +30,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         historyView = HistoryView(workerClient: workerClient)
         modelManagementView = ModelManagementView(workerClient: workerClient)
         modelComparisonView = ModelComparisonView(workerClient: workerClient)
+        privacySettingsView = PrivacySettingsView(workerClient: workerClient)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 860, height: 640),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -56,6 +59,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             suggestionsView?.refresh()
             modelComparisonView?.refresh()
         }
+        privacySettingsView.onStoredDataChanged = { [weak historyView, weak suggestionsView, weak modelComparisonView] in
+            historyView?.refresh()
+            suggestionsView?.refresh()
+            modelComparisonView?.refresh()
+        }
+        privacySettingsView.onSettingsLoaded = { [weak self] in
+            self?.onPrivacySettingsLoaded?()
+        }
         buildContent()
     }
 
@@ -73,6 +84,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         modelManagementView.cancelWork()
         modelComparisonView.cancelWork()
         snippetEditor.cancelWork()
+        privacySettingsView.cancelWork()
     }
 
     func windowDidResignKey(_ notification: Notification) {
@@ -92,11 +104,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         modelComparisonView.refresh()
         refreshHistory()
         permissionSettingsView.refresh()
+        privacySettingsView.refresh()
     }
 
     func showGeneralSettings() { showSettings(.general) }
     func showModelsSettings() { showSettings(.models) }
     func showPermissionsSettings() { showSettings(.permissions) }
+    func showPrivacySettings() { showSettings(.privacy) }
 
     func refreshModel() {
         dictationPreferencesView.setModel(DictationModel.selected)
@@ -143,11 +157,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         )
         let history = SettingsPageViewController(title: "History", contentView: historyView)
         let permissions = SettingsPageViewController(title: "Permissions", contentView: permissionSettingsView)
+        let privacy = SettingsPageViewController(
+            title: "Privacy",
+            contentView: SettingsScrollView(document: privacySettingsView)
+        )
         let about = SettingsPageViewController(title: "About", contentView: makeAboutView())
         let navigation = SettingsNavigationController(items: [
             .init(section: .general, title: "General", symbolName: "gearshape", viewController: general),
             .init(section: .models, title: "Models", symbolName: "square.stack.3d.up", viewController: models),
             .init(section: .permissions, title: "Permissions", symbolName: "lock.shield", viewController: permissions),
+            .init(section: .privacy, title: "Privacy", symbolName: "hand.raised", viewController: privacy),
             .init(section: .vocabulary, title: "Vocabulary", symbolName: "text.book.closed", viewController: vocabulary),
             .init(section: .history, title: "History", symbolName: "clock.arrow.circlepath", viewController: history),
             .init(section: .about, title: "About", symbolName: "info.circle", viewController: about)

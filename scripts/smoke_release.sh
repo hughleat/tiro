@@ -140,7 +140,7 @@ if (( ! ready )); then
     fail "packaged worker did not become ready within 20 seconds"
 fi
 
-[[ "$(plutil -extract api_version raw "$TEMP_ROOT/status.json")" == "6" ]] \
+[[ "$(plutil -extract api_version raw "$TEMP_ROOT/status.json")" == "7" ]] \
     || fail "packaged worker reported an incompatible API version"
 [[ "$(plutil -extract ready raw "$TEMP_ROOT/status.json")" == "true" ]] \
     || fail "packaged worker did not report ready"

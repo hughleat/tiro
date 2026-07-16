@@ -11,8 +11,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 AUDIO_DIR = DATA_DIR / "audio"
+TRANSIENT_AUDIO_DIR = DATA_DIR / "transient-audio"
 HISTORY_PATH = DATA_DIR / "history.jsonl"
 RETENTION_PATH = DATA_DIR / "retention.json"
+PRIVACY_PATH = DATA_DIR / "privacy.json"
 VOCABULARY_PATH = DATA_DIR / "vocabulary.json"
 PROFILES_PATH = DATA_DIR / "profiles.json"
 SUGGESTIONS_PATH = DATA_DIR / "suggestions.json"
@@ -28,7 +30,7 @@ def _log_exception(context: str, exc: Exception) -> None:
 MODEL_HUB_CACHE = MODEL_CACHE / "hub"
 SAMPLE_RATE = 16_000
 MAX_RECORDING_BYTES = 100 * 1024 * 1024
-API_VERSION = 6
+API_VERSION = 7
 MAX_JSON_BODY_BYTES = 16 * 1024
 MAX_ORIGIN_BUNDLE_ID = 255
 MAX_ORIGIN_APP_NAME = 200
@@ -39,7 +41,7 @@ MAX_SNIPPET_CONTENT = 2_000
 MAX_HISTORY_LIMIT = 200
 DEFAULT_HISTORY_LIMIT = 20
 MAX_COMPARISON_MODELS = 3
-RETENTION_DAYS = {0, 7, 30, 90}
+RETENTION_DAYS = {0, 1, 7, 30, 90}
 HISTORY_ID_NAMESPACE = uuid.UUID("99bb23a4-4c7b-4d82-85aa-a33a072950f7")
 SUGGESTION_ID_NAMESPACE = uuid.UUID("ad2d6d17-a3ef-49df-bbd5-ed73ad9b81cb")
 STAGED_AUDIO_PREFIX = ".tiro-delete-"
@@ -78,15 +80,18 @@ MODELS = {
 
 def configure_paths(data_dir: Path, model_dir: Path) -> None:
     """Configure mutable worker storage before the server starts."""
-    global ROOT, DATA_DIR, AUDIO_DIR, HISTORY_PATH, RETENTION_PATH
+    global ROOT, DATA_DIR, AUDIO_DIR, TRANSIENT_AUDIO_DIR
+    global HISTORY_PATH, RETENTION_PATH, PRIVACY_PATH
     global VOCABULARY_PATH, PROFILES_PATH, SUGGESTIONS_PATH, SNIPPETS_PATH
     global MODEL_CACHE, MODEL_HUB_CACHE
 
     ROOT = data_dir.parent
     DATA_DIR = data_dir
     AUDIO_DIR = data_dir / "audio"
+    TRANSIENT_AUDIO_DIR = data_dir / "transient-audio"
     HISTORY_PATH = data_dir / "history.jsonl"
     RETENTION_PATH = data_dir / "retention.json"
+    PRIVACY_PATH = data_dir / "privacy.json"
     VOCABULARY_PATH = data_dir / "vocabulary.json"
     PROFILES_PATH = data_dir / "profiles.json"
     SUGGESTIONS_PATH = data_dir / "suggestions.json"
@@ -181,11 +186,18 @@ def _append_private_text(path: Path, content: str) -> None:
 
 
 def ensure_private_paths() -> None:
-    for directory in (DATA_DIR, AUDIO_DIR, MODEL_CACHE, MODEL_HUB_CACHE):
+    for directory in (
+        DATA_DIR,
+        AUDIO_DIR,
+        TRANSIENT_AUDIO_DIR,
+        MODEL_CACHE,
+        MODEL_HUB_CACHE,
+    ):
         _ensure_private_directory(directory)
     for path in (
         HISTORY_PATH,
         RETENTION_PATH,
+        PRIVACY_PATH,
         VOCABULARY_PATH,
         PROFILES_PATH,
         SUGGESTIONS_PATH,

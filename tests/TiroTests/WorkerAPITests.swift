@@ -11,6 +11,19 @@ final class RequestRecorder: @unchecked Sendable {
     }
 
     func append(_ request: URLRequest) {
+        var request = request
+        if request.httpBody == nil, let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var body = Data()
+            var buffer = [UInt8](repeating: 0, count: 4_096)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                guard count > 0 else { break }
+                body.append(buffer, count: count)
+            }
+            request.httpBody = body
+        }
         lock.withLock { storedRequests.append(request) }
     }
 }
@@ -108,7 +121,13 @@ struct WorkerAPITests {
         _ = try await api.historyAudio(id: "h")
         try await api.deleteHistoryEntry(id: "h")
         try await api.correctHistoryEntry(id: "h", correctedText: "corrected")
-        try await api.setHistoryRetention(days: 30)
+        _ = try await api.privacySettings()
+        _ = try await api.updatePrivacySettings(PrivacySettings(
+            store_history: true,
+            store_recordings: false,
+            retention_days: 30
+        ))
+        try await api.deleteAllHistory()
         _ = try await api.vocabularyProfiles()
         try await api.saveVocabularyProfiles(VocabularyProfilesDocument())
         _ = try await api.suggestions()
@@ -116,8 +135,8 @@ struct WorkerAPITests {
         try await api.dismissSuggestion(id: "v")
 
         let requests = recorder.requests
-        #expect(ensureRunningCount == 20)
-        #expect(requests.count == 21)
+        #expect(ensureRunningCount == 22)
+        #expect(requests.count == 23)
         #expect(requests.allSatisfy {
             $0.value(forHTTPHeaderField: "X-Tiro-Worker-Token") == "test-token"
         })
@@ -136,13 +155,67 @@ struct WorkerAPITests {
             "GET /api/history/audio",
             "POST /api/history/delete",
             "POST /api/history/correction",
-            "POST /api/history/retention",
+            "GET /api/privacy",
+            "POST /api/privacy",
+            "POST /api/history/delete-all",
             "GET /api/vocabulary/profiles",
             "POST /api/vocabulary/profiles",
             "GET /api/suggestions",
             "POST /api/suggestions/accept",
             "POST /api/suggestions/dismiss",
         ]))
+
+        let privacyRequest = try #require(requests.first {
+            $0.url?.path == "/api/privacy" && $0.httpMethod == "POST"
+        })
+        let privacyBody = try #require(privacyRequest.httpBody)
+        #expect(try JSONDecoder().decode(PrivacySettings.self, from: privacyBody) == PrivacySettings(
+            store_history: true,
+            store_recordings: false,
+            retention_days: 30
+        ))
+
+        let deleteAllRequest = try #require(requests.first {
+            $0.url?.path == "/api/history/delete-all"
+        })
+        let deleteAllBody = try #require(deleteAllRequest.httpBody)
+        let confirmation = try #require(
+            JSONSerialization.jsonObject(with: deleteAllBody) as? [String: Bool]
+        )
+        #expect(confirmation == ["confirm": true])
+    }
+
+    @Test
+    func testPrivacySettingsValidation() throws {
+        for days in [0, 1, 7, 30, 90] {
+            try WorkerClient.validatePrivacySettings(PrivacySettings(
+                store_history: true,
+                store_recordings: true,
+                retention_days: days
+            ))
+        }
+
+        #expect(throws: WorkerError.self) {
+            try WorkerClient.validatePrivacySettings(PrivacySettings(
+                store_history: false,
+                store_recordings: true,
+                retention_days: 30
+            ))
+        }
+        #expect(throws: WorkerError.self) {
+            try WorkerClient.validatePrivacySettings(PrivacySettings(
+                store_history: true,
+                store_recordings: false,
+                retention_days: 2
+            ))
+        }
+    }
+
+    @Test
+    func testTranscriptionResponseAllowsMissingAudioFile() throws {
+        let data = Data(#"{"timestamp":"now","model":"compact","transcription_seconds":0.1,"text":"hello"}"#.utf8)
+        let response = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
+        #expect(response.audio_file == nil)
     }
 
     private static func requestKey(_ request: URLRequest) -> String {
@@ -166,6 +239,8 @@ struct WorkerAPITests {
             value = #"{"entries":[]}"#
         case "/api/history/audio":
             value = "audio"
+        case "/api/privacy":
+            value = #"{"store_history":true,"store_recordings":false,"retention_days":30,"ignored":true}"#
         case "/api/vocabulary/profiles":
             value = request.httpMethod == "GET" ? #"{"version":1,"profiles":[]}"# : "{}"
         case "/api/suggestions":

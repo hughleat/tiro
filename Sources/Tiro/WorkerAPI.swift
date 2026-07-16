@@ -190,11 +190,25 @@ import Foundation
         )
     }
 
-    func setHistoryRetention(days: Int) async throws {
+    func privacySettings() async throws -> PrivacySettings {
+        let data = try await authenticatedGet(path: "api/privacy", operation: "Privacy settings")
+        return try JSONDecoder().decode(PrivacySettings.self, from: data)
+    }
+
+    func updatePrivacySettings(_ settings: PrivacySettings) async throws -> PrivacySettings {
+        let data = try await authenticatedJSONPost(
+            path: "api/privacy",
+            body: settings,
+            operation: "Privacy settings update"
+        )
+        return try JSONDecoder().decode(PrivacySettings.self, from: data)
+    }
+
+    func deleteAllHistory() async throws {
         _ = try await authenticatedJSONPost(
-            path: "api/history/retention",
-            body: RetentionRequest(days: days),
-            operation: "History retention update"
+            path: "api/history/delete-all",
+            body: ConfirmationRequest(confirm: true),
+            operation: "History deletion"
         )
     }
 
@@ -366,8 +380,8 @@ private struct HistoryCorrectionRequest: Encodable {
     let corrected_text: String
 }
 
-private struct RetentionRequest: Encodable {
-    let days: Int
+private struct ConfirmationRequest: Encodable {
+    let confirm: Bool
 }
 
 private struct SuggestionsResponse: Decodable {

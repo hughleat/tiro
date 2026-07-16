@@ -472,10 +472,16 @@ struct VocabularySuggestion: Decodable {
     }
 }
 
+struct PrivacySettings: Codable, Equatable {
+    let store_history: Bool
+    let store_recordings: Bool
+    let retention_days: Int
+}
+
 struct TranscriptionResponse: Decodable {
     let timestamp: String
     let model: String
-    let audio_file: String
+    let audio_file: String?
     let transcription_seconds: Double
     let text: String
     let origin_bundle_id: String?

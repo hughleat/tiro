@@ -19,6 +19,7 @@ import ApplicationServices
     private var menuToggleItem: NSMenuItem!
     private var shortcutStatusItem: NSMenuItem!
     private var pasteRecoveryItem: NSMenuItem!
+    private var privacyNoticeItem: NSMenuItem!
     private var modelStatusItem: NSMenuItem!
     private var modelMenuItems: [NSMenuItem] = []
     private var installedModelKeys: Set<String> = []
@@ -30,9 +31,11 @@ import ApplicationServices
     private var destinationSession: DestinationSession?
     private var originApplication: ApplicationIdentity?
     private var shouldAutoPaste = false
+    private var awaitingPrivacyReview = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UserDefaults.standard.register(defaults: ["autoPaste": true, "soundFeedback": true])
+        AudioRecorder.removeStaleRecordings()
         _ = try? VocabularyFile.load()
         NSApp.setActivationPolicy(.accessory)
         configureStatusItem()
@@ -93,6 +96,17 @@ import ApplicationServices
         pasteRecoveryItem.target = self
         pasteRecoveryItem.isHidden = true
         menu.addItem(pasteRecoveryItem)
+        privacyNoticeItem = NSMenuItem(
+            title: "Review Updated Privacy Settings...",
+            action: #selector(reviewPrivacySettings),
+            keyEquivalent: ""
+        )
+        privacyNoticeItem.target = self
+        let hasLegacyStorage = FileManager.default.fileExists(atPath: AppPaths.historyFile.path)
+            || FileManager.default.fileExists(atPath: AppPaths.legacyRetentionFile.path)
+        privacyNoticeItem.isHidden = !hasLegacyStorage
+            || UserDefaults.standard.bool(forKey: "privacyMigrationNoticeReviewed")
+        menu.addItem(privacyNoticeItem)
         let settings = NSMenuItem(title: "Settings & History…", action: #selector(showSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
@@ -134,6 +148,12 @@ import ApplicationServices
                 self.hotkeys.suppressUntilRelease(suppressedKeys)
                 self.installHotkeysWhenPermitted()
             }
+        }
+        settingsWindow.onPrivacySettingsLoaded = { [weak self] in
+            guard self?.awaitingPrivacyReview == true else { return }
+            self?.awaitingPrivacyReview = false
+            UserDefaults.standard.set(true, forKey: "privacyMigrationNoticeReviewed")
+            self?.privacyNoticeItem.isHidden = true
         }
     }
 
@@ -423,6 +443,11 @@ import ApplicationServices
 
     @objc private func showPermissionsSettings() {
         settingsWindow.showPermissionsSettings()
+    }
+
+    @objc private func reviewPrivacySettings() {
+        awaitingPrivacyReview = true
+        settingsWindow.showPrivacySettings()
     }
 
     @objc private func showSetup() {

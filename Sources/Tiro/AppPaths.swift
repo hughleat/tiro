@@ -26,6 +26,7 @@ enum AppPaths {
         "history.jsonl.bak",
         "profiles.json",
         "retention.json",
+        "privacy.json",
         "suggestions.json",
         "snippets.json",
         "vocabulary.json",
@@ -124,6 +125,14 @@ enum AppPaths {
 
     static var historyFile: URL {
         dataDirectory.appendingPathComponent("history.jsonl")
+    }
+
+    static var transientRecordingsDirectory: URL {
+        dataDirectory.appendingPathComponent("transient-audio", isDirectory: true)
+    }
+
+    static var legacyRetentionFile: URL {
+        dataDirectory.appendingPathComponent("retention.json")
     }
 
     static var vocabularyFile: URL {

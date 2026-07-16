@@ -101,3 +101,24 @@ final class SettingsTabbedContentView: NSView {
         visibleView = next
     }
 }
+
+@MainActor
+final class SettingsScrollView: NSScrollView {
+    init(document: NSView) {
+        super.init(frame: .zero)
+        drawsBackground = false
+        hasVerticalScroller = true
+        autohidesScrollers = true
+        document.translatesAutoresizingMaskIntoConstraints = false
+        documentView = document
+        NSLayoutConstraint.activate([
+            document.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            document.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            document.topAnchor.constraint(equalTo: contentView.topAnchor),
+            document.widthAnchor.constraint(equalTo: contentView.widthAnchor),
+            document.heightAnchor.constraint(greaterThanOrEqualTo: contentView.heightAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { nil }
+}

@@ -33,7 +33,7 @@ Tiro can launch automatically at login from Settings. It also warms the selected
 
 Tiro keeps mutable files outside the application bundle:
 
-- History, recordings, vocabulary, settings documents, token: `~/Library/Application Support/Tiro/data/`
+- History, optional recordings, vocabulary, privacy settings, token: `~/Library/Application Support/Tiro/data/`
 - Downloaded model cache: `~/Library/Application Support/Tiro/Models/huggingface/`
 - Worker output: `~/Library/Logs/Tiro/worker.log`
 

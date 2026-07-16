@@ -4,6 +4,7 @@ enum SettingsSection: String {
     case general
     case models
     case permissions
+    case privacy
     case vocabulary
     case history
     case about

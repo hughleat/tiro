@@ -59,10 +59,34 @@ final class AudioRecorder {
 
         guard !captured.isEmpty else { throw RecorderError.emptyRecording }
         let output = Self.resample(captured, from: inputSampleRate, to: 16_000)
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("parakeet-\(UUID().uuidString).wav")
-        try Self.wavData(samples: output, sampleRate: 16_000).write(to: url, options: .atomic)
+        try PrivateFilePermissions.ensureDirectory(at: AppPaths.transientRecordingsDirectory)
+        let url = AppPaths.transientRecordingsDirectory
+            .appendingPathComponent("recording-\(UUID().uuidString).wav")
+        try PrivateFilePermissions.write(Self.wavData(samples: output, sampleRate: 16_000), to: url)
         return url
+    }
+
+    static func removeStaleRecordings() {
+        guard FileManager.default.fileExists(atPath: AppPaths.transientRecordingsDirectory.path) else {
+            return
+        }
+        let files: [URL]
+        do {
+            files = try FileManager.default.contentsOfDirectory(
+                at: AppPaths.transientRecordingsDirectory,
+                includingPropertiesForKeys: nil
+            )
+        } catch {
+            NSLog("Could not inspect stale Tiro recordings: %@", error.localizedDescription)
+            return
+        }
+        for file in files {
+            do {
+                try FileManager.default.removeItem(at: file)
+            } catch {
+                NSLog("Could not remove stale Tiro recording: %@", error.localizedDescription)
+            }
+        }
     }
 
     func cancel() {

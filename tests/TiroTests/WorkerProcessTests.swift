@@ -53,7 +53,7 @@ struct WorkerProcessTests {
             recorder.append(request)
             if request.url?.path == "/api/status" {
                 let body = try JSONSerialization.data(withJSONObject: [
-                    "api_version": 6,
+                    "api_version": 7,
                     "history_file": AppPaths.historyFile.path,
                 ])
                 return (200, body)
@@ -73,6 +73,31 @@ struct WorkerProcessTests {
         #expect(recorder.requests.allSatisfy {
             $0.value(forHTTPHeaderField: "X-Tiro-Worker-Token") == "process-token"
         })
+    }
+
+    @Test @MainActor
+    func testPreviousAPIVersionIsIncompatible() async throws {
+        let (transport, session) = makeTransport()
+        defer { session.invalidateAndCancel() }
+        MockURLProtocol.install(for: "old-process.test") { request in
+            guard request.url?.path == "/api/status" else {
+                return (200, Data("{}".utf8))
+            }
+            let body = try JSONSerialization.data(withJSONObject: [
+                "api_version": 6,
+                "history_file": AppPaths.historyFile.path,
+            ])
+            return (200, body)
+        }
+        let tokenFile = try makeTokenFile(containing: "process-token")
+        defer { try? FileManager.default.removeItem(at: tokenFile.deletingLastPathComponent()) }
+        let process = WorkerProcess(
+            baseURL: URL(string: "https://old-process.test")!,
+            transport: transport,
+            tokenFile: tokenFile
+        )
+
+        #expect(await process.workerState() == .incompatible)
     }
 
     @Test @MainActor

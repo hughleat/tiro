@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="${0:A:h:h}"
 
 zsh -n "$ROOT/scripts/build_native_app.sh" "$ROOT/scripts/smoke_release.sh"
+rg -q -F 'api_version raw "$TEMP_ROOT/status.json")" == "7"' "$ROOT/scripts/smoke_release.sh"
 plutil -lint "$ROOT/native/Info.plist" "$ROOT/native/Tiro.entitlements" >/dev/null
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.audio-input' "$ROOT/native/Tiro.entitlements")" == "true" ]]
 
