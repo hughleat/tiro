@@ -13,8 +13,14 @@ LOCAL_SIGNING_KEYCHAIN="${TIRO_LOCAL_SIGNING_KEYCHAIN:-$HOME/Library/Keychains/l
 NOTARY_PROFILE="${TIRO_NOTARY_PROFILE:-}"
 ENTITLEMENTS="$ROOT/native/Tiro.entitlements"
 SKIP_NOTARIZATION=0
-PYTHON="$ROOT/.venv/bin/python"
+DEVELOPMENT_PYTHON="$ROOT/.venv/bin/python"
+RELEASE_ENVIRONMENT="$ROOT/.build/release-venv"
+RELEASE_PYTHON="$RELEASE_ENVIRONMENT/bin/python"
+RELEASE_PYTHON_VERSION="$(<"$ROOT/.python-version")"
+DEPLOYMENT_TARGET="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$ROOT/native/Info.plist")"
+TARGET_ARCHITECTURE="arm64"
 BUILD_LOCK="$ROOT/.build/native-build.lock"
+SUBMISSION_ARCHIVE=""
 
 usage() {
     cat <<'USAGE'
@@ -121,11 +127,21 @@ if [[ "$MODE" == "distribution" ]]; then
 fi
 
 sync_release_environment() {
-    [[ -x "$PYTHON" ]] \
-        || fail "self-contained builds require an existing Python environment at: $PYTHON"
+    [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "$TARGET_ARCHITECTURE" ]] \
+        || fail "self-contained builds require an Apple Silicon Mac"
+    [[ -x "$DEVELOPMENT_PYTHON" ]] \
+        || fail "self-contained builds require the project environment at: $DEVELOPMENT_PYTHON"
 
-    "$PYTHON" -m uv sync --frozen --extra bundle
-    if ! "$PYTHON" -c 'import importlib.util, sys; sys.exit(any(importlib.util.find_spec(name) is None for name in ("PyInstaller", "mlx_audio", "parakeet_mlx")))' >/dev/null 2>&1; then
+    env -u VIRTUAL_ENV \
+        UV_PROJECT_ENVIRONMENT="$RELEASE_ENVIRONMENT" \
+        UV_CACHE_DIR="$ROOT/.build/uv-cache" \
+        "$DEVELOPMENT_PYTHON" -m uv sync --locked --extra bundle \
+            --managed-python --python "$RELEASE_PYTHON_VERSION"
+    "$DEVELOPMENT_PYTHON" "$ROOT/scripts/prepare_release_environment.py" \
+        --lock "$ROOT/uv.lock" \
+        --python "$RELEASE_PYTHON" \
+        --target "$DEPLOYMENT_TARGET"
+    if ! "$RELEASE_PYTHON" -c 'import importlib.util, sys; sys.exit(any(importlib.util.find_spec(name) is None for name in ("PyInstaller", "mlx_audio", "parakeet_mlx")))' >/dev/null 2>&1; then
         fail "release dependencies did not install correctly from uv.lock"
     fi
 }
@@ -134,7 +150,7 @@ build_worker() {
     local work="$ROOT/.build/pyinstaller"
     export PYINSTALLER_CONFIG_DIR="$ROOT/.build/pyinstaller-config"
     rm -rf "$work"
-    "$PYTHON" -m PyInstaller \
+    "$RELEASE_PYTHON" -m PyInstaller \
         --noconfirm \
         --clean \
         --onedir \
@@ -155,7 +171,10 @@ build_worker() {
         --hidden-import huggingface_hub \
         "$ROOT/scripts/worker_entry.py"
     cp -R "$work/dist/tiro-worker" "$APP/Contents/Resources/worker"
-    "$PYTHON" "$ROOT/scripts/validate_macos_compatibility.py" --update "$APP"
+    "$DEVELOPMENT_PYTHON" "$ROOT/scripts/validate_macos_compatibility.py" \
+        --target "$DEPLOYMENT_TARGET" \
+        --architecture "$TARGET_ARCHITECTURE" \
+        "$APP"
 }
 
 sign_locally() {
@@ -208,7 +227,8 @@ sign_nested_code() {
         -name '*.app' -o -name '*.appex' -o -name '*.framework' -o \
         -name '*.plugin' -o -name '*.xpc' \) -print0)
 
-    codesign "${sign_args[@]}" --entitlements "$ENTITLEMENTS" "$APP"
+    codesign "${sign_args[@]}" --generate-entitlement-der \
+        --entitlements "$ENTITLEMENTS" "$APP"
     codesign --verify --deep --strict --verbose=2 "$APP"
 }
 
@@ -222,8 +242,13 @@ sign_for_distribution() {
 
 create_archive() {
     local archive="$1"
-    rm -f "$archive" "$archive.sha256"
-    ditto -c -k --keepParent --sequesterRsrc "$APP" "$archive"
+    local partial="$archive.partial"
+    rm -f "$archive" "$archive.sha256" "$partial"
+    if ! ditto -c -k --keepParent --sequesterRsrc "$APP" "$partial"; then
+        rm -f "$partial"
+        return 1
+    fi
+    mv -f "$partial" "$archive"
 }
 
 acquire_build_lock() {
@@ -246,6 +271,10 @@ acquire_build_lock() {
 }
 
 release_build_lock() {
+    [[ -z "$SUBMISSION_ARCHIVE" ]] \
+        || rm -f "$SUBMISSION_ARCHIVE" "$SUBMISSION_ARCHIVE.partial"
+    [[ -z "${archive:-}" ]] \
+        || rm -f "$archive.partial" "$archive.sha256.partial"
     owner="$(cat "$BUILD_LOCK/pid" 2>/dev/null || true)"
     [[ "$owner" == "$$" ]] || return
     rm -f "$BUILD_LOCK/pid"
@@ -254,6 +283,7 @@ release_build_lock() {
 
 cd "$ROOT"
 acquire_build_lock
+export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
 
 if [[ "$MODE" != "development" ]]; then
     sync_release_environment
@@ -290,24 +320,33 @@ mkdir -p "$ARCHIVE_DIR"
 suffix=""
 (( SKIP_NOTARIZATION )) && suffix="-unnotarized"
 archive="$ARCHIVE_DIR/Tiro-$VERSION-$BUILD_NUMBER-macOS-arm64$suffix.zip"
-create_archive "$archive"
+rm -f "$archive" "$archive.sha256" "$archive.partial" "$archive.sha256.partial"
 
 if (( ! SKIP_NOTARIZATION )); then
-    xcrun notarytool submit "$archive" --keychain-profile "$NOTARY_PROFILE" --wait
+    SUBMISSION_ARCHIVE="$ROOT/.build/Tiro-notarization-submission.zip"
+    create_archive "$SUBMISSION_ARCHIVE"
+    xcrun notarytool submit "$SUBMISSION_ARCHIVE" \
+        --keychain-profile "$NOTARY_PROFILE" --wait
+    rm -f "$SUBMISSION_ARCHIVE"
+    SUBMISSION_ARCHIVE=""
     xcrun stapler staple "$APP"
     xcrun stapler validate "$APP"
     spctl --assess --type execute --verbose=4 "$APP"
     "$ROOT/scripts/smoke_release.sh" --app "$APP" --notarized \
+        --expected-entitlements "$ENTITLEMENTS" \
         --expected-version "$VERSION" --expected-build "$BUILD_NUMBER"
-    create_archive "$archive"
 else
     "$ROOT/scripts/smoke_release.sh" --app "$APP" --developer-id \
+        --expected-entitlements "$ENTITLEMENTS" \
         --expected-version "$VERSION" --expected-build "$BUILD_NUMBER"
 fi
 
+create_archive "$archive"
+
 (
     cd "$ARCHIVE_DIR"
-    shasum -a 256 "${archive:t}" > "${archive:t}.sha256"
+    shasum -a 256 "${archive:t}" > "${archive:t}.sha256.partial"
+    mv -f "${archive:t}.sha256.partial" "${archive:t}.sha256"
 )
 
 print "App: $APP"

@@ -6,6 +6,8 @@ Tiro has three native build modes:
 - `release` embeds the Python worker and uses the same local identity for testing.
 - `distribution` embeds the worker, signs nested Mach-O code inside-out with a Developer ID Application identity and hardened runtime, notarizes and staples the app, verifies it with Gatekeeper, and emits a ZIP plus SHA-256 checksum.
 
+Self-contained builds target arm64 macOS 14. The build creates `.build/release-venv`, synchronizes the exact lockfile there, and installs the lockfile's macOS 14 MLX wheel variants. It never reuses host-specific MLX binaries from `.venv` and never raises the deployment target to make an incompatible bundle pass.
+
 The source `native/Info.plist` contains development defaults. Pass release metadata explicitly so the packaged copy is changed without rewriting source files:
 
 ```sh
@@ -38,7 +40,7 @@ dist/releases/Tiro-1.2.0-42-macOS-arm64.zip
 dist/releases/Tiro-1.2.0-42-macOS-arm64.zip.sha256
 ```
 
-The pipeline verifies nested signatures with `codesign`, waits for notarization, staples and validates the ticket, asks Gatekeeper to assess the app, and starts the packaged worker for an API smoke check. Re-run the final checks independently with:
+The pipeline verifies that every bundled Mach-O contains arm64 and supports macOS 14, checks nested signatures and entitlements, executes a packaged MLX operation while importing both transcription backends, and starts the worker for an API smoke check. Distribution additionally waits for notarization, staples and validates the ticket, and asks Gatekeeper to assess the app. Re-run the final checks independently with:
 
 ```sh
 ./scripts/smoke_release.sh \
@@ -56,3 +58,7 @@ For a credentialed signing rehearsal without notarization, pass `--skip-notariza
 ```
 
 Run release-script and login-item source assertions with `./scripts/test_release_engineering.sh`.
+
+## Oldest-system acceptance
+
+Before publishing, copy the notarized archive to a clean Apple Silicon Mac running macOS 14. Verify first launch through Gatekeeper, microphone and Accessibility onboarding, Parakeet and Qwen model download, tap and hold shortcuts, clipboard preservation, auto-paste, launch at login, and a second launch after replacing the app with the next signed build. The local compatibility scan proves the binaries' declared minimums; this clean-machine pass proves the complete user experience.

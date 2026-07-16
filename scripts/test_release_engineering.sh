@@ -7,7 +7,28 @@ zsh -n \
     "$ROOT/scripts/build_native_app.sh" \
     "$ROOT/scripts/setup_local_signing.sh" \
     "$ROOT/scripts/smoke_release.sh"
+"$ROOT/.venv/bin/python" -m py_compile \
+    "$ROOT/scripts/prepare_release_environment.py" \
+    "$ROOT/scripts/validate_macos_compatibility.py" \
+    "$ROOT/scripts/worker_entry.py"
 rg -q -F 'api_version raw "$TEMP_ROOT/status.json")" == "7"' "$ROOT/scripts/smoke_release.sh"
+rg -q -F '"$WORKER" --self-test' "$ROOT/scripts/smoke_release.sh"
+rg -q -F 'expected-entitlements.plist' "$ROOT/scripts/smoke_release.sh"
+rg -q -F -- '--expected-entitlements "$ENTITLEMENTS"' "$ROOT/scripts/build_native_app.sh"
+rg -q -F -- '--target "$DEPLOYMENT_TARGET"' "$ROOT/scripts/build_native_app.sh"
+rg -q -F -- '--python "$RELEASE_PYTHON_VERSION"' "$ROOT/scripts/build_native_app.sh"
+rg -q -F -- 'uv sync --locked' "$ROOT/scripts/build_native_app.sh"
+rg -q -F 'Tiro-notarization-submission.zip' "$ROOT/scripts/build_native_app.sh"
+archive_cleanup_line="$(rg -n -F 'rm -f "$archive" "$archive.sha256" "$archive.partial"' "$ROOT/scripts/build_native_app.sh" | tail -1 | cut -d: -f1)"
+notarization_line="$(rg -n -F 'xcrun notarytool submit' "$ROOT/scripts/build_native_app.sh" | head -1 | cut -d: -f1)"
+smoke_line="$(rg -n -F 'smoke_release.sh" --app' "$ROOT/scripts/build_native_app.sh" | head -1 | cut -d: -f1)"
+[[ "$archive_cleanup_line" -lt "$notarization_line" ]]
+[[ "$archive_cleanup_line" -lt "$smoke_line" ]]
+rg -q -F 'mv -f "$partial" "$archive"' "$ROOT/scripts/build_native_app.sh"
+if rg -q -F -- '--update' "$ROOT/scripts/build_native_app.sh"; then
+    print -u2 "release build still rewrites its deployment target"
+    exit 1
+fi
 plutil -lint "$ROOT/native/Info.plist" "$ROOT/native/Tiro.entitlements" >/dev/null
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.audio-input' "$ROOT/native/Tiro.entitlements")" == "true" ]]
 

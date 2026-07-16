@@ -63,7 +63,7 @@ The development app does not embed Python. It uses `.venv/bin/python scripts/wor
 
 ## Self-contained App
 
-The release build uses PyInstaller `onedir` to embed the Python interpreter, `scripts/worker_entry.py`, MLX libraries, and their Python dependencies under `Tiro.app/Contents/Resources/worker/`. It synchronizes the project-local `.venv` exactly from `uv.lock`, including the `bundle` dependencies, then builds with:
+The release build uses PyInstaller `onedir` to embed the Python interpreter, `scripts/worker_entry.py`, MLX libraries, and their Python dependencies under `Tiro.app/Contents/Resources/worker/`. It creates an isolated `.build/release-venv` exactly from `uv.lock`, including the `bundle` dependencies and macOS 14 MLX wheels, then builds with:
 
 ```sh
 ./scripts/build_native_app.sh release
@@ -76,7 +76,7 @@ The build sync may download missing packages. The smoke check starts the package
 
 ### macOS support policy
 
-macOS 14 remains the native source baseline, but a self-contained release can only support the highest minimum required by all native libraries embedded from its Python environment. After PyInstaller runs, the build scans every bundled Mach-O `LC_BUILD_VERSION`, raises the built app's `LSMinimumSystemVersion` to that maximum, and validates the result before signing. This deliberately favors a truthful, runnable artifact over claiming compatibility that its MLX wheel cannot provide. With the dependencies currently installed on this macOS 26 machine, MLX requires macOS 26.2, so this machine can run the result and the release bundle will declare 26.2 rather than falsely declaring 14.0. Building on an environment whose complete native dependency set supports an older macOS version produces that lower truthful minimum, never below the macOS 14 baseline.
+Tiro targets Apple Silicon Macs running macOS 14 or later. Self-contained builds use a separate release environment and install the macOS 14 variants of `mlx` and `mlx-metal` recorded in `uv.lock`, regardless of the builder's newer macOS version. The completed bundle is rejected if its plist differs from the macOS 14 target, any Mach-O requires a newer system, or any native file lacks an arm64 slice. The smoke test also imports both transcription backends and executes a small MLX operation before testing the worker API.
 
 Run `scripts/setup_local_signing.sh` once before local development. It creates a code-signing-only certificate named `Tiro Local Development` in the login Keychain, allowing macOS to recognize rebuilt copies of Tiro as the same app and retain Accessibility permission. Development and local release builds use that identity automatically, with ad-hoc signing retained as a fallback on machines where it has not been installed.
 

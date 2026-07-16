@@ -6,6 +6,7 @@ APP="$ROOT/dist/Tiro.app"
 SIGNING_LEVEL="ad-hoc"
 EXPECTED_VERSION=""
 EXPECTED_BUILD=""
+EXPECTED_ENTITLEMENTS="$ROOT/native/Tiro.entitlements"
 
 usage() {
     cat <<'USAGE'
@@ -17,6 +18,8 @@ Options:
   --notarized                Also require a staple and Gatekeeper acceptance
   --expected-version VERSION Assert CFBundleShortVersionString
   --expected-build NUMBER    Assert CFBundleVersion
+  --expected-entitlements PATH
+                             Assert the app's exact entitlement policy
   -h, --help                 Show this help
 USAGE
 }
@@ -28,7 +31,7 @@ fail() {
 
 while (( $# > 0 )); do
     case "$1" in
-        --app|--expected-version|--expected-build)
+        --app|--expected-version|--expected-build|--expected-entitlements)
             (( $# >= 2 )) || fail "$1 requires a value"
             option="$1"
             value="$2"
@@ -37,6 +40,7 @@ while (( $# > 0 )); do
                 --app) APP="${value:A}" ;;
                 --expected-version) EXPECTED_VERSION="$value" ;;
                 --expected-build) EXPECTED_BUILD="$value" ;;
+                --expected-entitlements) EXPECTED_ENTITLEMENTS="${value:A}" ;;
             esac
             ;;
         --developer-id)
@@ -60,6 +64,8 @@ while (( $# > 0 )); do
 done
 
 [[ -d "$APP" ]] || fail "app bundle not found: $APP"
+[[ -f "$EXPECTED_ENTITLEMENTS" ]] \
+    || fail "expected entitlements not found: $EXPECTED_ENTITLEMENTS"
 INFO="$APP/Contents/Info.plist"
 WORKER="$APP/Contents/Resources/worker/tiro-worker"
 [[ -f "$INFO" ]] || fail "Info.plist not found in app bundle"
@@ -112,6 +118,27 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$TEMP_ROOT/data" "$TEMP_ROOT/models"
+codesign -d --entitlements - --xml "$APP" \
+    >"$TEMP_ROOT/entitlements.plist" 2>/dev/null
+plutil -lint "$TEMP_ROOT/entitlements.plist" >/dev/null \
+    || fail "signed app has invalid entitlements"
+plutil -convert binary1 -o "$TEMP_ROOT/expected-entitlements.plist" \
+    "$EXPECTED_ENTITLEMENTS"
+plutil -convert binary1 -o "$TEMP_ROOT/actual-entitlements.plist" \
+    "$TEMP_ROOT/entitlements.plist"
+cmp -s "$TEMP_ROOT/expected-entitlements.plist" "$TEMP_ROOT/actual-entitlements.plist" \
+    || fail "signed app entitlements differ from the release policy"
+
+env \
+    TIRO_DATA_DIR="$TEMP_ROOT/data" \
+    TIRO_MODEL_DIR="$TEMP_ROOT/models" \
+    "$WORKER" --self-test >"$TEMP_ROOT/ml-self-test.log" 2>&1 || {
+        cat "$TEMP_ROOT/ml-self-test.log" >&2
+        fail "packaged ML runtime self-test failed"
+    }
+rg -q -F 'Tiro ML runtime self-test passed' "$TEMP_ROOT/ml-self-test.log" \
+    || fail "packaged ML runtime self-test did not finish"
+
 env \
     TIRO_DATA_DIR="$TEMP_ROOT/data" \
     TIRO_MODEL_DIR="$TEMP_ROOT/models" \

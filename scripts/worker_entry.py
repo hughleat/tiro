@@ -25,6 +25,23 @@ def configure_paths() -> None:
     common.ensure_private_paths()
 
 
+def run_self_test() -> None:
+    import mlx.core as mx
+    import mlx_audio.stt.models.qwen3_asr  # noqa: F401
+    import parakeet_mlx  # noqa: F401
+
+    total = mx.array([1, 2, 3]).sum()
+    mx.eval(total)
+    if total.item() != 6:
+        raise RuntimeError("MLX returned an unexpected self-test result")
+    print("Tiro ML runtime self-test passed")
+
+
 if __name__ == "__main__":
     configure_paths()
-    server.main()
+    if sys.argv[1:] == ["--self-test"]:
+        run_self_test()
+    elif sys.argv[1:]:
+        raise SystemExit("unknown worker argument")
+    else:
+        server.main()

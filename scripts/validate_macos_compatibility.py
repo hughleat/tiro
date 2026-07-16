@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Align and validate an app's declared minimum macOS against bundled Mach-O files."""
+"""Enforce a deployment target and architecture across a macOS app bundle."""
 
 from __future__ import annotations
 
@@ -31,71 +31,97 @@ def version_tuple(value: str) -> tuple[int, int, int]:
     return tuple((parts + [0, 0])[:3])  # type: ignore[return-value]
 
 
-def macho_minimums(path: Path) -> list[str]:
+def is_macho(path: Path) -> bool:
     try:
         with path.open("rb") as handle:
-            if handle.read(4) not in MACHO_MAGICS:
-                return []
-    except OSError:
-        return []
-    result = subprocess.run(
-        ["/usr/bin/vtool", "-show-build", str(path)],
-        capture_output=True,
-        check=False,
-        text=True,
-    )
+            return handle.read(4) in MACHO_MAGICS
+    except OSError as error:
+        raise ValueError(f"could not read bundled file {path}: {error}") from error
+
+
+def command_output(arguments: list[str], path: Path) -> str:
+    result = subprocess.run(arguments, capture_output=True, check=False, text=True)
     if result.returncode != 0:
-        return []
-    return MINOS_PATTERN.findall(result.stdout)
+        detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
+        raise ValueError(f"could not inspect {path}: {detail}")
+    return result.stdout
 
 
-def bundled_minimum(app: Path) -> tuple[str, Path] | None:
+def macho_details(path: Path) -> tuple[list[str], set[str]]:
+    build = command_output(["/usr/bin/vtool", "-show-build", str(path)], path)
+    minimums = MINOS_PATTERN.findall(build)
+    if not minimums:
+        raise ValueError(f"Mach-O file has no deployment target: {path}")
+    architectures = set(
+        command_output(["/usr/bin/lipo", "-archs", str(path)], path).split()
+    )
+    return minimums, architectures
+
+
+def validate(app: Path, target: str, architecture: str) -> tuple[str, Path, int]:
+    target_version = version_tuple(target)
     highest: tuple[tuple[int, int, int], str, Path] | None = None
+    violations: list[str] = []
+    count = 0
+
     for path in app.rglob("*"):
         if not path.is_file():
             continue
-        for value in macho_minimums(path):
-            candidate = (version_tuple(value), value, path)
+        try:
+            macho = is_macho(path)
+        except ValueError as error:
+            violations.append(str(error))
+            continue
+        if not macho:
+            continue
+        count += 1
+        try:
+            minimums, architectures = macho_details(path)
+        except ValueError as error:
+            violations.append(str(error))
+            continue
+        if architecture not in architectures:
+            violations.append(f"{path} lacks required {architecture} architecture")
+        for minimum in minimums:
+            candidate = (version_tuple(minimum), minimum, path)
             if highest is None or candidate[0] > highest[0]:
                 highest = candidate
-    return None if highest is None else (highest[1], highest[2])
+            if candidate[0] > target_version:
+                violations.append(f"{path} requires macOS {minimum}, above {target}")
+
+    if count == 0 or highest is None:
+        violations.append(f"no Mach-O files found under {app}")
+    if violations:
+        raise ValueError("\n".join(violations))
+    return highest[1], highest[2], count
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("app", type=Path)
-    parser.add_argument(
-        "--update",
-        action="store_true",
-        help="raise LSMinimumSystemVersion to the highest bundled Mach-O minimum",
-    )
+    parser.add_argument("--target", required=True)
+    parser.add_argument("--architecture", default="arm64")
     args = parser.parse_args()
 
     plist_path = args.app / "Contents" / "Info.plist"
     with plist_path.open("rb") as handle:
         plist = plistlib.load(handle)
     declared = str(plist.get("LSMinimumSystemVersion", "0.0"))
-    required = bundled_minimum(args.app)
-    if required is None:
-        raise SystemExit(f"no Mach-O files found under {args.app}")
-    required_version, required_by = required
-
-    if args.update and version_tuple(declared) < version_tuple(required_version):
-        plist["LSMinimumSystemVersion"] = required_version
-        with plist_path.open("wb") as handle:
-            plistlib.dump(plist, handle, sort_keys=False)
-        declared = required_version
-
-    if version_tuple(declared) < version_tuple(required_version):
+    if version_tuple(declared) != version_tuple(args.target):
         raise SystemExit(
-            f"{plist_path} declares macOS {declared}, but {required_by} requires "
-            f"macOS {required_version}"
+            f"{plist_path} declares macOS {declared}; expected exactly {args.target}"
         )
 
+    try:
+        required, required_by, count = validate(
+            args.app, args.target, args.architecture
+        )
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
     relative_binary = required_by.relative_to(args.app)
     print(
-        f"macOS minimum validated: {declared} "
-        f"(highest bundled requirement {required_version} from {relative_binary})"
+        f"macOS {args.target} compatibility verified across {count} Mach-O files "
+        f"(highest requirement {required} from {relative_binary})"
     )
     return 0
 
