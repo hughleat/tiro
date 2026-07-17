@@ -18,6 +18,8 @@ jobs:
     name: Apple Silicon macOS 14
     runs-on: macos-14
     timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer
 
     steps:
       - name: Check out Tiro
@@ -37,6 +39,9 @@ jobs:
 
       - name: Install release tools
         run: brew install ripgrep
+
+      - name: Verify Swift 6 toolchain
+        run: swift --version | grep -q 'Swift version 6\.'
 
       - name: Run complete acceptance suite
         run: ./scripts/test_all.sh

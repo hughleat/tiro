@@ -35,7 +35,9 @@ plutil -lint "$ROOT/native/Info.plist" "$ROOT/native/Tiro.entitlements" >/dev/nu
 rg -q -F 'runs-on: macos-14' "$MACOS_14_WORKFLOW"
 rg -q -F 'actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0' "$MACOS_14_WORKFLOW"
 rg -q -F 'persist-credentials: false' "$MACOS_14_WORKFLOW"
+rg -q -F 'DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer' "$MACOS_14_WORKFLOW"
 rg -q -F 'run: brew install ripgrep' "$MACOS_14_WORKFLOW"
+rg -q -F "run: swift --version | grep -q 'Swift version 6\\.'" "$MACOS_14_WORKFLOW"
 rg -q -F 'run: ./scripts/test_all.sh' "$MACOS_14_WORKFLOW"
 rg -q -F 'uv sync --locked --extra bundle' "$MACOS_14_WORKFLOW"
 
