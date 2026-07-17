@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="${0:A:h:h}"
+MACOS_14_WORKFLOW="$ROOT/.github/workflows/macos-14.yml"
 
 zsh -n \
     "$ROOT/scripts/build_native_app.sh" \
@@ -31,6 +32,11 @@ if rg -q -F -- '--update' "$ROOT/scripts/build_native_app.sh"; then
 fi
 plutil -lint "$ROOT/native/Info.plist" "$ROOT/native/Tiro.entitlements" >/dev/null
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.audio-input' "$ROOT/native/Tiro.entitlements")" == "true" ]]
+rg -q -F 'runs-on: macos-14' "$MACOS_14_WORKFLOW"
+rg -q -F 'actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0' "$MACOS_14_WORKFLOW"
+rg -q -F 'persist-credentials: false' "$MACOS_14_WORKFLOW"
+rg -q -F 'run: ./scripts/test_all.sh' "$MACOS_14_WORKFLOW"
+rg -q -F 'uv sync --locked --extra bundle' "$MACOS_14_WORKFLOW"
 
 help="$($ROOT/scripts/build_native_app.sh --help)"
 print -r -- "$help" | rg -q 'distribution'
