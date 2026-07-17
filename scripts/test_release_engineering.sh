@@ -40,6 +40,8 @@ rg -q -F 'run: brew install ripgrep' "$MACOS_14_WORKFLOW"
 rg -q -F "run: swift --version | grep -q 'Swift version 6\\.'" "$MACOS_14_WORKFLOW"
 rg -q -F 'run: ./scripts/test_all.sh' "$MACOS_14_WORKFLOW"
 rg -q -F 'uv sync --locked --extra bundle' "$MACOS_14_WORKFLOW"
+rg -q -F 'uv python install "$(cat .python-version)"' "$MACOS_14_WORKFLOW"
+rg -q -F 'version: "0.11.28"' "$MACOS_14_WORKFLOW"
 
 help="$($ROOT/scripts/build_native_app.sh --help)"
 print -r -- "$help" | rg -q 'distribution'
