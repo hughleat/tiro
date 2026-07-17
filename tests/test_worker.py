@@ -737,6 +737,8 @@ class TranscriptionHistoryTests(unittest.TestCase):
         with history_environment() as (_, _, history), patch.dict(
             "sys.modules", {"mlx": mlx, "mlx.core": mlx_core}
         ), patch.object(model_service, "decode_pcm_wav", return_value=array("h", [1])), patch.object(
+            model_service, "_installed_model_snapshots", return_value={"qwen": Path("/cache/qwen")}
+        ), patch.object(
             model_service, "_load_model", return_value=(model, selected)
         ), patch.object(text_service, "load_vocabulary", return_value=[]), patch.object(
             storage, "apply_retention", return_value=0
@@ -765,6 +767,8 @@ class TranscriptionHistoryTests(unittest.TestCase):
         with history_environment() as (_, _, history), patch.dict(
             "sys.modules", {"mlx": mlx, "mlx.core": mlx_core}
         ), patch.object(model_service, "decode_pcm_wav", return_value=array("h", [1])), patch.object(
+            model_service, "_installed_model_snapshots", return_value={"qwen": Path("/cache/qwen")}
+        ), patch.object(
             model_service, "_load_model", return_value=(model, selected)
         ), patch.object(text_service, "load_vocabulary", return_value=[]), patch.object(
             storage, "apply_retention", side_effect=OSError("maintenance failed")
@@ -792,6 +796,8 @@ class TranscriptionHistoryTests(unittest.TestCase):
         with history_environment() as (_, _, history), patch.dict(
             "sys.modules", {"mlx": mlx, "mlx.core": mlx_core}
         ), patch.object(model_service, "decode_pcm_wav", return_value=array("h", [1])), patch.object(
+            model_service, "_installed_model_snapshots", return_value={"qwen": Path("/cache/qwen")}
+        ), patch.object(
             model_service, "_load_model", return_value=(model, selected)
         ), patch.object(text_service, "load_vocabulary", return_value=[]), patch.object(
             storage, "apply_retention", return_value=0
@@ -821,6 +827,8 @@ class TranscriptionHistoryTests(unittest.TestCase):
         with history_environment() as (_, _, history), patch.dict(
             "sys.modules", {"mlx": mlx, "mlx.core": mlx_core}
         ), patch.object(model_service, "decode_pcm_wav", return_value=array("h", [1])), patch.object(
+            model_service, "_installed_model_snapshots", return_value={"qwen": Path("/cache/qwen")}
+        ), patch.object(
             model_service, "_load_model", return_value=(model, selected)
         ), patch.object(
             text_service,
