@@ -35,5 +35,8 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --locked --extra bundle
 
+      - name: Install release tools
+        run: brew install ripgrep
+
       - name: Run complete acceptance suite
         run: ./scripts/test_all.sh
