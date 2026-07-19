@@ -105,7 +105,7 @@ struct ParakeetCatalogTests {
 
     @Test
     func fluidAudioGlobalBackendAccessIsSerializedAndRestored() async throws {
-        let originalMode = ModelHub.offlineMode
+        let originalMode = await FluidAudioRuntime.backendOfflineMode()
         let probe = ConcurrencyProbe()
 
         async let first: Void = FluidAudioRuntime.withNetworkAccess {
@@ -121,7 +121,33 @@ struct ParakeetCatalogTests {
         _ = try await (first, second)
 
         #expect(await probe.maximumConcurrentOperations == 1)
-        #expect(ModelHub.offlineMode == originalMode)
+        #expect(await FluidAudioRuntime.backendOfflineMode() == originalMode)
+    }
+
+    @Test
+    func fluidAudioGlobalBackendAccessIsRestoredAfterFailure() async {
+        let originalMode = await FluidAudioRuntime.backendOfflineMode()
+
+        do {
+            if originalMode {
+                try await FluidAudioRuntime.withNetworkAccess {
+                    #expect(!ModelHub.offlineMode)
+                    throw TestError.expected
+                }
+            } else {
+                try await FluidAudioRuntime.withOfflineAccess {
+                    #expect(ModelHub.offlineMode)
+                    throw TestError.expected
+                }
+            }
+            Issue.record("Expected the operation to fail")
+        } catch TestError.expected {
+            // Expected.
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(await FluidAudioRuntime.backendOfflineMode() == originalMode)
     }
 }
 
@@ -194,4 +220,8 @@ private actor ConcurrencyProbe {
     func leave() {
         concurrentOperations -= 1
     }
+}
+
+private enum TestError: Error {
+    case expected
 }

@@ -1,4 +1,3 @@
-import FluidAudio
 import Foundation
 import Testing
 @testable import TiroRecognition
@@ -188,26 +187,6 @@ struct CoreMLParakeetEngineTests {
     }
 
     @Test
-    func testNetworkModeIsRestoredAfterFailedDownloadOperation() async {
-        ModelHub.offlineMode = true
-        defer { ModelHub.offlineMode = false }
-
-        do {
-            try await FluidAudioRuntime.withNetworkAccess {
-                #expect(!ModelHub.offlineMode)
-                throw TestError.expected
-            }
-            Issue.record("Expected the operation to fail")
-        } catch TestError.expected {
-            // Expected.
-        } catch {
-            Issue.record("Unexpected error: \(error)")
-        }
-
-        #expect(ModelHub.offlineMode)
-    }
-
-    @Test
     func testInstalledModelTranscribesRealAudioWhenConfigured() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard
@@ -312,8 +291,4 @@ private final class ProgressRecorder: @unchecked Sendable {
     func append(_ value: Double) {
         lock.withLock { storedValues.append(value) }
     }
-}
-
-private enum TestError: Error {
-    case expected
 }

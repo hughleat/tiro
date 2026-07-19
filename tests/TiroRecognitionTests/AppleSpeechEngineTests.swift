@@ -56,12 +56,12 @@ struct AppleSpeechEngineTests {
             Locale(identifier: "fr-FR"),
         ])
 
-        #expect(
-            AppleSpeechLocaleResolver.resolve(
-                requested: Locale(identifier: "en_GB"),
-                supported: supported
-            )?.identifier == "en_GB"
+        let exact = AppleSpeechLocaleResolver.resolve(
+            requested: Locale(identifier: "en_GB"),
+            supported: supported
         )
+        #expect(exact?.language.languageCode?.identifier == "en")
+        #expect(exact?.region?.identifier == "GB")
         #expect(
             AppleSpeechLocaleResolver.resolve(
                 requested: Locale(identifier: "en"),

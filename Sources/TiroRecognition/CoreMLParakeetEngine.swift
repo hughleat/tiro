@@ -92,10 +92,14 @@ struct FluidAudioRuntime: CompactCoreMLRuntime {
         try await FluidAudioBackendAccess.run(offline: false, operation)
     }
 
-    private static func withOfflineAccess<T>(
+    static func withOfflineAccess<T>(
         _ operation: @Sendable () async throws -> T
     ) async rethrows -> T {
         try await FluidAudioBackendAccess.run(offline: true, operation)
+    }
+
+    static func backendOfflineMode() async -> Bool {
+        await FluidAudioBackendAccess.currentMode()
     }
 }
 
@@ -111,6 +115,13 @@ private extension ParakeetModel {
 
 private enum FluidAudioBackendAccess {
     private static let lock = AsyncLock()
+
+    static func currentMode() async -> Bool {
+        await lock.acquire()
+        let mode = ModelHub.offlineMode
+        await lock.release()
+        return mode
+    }
 
     static func run<T>(
         offline: Bool,
