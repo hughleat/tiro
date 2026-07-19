@@ -22,10 +22,18 @@ rg -q -F -- 'uv sync --locked' "$ROOT/scripts/build_native_app.sh"
 rg -q -F 'Tiro-notarization-submission.zip' "$ROOT/scripts/build_native_app.sh"
 archive_cleanup_line="$(rg -n -F 'rm -f "$archive" "$archive.sha256" "$archive.partial"' "$ROOT/scripts/build_native_app.sh" | tail -1 | cut -d: -f1)"
 notarization_line="$(rg -n -F 'xcrun notarytool submit' "$ROOT/scripts/build_native_app.sh" | head -1 | cut -d: -f1)"
-smoke_line="$(rg -n -F 'smoke_release.sh" --app' "$ROOT/scripts/build_native_app.sh" | head -1 | cut -d: -f1)"
+smoke_line="$(rg -n -F 'smoke_release.sh" --app "$APP" --notarized' "$ROOT/scripts/build_native_app.sh" | head -1 | cut -d: -f1)"
 [[ "$archive_cleanup_line" -lt "$notarization_line" ]]
 [[ "$archive_cleanup_line" -lt "$smoke_line" ]]
 rg -q -F 'mv -f "$partial" "$archive"' "$ROOT/scripts/build_native_app.sh"
+rg -q -F 'hdiutil create -quiet' "$ROOT/scripts/build_native_app.sh"
+rg -q -F 'hdiutil verify "$DMG_PARTIAL"' "$ROOT/scripts/build_native_app.sh"
+rg -q -F 'hdiutil attach -quiet -readonly -nobrowse' "$ROOT/scripts/build_native_app.sh"
+rg -q -F 'ln -s /Applications "$DMG_STAGING/Applications"' "$ROOT/scripts/build_native_app.sh"
+rg -q -F '"$ROOT/scripts/build_native_app.sh" dmg' "$ROOT/scripts/test_all.sh"
+rg -q -F -- '--app "$DMG_MOUNT_POINT/Tiro.app"' "$ROOT/scripts/build_native_app.sh"
+rg -q -F -- '--ad-hoc-only' "$ROOT/scripts/build_native_app.sh"
+rg -q -F "'^Signature=adhoc$'" "$ROOT/scripts/smoke_release.sh"
 if rg -q -F -- '--update' "$ROOT/scripts/build_native_app.sh"; then
     print -u2 "release build still rewrites its deployment target"
     exit 1
@@ -45,6 +53,7 @@ rg -q -F 'version: "0.11.28"' "$MACOS_14_WORKFLOW"
 
 help="$($ROOT/scripts/build_native_app.sh --help)"
 print -r -- "$help" | rg -q 'distribution'
+print -r -- "$help" | rg -q 'dmg'
 print -r -- "$help" | rg -q -- '--notary-profile'
 print -r -- "$help" | rg -q -- '--build-number'
 print -r -- "$help" | rg -q 'setup_local_signing.sh'
@@ -73,6 +82,16 @@ if "$ROOT/scripts/build_native_app.sh" distribution --skip-notarization >/dev/nu
     print -u2 "distribution build accepted a missing signing identity"
     exit 1
 fi
+
+for credential_option in \
+    "--signing-identity Developer" \
+    "--notary-profile profile" \
+    "--skip-notarization"; do
+    if "$ROOT/scripts/build_native_app.sh" dmg ${(z)credential_option} >/dev/null 2>&1; then
+        print -u2 "dmg build accepted a distribution credential option"
+        exit 1
+    fi
+done
 
 LOCK="$ROOT/.build/native-build.lock"
 mkdir -p "$ROOT/.build"

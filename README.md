@@ -2,6 +2,14 @@
 
 Tiro is a private, local dictation app for Apple Silicon Macs. A native menu-bar app records microphone audio, sends a 16 kHz mono WAV to a local Python worker, copies the transcript, and optionally pastes it into the active application.
 
+## Download and install
+
+Tiro supports Apple Silicon Macs running macOS 14 Sonoma or later. Download the latest DMG from [GitHub Releases](https://github.com/hughleat/tiro/releases/latest), open it, and drag Tiro to Applications.
+
+The free build is neither Developer ID-signed nor Apple-notarized. On first launch, try to open Tiro, approve it under **System Settings > Privacy & Security > Open Anyway**, authenticate if prompted, then confirm **Open**. Only download Tiro from the official repository. Grant Microphone permission for recording and Accessibility permission for the global shortcut and automatic paste.
+
+Models are not bundled. Tiro downloads the model you choose once, then transcription runs locally. To update Tiro, download the latest DMG and replace the existing app in Applications. macOS may require Gatekeeper approval and Accessibility permission again after an update because free builds do not have a stable Apple signing identity.
+
 ## Controls
 
 - Tap the configured shortcut (Right Command by default) to start or stop recording.
@@ -57,7 +65,7 @@ Build and test with:
 open "dist/Tiro.app"
 ```
 
-The aggregate check runs the worker suite, data-migration assertions, native shortcut and snippet-state assertions, and a signed development build.
+The aggregate check runs the worker suite, data-migration assertions, native shortcut and snippet-state assertions, and a mounted self-contained DMG build.
 
 The development app does not embed Python. It uses `.venv/bin/python scripts/worker_entry.py` from `TIRO_PROJECT_ROOT` (or the checkout inferred from `dist/Tiro.app`) so development and release share the same data-location behavior.
 
@@ -81,3 +89,5 @@ Tiro targets Apple Silicon Macs running macOS 14 or later. Self-contained builds
 Run `scripts/setup_local_signing.sh` once before local development. It creates a code-signing-only certificate named `Tiro Local Development` in the login Keychain, allowing macOS to recognize rebuilt copies of Tiro as the same app and retain Accessibility permission. Development and local release builds use that identity automatically, with ad-hoc signing retained as a fallback on machines where it has not been installed.
 
 Distribution builds use the hardened runtime and sign nested code inside-out. A distribution build can also submit to Apple's notary service, staple the accepted ticket, verify Gatekeeper acceptance, and emit a ZIP plus SHA-256 checksum. See [`docs/RELEASING.md`](docs/RELEASING.md) for the credentialed commands and release checklist.
+
+Free GitHub releases use `./scripts/build_native_app.sh dmg`. This creates an ad-hoc-signed, self-contained DMG with an Applications shortcut and SHA-256 checksum. It needs no paid Apple credentials; users approve each downloaded version in System Settings.

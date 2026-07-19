@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="${0:A:h:h}"
 APP="$ROOT/dist/Tiro.app"
-SIGNING_LEVEL="ad-hoc"
+SIGNING_LEVEL="any"
 EXPECTED_VERSION=""
 EXPECTED_BUILD=""
 EXPECTED_ENTITLEMENTS="$ROOT/native/Tiro.entitlements"
@@ -14,6 +14,7 @@ usage: smoke_release.sh [options]
 
 Options:
   --app PATH                 App bundle to test (default: dist/Tiro.app)
+  --ad-hoc-only              Require ad-hoc signatures with no signing authority
   --developer-id             Require Developer ID and hardened runtime
   --notarized                Also require a staple and Gatekeeper acceptance
   --expected-version VERSION Assert CFBundleShortVersionString
@@ -45,6 +46,10 @@ while (( $# > 0 )); do
             ;;
         --developer-id)
             SIGNING_LEVEL="developer-id"
+            shift
+            ;;
+        --ad-hoc-only)
+            SIGNING_LEVEL="ad-hoc"
             shift
             ;;
         --notarized)
@@ -82,7 +87,17 @@ actual_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")"
 
 codesign --verify --deep --strict --verbose=2 "$APP"
 
-if [[ "$SIGNING_LEVEL" != "ad-hoc" ]]; then
+if [[ "$SIGNING_LEVEL" == "ad-hoc" ]]; then
+    while IFS= read -r -d '' candidate; do
+        [[ "$(file -b "$candidate")" == *"Mach-O"* ]] || continue
+        signature="$(codesign -dvvv "$candidate" 2>&1)"
+        print -r -- "$signature" | rg -q '^Signature=adhoc$' \
+            || fail "community release contains a non-ad-hoc signature: $candidate"
+        if print -r -- "$signature" | rg -q '^Authority='; then
+            fail "community release contains a signing authority: $candidate"
+        fi
+    done < <(find "$APP/Contents" -type f -print0)
+elif [[ "$SIGNING_LEVEL" != "any" ]]; then
     signature="$(codesign -dvvv "$APP" 2>&1)"
     print -r -- "$signature" | rg -q '^Authority=Developer ID Application:' \
         || fail "app is not signed with a Developer ID Application certificate"

@@ -21,14 +21,19 @@ DEPLOYMENT_TARGET="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' 
 TARGET_ARCHITECTURE="arm64"
 BUILD_LOCK="$ROOT/.build/native-build.lock"
 SUBMISSION_ARCHIVE=""
+DMG_MOUNT_POINT=""
+DMG_PARTIAL=""
+DMG_STAGING=""
+PENDING_ARTIFACT=""
 
 usage() {
     cat <<'USAGE'
-usage: build_native_app.sh [development|release|distribution] [options]
+usage: build_native_app.sh [development|release|dmg|distribution] [options]
 
 Modes:
   development   Native app using the checkout worker; locally signed (default)
   release       Self-contained local app; locally signed
+  dmg           Self-contained ad-hoc-signed DMG for free distribution
   distribution Self-contained Developer ID app, archive, and checksum
 
 Options:
@@ -61,6 +66,7 @@ if (( $# > 0 )); then
     case "$1" in
         development|--development) MODE="development"; shift ;;
         release|--release) MODE="release"; shift ;;
+        dmg|--dmg) MODE="dmg"; shift ;;
         distribution|--distribution) MODE="distribution"; shift ;;
     esac
 fi
@@ -106,7 +112,7 @@ done
     || fail "--build-number must begin with an integer and contain only integers and periods"
 [[ -f "$ENTITLEMENTS" ]] || fail "entitlements file not found: $ENTITLEMENTS"
 
-if [[ "$MODE" != "distribution" ]]; then
+if [[ "$MODE" == "development" || "$MODE" == "release" ]]; then
     [[ -f "$LOCAL_SIGNING_KEYCHAIN" ]] \
         || fail "local signing keychain not found: $LOCAL_SIGNING_KEYCHAIN"
     LOCAL_IDENTITIES="$(security find-identity -v -p codesigning "$LOCAL_SIGNING_KEYCHAIN" 2>&1)" \
@@ -124,6 +130,11 @@ if [[ "$MODE" == "distribution" ]]; then
     if [[ -z "$NOTARY_PROFILE" && "$SKIP_NOTARIZATION" -eq 0 ]]; then
         fail "distribution mode requires --notary-profile (or --skip-notarization for a signing-only test)"
     fi
+fi
+
+if [[ "$MODE" == "dmg" ]]; then
+    [[ -z "$SIGNING_IDENTITY" && -z "$NOTARY_PROFILE" && "$SKIP_NOTARIZATION" -eq 0 ]] \
+        || fail "dmg mode does not accept Developer ID or notarization options"
 fi
 
 sync_release_environment() {
@@ -251,6 +262,59 @@ create_archive() {
     mv -f "$partial" "$archive"
 }
 
+create_dmg() {
+    local image="$1"
+
+    DMG_STAGING="$ROOT/.build/dmg-root"
+    DMG_MOUNT_POINT="$ROOT/.build/dmg-mount"
+    DMG_PARTIAL="${image:r}.partial.dmg"
+    rm -rf "$DMG_STAGING" "$DMG_MOUNT_POINT"
+    rm -f "$image" "$image.sha256" "$DMG_PARTIAL"
+    mkdir -p "$DMG_STAGING" "$DMG_MOUNT_POINT"
+    ditto "$APP" "$DMG_STAGING/Tiro.app"
+    ln -s /Applications "$DMG_STAGING/Applications"
+
+    hdiutil create -quiet \
+        -fs HFS+ \
+        -volname Tiro \
+        -srcfolder "$DMG_STAGING" \
+        -format UDZO \
+        -ov "$DMG_PARTIAL"
+    hdiutil verify "$DMG_PARTIAL" >/dev/null
+    hdiutil attach -quiet -readonly -nobrowse \
+        -mountpoint "$DMG_MOUNT_POINT" "$DMG_PARTIAL"
+
+    [[ -d "$DMG_MOUNT_POINT/Tiro.app" ]] \
+        || fail "DMG does not contain Tiro.app"
+    [[ -L "$DMG_MOUNT_POINT/Applications" \
+        && "$(readlink "$DMG_MOUNT_POINT/Applications")" == "/Applications" ]] \
+        || fail "DMG does not contain the Applications shortcut"
+    "$ROOT/scripts/smoke_release.sh" \
+        --app "$DMG_MOUNT_POINT/Tiro.app" \
+        --ad-hoc-only \
+        --expected-entitlements "$ENTITLEMENTS" \
+        --expected-version "$VERSION" \
+        --expected-build "$BUILD_NUMBER"
+
+    hdiutil detach -quiet "$DMG_MOUNT_POINT"
+    rmdir "$DMG_MOUNT_POINT"
+    DMG_MOUNT_POINT=""
+    mv -f "$DMG_PARTIAL" "$image"
+    DMG_PARTIAL=""
+    rm -rf "$DMG_STAGING"
+    DMG_STAGING=""
+}
+
+write_checksum() {
+    local artifact="$1"
+
+    (
+        cd "$ARCHIVE_DIR"
+        shasum -a 256 "${artifact:t}" > "${artifact:t}.sha256.partial"
+        mv -f "${artifact:t}.sha256.partial" "${artifact:t}.sha256"
+    )
+}
+
 acquire_build_lock() {
     mkdir -p "$ROOT/.build"
     if ! mkdir "$BUILD_LOCK" 2>/dev/null; then
@@ -271,10 +335,28 @@ acquire_build_lock() {
 }
 
 release_build_lock() {
+    local mount_detached=1
+
+    if [[ -n "$DMG_MOUNT_POINT" ]]; then
+        if ! hdiutil detach -quiet "$DMG_MOUNT_POINT" >/dev/null 2>&1; then
+            print -u2 "warning: could not detach DMG at $DMG_MOUNT_POINT"
+            mount_detached=0
+        fi
+    fi
+    [[ -z "$DMG_PARTIAL" ]] || rm -f "$DMG_PARTIAL" || true
+    [[ -z "$DMG_STAGING" ]] || rm -rf "$DMG_STAGING" || true
+    if [[ -n "$DMG_MOUNT_POINT" && "$mount_detached" -eq 1 ]]; then
+        rm -rf "$DMG_MOUNT_POINT" || true
+    fi
+    if [[ -n "$PENDING_ARTIFACT" ]]; then
+        rm -f "$PENDING_ARTIFACT" \
+            "$PENDING_ARTIFACT.sha256" \
+            "$PENDING_ARTIFACT.sha256.partial" || true
+    fi
     [[ -z "$SUBMISSION_ARCHIVE" ]] \
-        || rm -f "$SUBMISSION_ARCHIVE" "$SUBMISSION_ARCHIVE.partial"
+        || rm -f "$SUBMISSION_ARCHIVE" "$SUBMISSION_ARCHIVE.partial" || true
     [[ -z "${archive:-}" ]] \
-        || rm -f "$archive.partial" "$archive.sha256.partial"
+        || rm -f "$archive.partial" "$archive.sha256.partial" || true
     owner="$(cat "$BUILD_LOCK/pid" 2>/dev/null || true)"
     [[ "$owner" == "$$" ]] || return
     rm -f "$BUILD_LOCK/pid"
@@ -309,9 +391,26 @@ if [[ "$MODE" != "development" ]]; then
     build_worker
 fi
 
-if [[ "$MODE" != "distribution" ]]; then
+if [[ "$MODE" == "development" || "$MODE" == "release" ]]; then
     sign_locally
     print "$APP"
+    exit 0
+fi
+
+if [[ "$MODE" == "dmg" ]]; then
+    sign_nested_code --force --sign -
+
+    mkdir -p "$ARCHIVE_DIR"
+    archive="$ARCHIVE_DIR/Tiro-$VERSION-$BUILD_NUMBER-macOS-arm64.dmg"
+    PENDING_ARTIFACT="$archive"
+    rm -f "$archive" "$archive.sha256" "$archive.sha256.partial"
+    create_dmg "$archive"
+    write_checksum "$archive"
+    PENDING_ARTIFACT=""
+
+    print "App: $APP"
+    print "DMG: $archive"
+    print "Checksum: $archive.sha256"
     exit 0
 fi
 
@@ -342,12 +441,7 @@ else
 fi
 
 create_archive "$archive"
-
-(
-    cd "$ARCHIVE_DIR"
-    shasum -a 256 "${archive:t}" > "${archive:t}.sha256.partial"
-    mv -f "${archive:t}.sha256.partial" "${archive:t}.sha256"
-)
+write_checksum "$archive"
 
 print "App: $APP"
 print "Archive: $archive"
