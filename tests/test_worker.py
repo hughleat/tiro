@@ -25,6 +25,7 @@ from tiro_worker import (
     server as worker_server_module,
     storage,
     text as text_service,
+    transcriptions as transcription_service,
 )
 from tiro_worker.parakeet_compat import mlx_mel_filter_as_librosa
 from scripts import worker_entry
@@ -643,6 +644,45 @@ class RetentionTests(unittest.TestCase):
 
 
 class TranscriptionHistoryTests(unittest.TestCase):
+    def test_mlx_transcription_delegates_raw_result_to_shared_finalizer(self):
+        sentinel = {"text": "finished"}
+        with history_environment(), patch.object(
+            model_service, "decode_pcm_wav", return_value=array("h", [1])
+        ), patch.object(
+            model_service,
+            "_installed_model_snapshots",
+            return_value={"compact": Path("/cache/model")},
+        ), patch.object(
+            model_service, "_generate_transcript", return_value=" raw result "
+        ), patch.object(
+            transcription_service,
+            "finalize_transcription",
+            return_value=sentinel,
+        ) as finalize:
+            result = model_service.transcribe(
+                make_wav(),
+                "compact",
+                "com.editor",
+                "Editor",
+                "standard",
+                "spoken",
+                "English",
+            )
+
+        self.assertIs(result, sentinel)
+        arguments = finalize.call_args.kwargs
+        self.assertEqual(arguments["raw_text"], " raw result ")
+        self.assertEqual(arguments["model_key"], "compact")
+        self.assertEqual(
+            arguments["model_id"], common.MODELS["compact"]["id"]
+        )
+        self.assertEqual(arguments["origin_bundle_id"], "com.editor")
+        self.assertEqual(arguments["origin_app_name"], "Editor")
+        self.assertEqual(arguments["mode"], "standard")
+        self.assertEqual(arguments["punctuation"], "spoken")
+        self.assertEqual(arguments["language"], "English")
+        self.assertGreaterEqual(arguments["transcription_seconds"], 0)
+
     def test_transcription_obeys_each_valid_storage_policy(self):
         policies = [
             ({"store_history": False, "store_recordings": False, "retention_days": 30}, False, False),
@@ -2839,9 +2879,201 @@ class FinalFeatureEndpointTests(unittest.TestCase):
         )
 
 
+class NativeFinalizationTests(unittest.TestCase):
+    def _recording(self, name=None, content=None):
+        name = name or f"recording-{uuid.uuid4()}.wav"
+        path = common.TRANSIENT_AUDIO_DIR / name
+        path.write_bytes(make_wav() if content is None else content)
+        return path
+
+    @staticmethod
+    def _payload(recording_name, **updates):
+        payload = {
+            "raw_text": "yana signature new line thanks period",
+            "engine": "coreml-compact",
+            "transcription_seconds": 0.0625,
+            "recording_name": recording_name,
+            "mode": "standard",
+            "punctuation": "spoken",
+            "language": "English",
+            "origin_bundle_id": "com.editor",
+            "origin_app_name": "Editor",
+        }
+        payload.update(updates)
+        return payload
+
+    def test_native_finalizer_uses_trusted_model_identity_and_shared_pipeline(self):
+        with history_environment() as (_, _, history):
+            recording = self._recording()
+            common.VOCABULARY_PATH.write_text(json.dumps({
+                "entries": [{"spoken": "yana", "written": "Janne"}],
+            }))
+            common.SNIPPETS_PATH.write_text(json.dumps({
+                "version": 1,
+                "snippets": [{
+                    "id": "one",
+                    "trigger": "signature",
+                    "content": "Best regards",
+                }],
+            }))
+            with worker_server() as address:
+                status, _, body = request(
+                    address,
+                    "POST",
+                    "/api/transcriptions/finalize",
+                    self._payload(recording.name),
+                    "secret",
+                )
+
+            self.assertEqual(status, 200)
+            entry = json.loads(body)
+            self.assertEqual(entry["model"], "parakeet-tdt-ctc-110m-coreml")
+            self.assertEqual(entry["text"], "Janne Best regards\nthanks.")
+            self.assertEqual(
+                entry["raw_text"],
+                "yana signature new line thanks period",
+            )
+            self.assertEqual(entry["transcription_seconds"], 0.062)
+            self.assertEqual(entry["origin_bundle_id"], "com.editor")
+            self.assertEqual(entry["origin_app_name"], "Editor")
+            self.assertEqual(json.loads(history.read_text())["id"], entry["id"])
+
+    def test_native_finalization_requires_authentication(self):
+        with history_environment(), worker_server() as address:
+            recording = self._recording()
+            status, _, _ = request(
+                address,
+                "POST",
+                "/api/transcriptions/finalize",
+                self._payload(recording.name),
+            )
+        self.assertEqual(status, 403)
+
+    def test_native_finalization_rejects_untrusted_engine_and_metadata(self):
+        invalid_updates = [
+            {"engine": "coreml-anything"},
+            {"engine": []},
+            {"raw_text": "x" * (common.MAX_TRANSCRIPT_CHARS + 1)},
+            {"transcription_seconds": -1},
+            {"transcription_seconds": float("nan")},
+            {"transcription_seconds": common.MAX_TRANSCRIPTION_SECONDS + 1},
+            {"mode": 1},
+            {"punctuation": []},
+            {"language": None},
+            {"origin_bundle_id": 42},
+            {"origin_bundle_id": "x" * (common.MAX_ORIGIN_BUNDLE_ID + 1)},
+            {"unexpected": True},
+        ]
+        with history_environment(), worker_server() as address:
+            recording = self._recording()
+            for update in invalid_updates:
+                with self.subTest(update=update):
+                    status, _, _ = request(
+                        address,
+                        "POST",
+                        "/api/transcriptions/finalize",
+                        self._payload(recording.name, **update),
+                        "secret",
+                    )
+                    self.assertEqual(status, 400)
+
+    def test_native_finalization_confines_recordings_to_transient_directory(self):
+        invalid_names = [
+            f"../recording-{uuid.uuid4()}.wav",
+            f"recording-{uuid.uuid4()}.wav/child",
+            "recording.wav",
+            f"recording-{uuid.uuid4()}.aiff",
+        ]
+        with history_environment(), worker_server() as address:
+            for name in invalid_names:
+                with self.subTest(name=name):
+                    status, _, _ = request(
+                        address,
+                        "POST",
+                        "/api/transcriptions/finalize",
+                        self._payload(name),
+                        "secret",
+                    )
+                    self.assertEqual(status, 400)
+
+            missing = f"recording-{uuid.uuid4()}.wav"
+            status, _, _ = request(
+                address,
+                "POST",
+                "/api/transcriptions/finalize",
+                self._payload(missing),
+                "secret",
+            )
+            self.assertEqual(status, 404)
+
+    def test_native_finalization_rejects_symlinks_and_invalid_recordings(self):
+        with history_environment(), tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "outside.wav"
+            target.write_bytes(make_wav())
+            symlink = common.TRANSIENT_AUDIO_DIR / f"recording-{uuid.uuid4()}.wav"
+            symlink.symlink_to(target)
+            empty = self._recording(content=b"x" * 44)
+            malformed = self._recording(content=b"x" * 100)
+            oversized = self._recording(content=b"x" * 45)
+            with oversized.open("r+b") as output:
+                output.truncate(common.MAX_RECORDING_BYTES + 1)
+            with worker_server() as address:
+                for recording in (symlink, empty, malformed, oversized):
+                    with self.subTest(recording=recording.name):
+                        status, _, _ = request(
+                            address,
+                            "POST",
+                            "/api/transcriptions/finalize",
+                            self._payload(recording.name),
+                            "secret",
+                        )
+                        self.assertEqual(status, 400)
+
+    def test_native_finalization_has_a_separate_bounded_json_body(self):
+        with history_environment(), worker_server() as address:
+            status, _, _ = request(
+                address,
+                "POST",
+                "/api/transcriptions/finalize",
+                token="secret",
+                headers={
+                    "Content-Length": str(
+                        common.MAX_FINALIZATION_JSON_BYTES + 1
+                    ),
+                    "Content-Type": "application/json",
+                },
+            )
+        self.assertEqual(status, 413)
+
+    def test_direct_native_finalizer_rejects_noncanonical_values(self):
+        wav = make_wav()
+        with history_environment():
+            with self.assertRaisesRegex(ValueError, "engine"):
+                transcription_service.finalize_native_transcription(
+                    wav_bytes=wav,
+                    raw_text="hello",
+                    engine="unknown",
+                    transcription_seconds=0.1,
+                )
+            with self.assertRaisesRegex(ValueError, "raw_text"):
+                transcription_service.finalize_native_transcription(
+                    wav_bytes=wav,
+                    raw_text=None,
+                    engine="coreml-compact",
+                    transcription_seconds=0.1,
+                )
+            with self.assertRaisesRegex(ValueError, "transcription_seconds"):
+                transcription_service.finalize_native_transcription(
+                    wav_bytes=wav,
+                    raw_text="hello",
+                    engine="coreml-compact",
+                    transcription_seconds=True,
+                )
+
+
 class WorkerProtocolTests(unittest.TestCase):
     def test_protocol_version_is_current(self):
-        self.assertEqual(common.API_VERSION, 7)
+        self.assertEqual(common.API_VERSION, 8)
 
     def test_status_reports_protocol_version(self):
         with history_environment(), worker_server() as address:
@@ -2850,7 +3082,7 @@ class WorkerProtocolTests(unittest.TestCase):
                 address, "GET", "/api/status", token="secret"
             )
             self.assertEqual(status, 200)
-            self.assertEqual(json.loads(body)["api_version"], 7)
+            self.assertEqual(json.loads(body)["api_version"], 8)
 
     def test_status_reports_current_loaded_model(self):
         with history_environment(), patch.object(model_service, "_model_id", "loaded-now"), worker_server() as address:
@@ -2872,7 +3104,11 @@ class WorkerProtocolTests(unittest.TestCase):
         with history_environment(), worker_server() as address:
             status, _, body = request(address, "GET", "/api/health")
             self.assertEqual((status, json.loads(body)), (200, {"ready": True}))
-            for method, path in (("GET", "/api/history"), ("POST", "/api/transcribe")):
+            for method, path in (
+                ("GET", "/api/history"),
+                ("POST", "/api/transcribe"),
+                ("POST", "/api/transcriptions/finalize"),
+            ):
                 self.assertEqual(request(address, method, path)[0], 403)
 
     def test_shutdown_requires_the_worker_token(self):

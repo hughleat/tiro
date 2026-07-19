@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import stat
 import threading
 import time
 import uuid
@@ -10,16 +12,25 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import common, models, storage, text
+from . import common, models, storage, text, transcriptions
 from .common import (
     API_VERSION,
     DEFAULT_HISTORY_LIMIT,
     HTTPError,
+    MAX_FINALIZATION_JSON_BYTES,
     MAX_JSON_BODY_BYTES,
     MAX_ORIGIN_APP_NAME,
     MAX_ORIGIN_BUNDLE_ID,
     MAX_RECORDING_BYTES,
     MODELS,
+)
+
+_TRANSIENT_RECORDING_NAME = re.compile(
+    r"recording-[0-9a-fA-F]{8}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{12}\.wav"
 )
 
 def json_response(
@@ -46,7 +57,7 @@ class TiroHandler(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         return common.shutdown_is_authorized(self.headers.get("X-Tiro-Worker-Token", ""))
 
-    def _read_json_body(self) -> dict:
+    def _read_json_body(self, maximum: int = MAX_JSON_BODY_BYTES) -> dict:
         raw_length = self.headers.get("Content-Length")
         if raw_length is None:
             raise HTTPError(HTTPStatus.LENGTH_REQUIRED, "Content-Length is required")
@@ -56,10 +67,10 @@ class TiroHandler(BaseHTTPRequestHandler):
             raise ValueError("Content-Length must be an integer") from exc
         if length <= 0:
             raise ValueError("JSON body is required")
-        if length > MAX_JSON_BODY_BYTES:
+        if length > maximum:
             raise HTTPError(
                 HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
-                f"JSON body exceeds {MAX_JSON_BODY_BYTES} bytes",
+                f"JSON body exceeds {maximum} bytes",
             )
         try:
             payload = json.loads(self.rfile.read(length))
@@ -68,6 +79,75 @@ class TiroHandler(BaseHTTPRequestHandler):
         if not isinstance(payload, dict):
             raise ValueError("JSON body must be an object")
         return payload
+
+    @staticmethod
+    def _transient_recording_bytes(name: object) -> bytes:
+        if not isinstance(name, str) or _TRANSIENT_RECORDING_NAME.fullmatch(name) is None:
+            raise ValueError("recording_name must be a Tiro recording basename")
+        path = common.TRANSIENT_AUDIO_DIR / name
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError as exc:
+            raise HTTPError(
+                HTTPStatus.NOT_FOUND, "Transient recording not found"
+            ) from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("Transient recording must be a regular file")
+        descriptor = os.open(
+            path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        )
+        with os.fdopen(descriptor, "rb") as recording:
+            metadata = os.fstat(recording.fileno())
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_size <= 44
+                or metadata.st_size > MAX_RECORDING_BYTES
+            ):
+                raise ValueError("Recording is empty or too large")
+            wav_bytes = recording.read(MAX_RECORDING_BYTES + 1)
+        if len(wav_bytes) != metadata.st_size:
+            raise ValueError("Transient recording changed while being read")
+        models.decode_pcm_wav(wav_bytes)
+        return wav_bytes
+
+    def _finalize_native_transcription(self) -> dict:
+        payload = self._read_json_body(MAX_FINALIZATION_JSON_BYTES)
+        required = {
+            "raw_text",
+            "engine",
+            "transcription_seconds",
+            "recording_name",
+        }
+        optional = {
+            "origin_bundle_id",
+            "origin_app_name",
+            "mode",
+            "punctuation",
+            "language",
+        }
+        if not required.issubset(payload) or not set(payload).issubset(
+            required | optional
+        ):
+            raise ValueError(
+                "finalization requires raw_text, engine, "
+                "transcription_seconds, and recording_name"
+            )
+        metadata = transcriptions.validate_native_transcription(
+            raw_text=payload["raw_text"],
+            engine=payload["engine"],
+            transcription_seconds=payload["transcription_seconds"],
+            origin_bundle_id=payload.get("origin_bundle_id"),
+            origin_app_name=payload.get("origin_app_name"),
+            mode=payload.get("mode", "standard"),
+            punctuation=payload.get("punctuation", "automatic"),
+            language=payload.get("language", "English"),
+        )
+        wav_bytes = self._transient_recording_bytes(
+            payload["recording_name"]
+        )
+        return transcriptions.finalize_transcription(
+            wav_bytes=wav_bytes, **metadata
+        )
 
     def _send_audio(self, entry_id: str) -> bool:
         with storage._history_lock:
@@ -185,6 +265,26 @@ class TiroHandler(BaseHTTPRequestHandler):
         if path == "/api/shutdown":
             json_response(self, {"stopping": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
+
+        if path == "/api/transcriptions/finalize":
+            try:
+                json_response(self, self._finalize_native_transcription())
+            except HTTPError as exc:
+                json_response(self, {"error": str(exc)}, exc.status)
+            except (ValueError, OSError, wave.Error) as exc:
+                json_response(
+                    self, {"error": str(exc)}, HTTPStatus.BAD_REQUEST
+                )
+            except Exception as exc:
+                common._log_exception(
+                    "Native transcription finalization failed", exc
+                )
+                json_response(
+                    self,
+                    {"error": "Could not finalize the transcription."},
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
             return
 
         mutation_paths = {

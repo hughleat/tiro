@@ -12,7 +12,7 @@ zsh -n \
     "$ROOT/scripts/prepare_release_environment.py" \
     "$ROOT/scripts/validate_macos_compatibility.py" \
     "$ROOT/scripts/worker_entry.py"
-rg -q -F 'api_version raw "$TEMP_ROOT/status.json")" == "7"' "$ROOT/scripts/smoke_release.sh"
+rg -q -F 'api_version raw "$TEMP_ROOT/status.json")" == "8"' "$ROOT/scripts/smoke_release.sh"
 rg -q -F '"$WORKER" --self-test' "$ROOT/scripts/smoke_release.sh"
 rg -q -F 'expected-entitlements.plist' "$ROOT/scripts/smoke_release.sh"
 rg -q -F -- '--expected-entitlements "$ENTITLEMENTS"' "$ROOT/scripts/build_native_app.sh"

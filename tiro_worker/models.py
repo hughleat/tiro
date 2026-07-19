@@ -2,19 +2,16 @@ from __future__ import annotations
 
 import gc
 import io
-import json
 import os
 import threading
 import time
-import uuid
 import wave
 from array import array
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
 
-from . import common, storage, text as text_rules
+from . import common, storage, text as text_rules, transcriptions
 from .parakeet_compat import mlx_mel_filter_as_librosa
 from .common import (
     HTTPError,
@@ -485,64 +482,18 @@ def _transcribe(
         _model_generation += 1
     elapsed = time.perf_counter() - started
 
-    delivered_text = raw_text
-    if mode == "standard":
-        delivered_text = text_rules.apply_spoken_formatting(delivered_text, punctuation)
-        delivered_text = text_rules.apply_vocabulary(
-            delivered_text,
-            text_rules.vocabulary_for_origin(origin_bundle_id),
-        )
-        delivered_text = text_rules.apply_snippets(
-            delivered_text,
-            text_rules.load_snippets(),
-        )
-    entry = {
-        "id": str(uuid.uuid4()),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "model": selected["id"],
-        "transcription_seconds": round(elapsed, 3),
-        "text": delivered_text,
-        "mode": mode,
-        "punctuation": punctuation,
-        "language": language,
-    }
-    if origin_bundle_id:
-        entry["origin_bundle_id"] = origin_bundle_id
-    if origin_app_name:
-        entry["origin_app_name"] = origin_app_name
-    if entry["text"] != raw_text:
-        entry["raw_text"] = raw_text
-
-    with storage._history_lock:
-        privacy = storage._load_privacy_locked()
-        if privacy["store_history"]:
-            audio_path = None
-            if privacy["store_recordings"]:
-                common._ensure_private_directory(common.AUDIO_DIR)
-                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-                audio_path = common.AUDIO_DIR / f"{stamp}.wav"
-                common._write_private_bytes(audio_path, wav_bytes)
-                entry["audio_file"] = str(audio_path.relative_to(common.ROOT))
-            try:
-                common._ensure_private_directory(common.HISTORY_PATH.parent)
-                lines = storage._migrate_history_locked()
-                prefix = "\n" if lines and not lines[-1].endswith("\n") else ""
-                common._append_private_text(
-                    common.HISTORY_PATH, prefix + json.dumps(entry, ensure_ascii=False) + "\n"
-                )
-            except Exception:
-                if audio_path is not None:
-                    try:
-                        audio_path.unlink()
-                    except OSError as exc:
-                        print(f"Could not remove uncommitted recording: {exc!r}", flush=True)
-                raise
-    if privacy["store_history"]:
-        try:
-            storage.apply_retention()
-        except Exception as exc:
-            print(f"Retention maintenance failed; will retry later: {exc!r}", flush=True)
-    return entry
+    return transcriptions.finalize_transcription(
+        wav_bytes=wav_bytes,
+        raw_text=raw_text,
+        model_key=model_key,
+        model_id=selected["id"],
+        transcription_seconds=elapsed,
+        origin_bundle_id=origin_bundle_id,
+        origin_app_name=origin_app_name,
+        mode=mode,
+        punctuation=punctuation,
+        language=language,
+    )
 
 
 def transcribe(
