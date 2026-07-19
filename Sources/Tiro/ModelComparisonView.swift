@@ -327,7 +327,7 @@ final class ModelComparisonView: NSStackView {
     }()
 }
 
-private final class ComparisonResultView: NSStackView {
+final class ComparisonResultView: NSStackView {
     init(name: String, seconds: Double?, transcript: String, error: String?) {
         super.init(frame: .zero)
         orientation = .vertical
@@ -344,7 +344,11 @@ private final class ComparisonResultView: NSStackView {
         timingLabel.textColor = .secondaryLabelColor
         timingLabel.isHidden = seconds == nil
 
-        let textView = NSTextView()
+        let scrollView = NSTextView.scrollableTextView()
+        guard let textView = scrollView.documentView as? NSTextView else {
+            assertionFailure("AppKit did not create a scrollable text view")
+            return
+        }
         textView.isEditable = false
         textView.isSelectable = true
         textView.font = .systemFont(ofSize: 12)
@@ -354,10 +358,7 @@ private final class ComparisonResultView: NSStackView {
         textView.setAccessibilityLabel(
             error == nil ? "Transcript from \(name)" : "Error from \(name)"
         )
-        let scrollView = NSScrollView()
-        scrollView.hasVerticalScroller = true
         scrollView.borderType = .bezelBorder
-        scrollView.documentView = textView
 
         addArrangedSubview(nameLabel)
         addArrangedSubview(timingLabel)

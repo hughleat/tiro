@@ -46,6 +46,7 @@ let package = Package(
                 "BuildFeaturesTests.swift",
                 "DictationModelCatalogTests.swift",
                 "ErrorRecoveryTests.swift",
+                "ModelComparisonViewTests.swift",
                 "NativeTextFinalizerTests.swift",
                 "NativeTiroStoreTests.swift",
                 "SetupReadinessTests.swift",
