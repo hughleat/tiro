@@ -71,6 +71,64 @@ struct WhisperEngineTests {
     }
 
     @Test
+    func whisperKitModelBundlesAreCompleteWithoutTokenizer() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for name in ["MelSpectrogram", "AudioEncoder", "TextDecoder"] {
+            try FileManager.default.createDirectory(
+                at: root.appendingPathComponent("\(name).mlmodelc"),
+                withIntermediateDirectories: true
+            )
+        }
+
+        let installed = await WhisperKitRuntime().isInstalled(
+            model: WhisperModel.base.spec,
+            at: root
+        )
+
+        #expect(installed)
+        #expect(!FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("tokenizer.json").path
+        ))
+    }
+
+    @Test
+    func whisperKitModelMissingRequiredBundleIsIncomplete() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for name in ["MelSpectrogram", "AudioEncoder"] {
+            try FileManager.default.createDirectory(
+                at: root.appendingPathComponent("\(name).mlmodelc"),
+                withIntermediateDirectories: true
+            )
+        }
+
+        let installed = await WhisperKitRuntime().isInstalled(
+            model: WhisperModel.base.spec,
+            at: root
+        )
+
+        #expect(!installed)
+    }
+
+    @Test
+    func incompleteDownloadErrorOffersConciseRecovery() {
+        let error = CoreMLWhisperError.downloadIncomplete(
+            URL(fileURLWithPath: "/private/temporary-download")
+        )
+
+        #expect(
+            error.errorDescription
+                == "The Whisper model download did not finish."
+        )
+        #expect(
+            error.recoverySuggestion
+                == "Check your internet connection and try the download again."
+        )
+        #expect(!error.localizedDescription.contains("/private/temporary-download"))
+    }
+
+    @Test
     func downloadPublishesBoundedProgressAndVerifiesInstallation() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

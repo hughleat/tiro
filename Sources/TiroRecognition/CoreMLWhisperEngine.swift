@@ -163,8 +163,8 @@ public enum CoreMLWhisperError: LocalizedError {
             "The Whisper model is not installed at \(directory.path)."
         case .modelNotLoaded:
             "Load the Whisper model before transcribing."
-        case .downloadIncomplete(let directory):
-            "The Whisper model download is incomplete at \(directory.path)."
+        case .downloadIncomplete:
+            "The Whisper model download did not finish."
         case .emptyTranscription:
             "WhisperKit returned no transcription result."
         case .unsafeModelDirectory(let directory):
@@ -173,6 +173,15 @@ public enum CoreMLWhisperError: LocalizedError {
             "WhisperKit returned a download outside its temporary cache: \(directory.path)."
         case .activityInProgress(let activity):
             "The Whisper model is currently \(activity.rawValue)."
+        }
+    }
+
+    public var recoverySuggestion: String? {
+        switch self {
+        case .downloadIncomplete:
+            "Check your internet connection and try the download again."
+        default:
+            nil
         }
     }
 }
@@ -211,7 +220,7 @@ protocol WhisperCoreMLRuntime: Sendable {
 
 struct WhisperKitRuntime: WhisperCoreMLRuntime {
     func isInstalled(model: WhisperModelSpec, at directory: URL) async -> Bool {
-        Self.hasRequiredModels(in: directory)
+        Self.hasRequiredModelBundles(in: directory)
     }
 
     func download(
@@ -245,7 +254,7 @@ struct WhisperKitRuntime: WhisperCoreMLRuntime {
         guard Self.isDescendant(downloaded, of: stagingRoot) else {
             throw CoreMLWhisperError.unsafeDownloadLocation(downloaded)
         }
-        guard Self.hasRequiredModels(in: downloaded) else {
+        guard Self.hasRequiredModelBundles(in: downloaded) else {
             throw CoreMLWhisperError.downloadIncomplete(downloaded)
         }
 
@@ -260,7 +269,7 @@ struct WhisperKitRuntime: WhisperCoreMLRuntime {
         model: WhisperModelSpec,
         from directory: URL
     ) async throws -> any WhisperCoreMLSession {
-        guard Self.hasRequiredModels(in: directory) else {
+        guard Self.hasRequiredModelBundles(in: directory) else {
             throw CoreMLWhisperError.modelNotInstalled(directory)
         }
 
@@ -282,20 +291,16 @@ struct WhisperKitRuntime: WhisperCoreMLRuntime {
         return WhisperKitSession(whisperKit: whisperKit)
     }
 
-    private static func hasRequiredModels(in directory: URL) -> Bool {
-        let hasModels = ["MelSpectrogram", "AudioEncoder", "TextDecoder"]
+    private static func hasRequiredModelBundles(in directory: URL) -> Bool {
+        ["MelSpectrogram", "AudioEncoder", "TextDecoder"]
             .allSatisfy { name in
-            FileManager.default.fileExists(
-                atPath: ModelUtilities.detectModelURL(
-                    inFolder: directory,
-                    named: name
-                ).path
-            )
-        }
-        let hasTokenizer = FileManager.default.fileExists(
-            atPath: directory.appendingPathComponent("tokenizer.json").path
-        )
-        return hasModels && hasTokenizer
+                FileManager.default.fileExists(
+                    atPath: ModelUtilities.detectModelURL(
+                        inFolder: directory,
+                        named: name
+                    ).path
+                )
+            }
     }
 
     private static func isDescendant(_ candidate: URL, of root: URL) -> Bool {
