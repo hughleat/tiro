@@ -7,7 +7,7 @@ final class PrivacySettingsView: NSStackView {
 
     private static let retentionOptions = [1, 7, 30, 90, 0]
 
-    private let workerClient: WorkerClient
+    private let service: TiroService
     private let historySwitch = NSSwitch()
     private let recordingsSwitch = NSSwitch()
     private let retentionPicker = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -18,8 +18,8 @@ final class PrivacySettingsView: NSStackView {
     private var loadTask: Task<Void, Never>?
     private var mutationTask: Task<Void, Never>?
 
-    init(workerClient: WorkerClient) {
-        self.workerClient = workerClient
+    init(service: TiroService) {
+        self.service = service
         super.init(frame: .zero)
         buildContent()
     }
@@ -39,7 +39,7 @@ final class PrivacySettingsView: NSStackView {
         loadTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let loaded = try await workerClient.privacySettings()
+                let loaded = try await service.privacySettings()
                 guard !Task.isCancelled else { return }
                 settings = loaded
                 statusLabel.stringValue = ""
@@ -271,7 +271,7 @@ final class PrivacySettingsView: NSStackView {
             setControlsEnabled(false)
             statusLabel.stringValue = "Saving..."
             do {
-                let saved = try await workerClient.updatePrivacySettings(updated)
+                let saved = try await service.updatePrivacySettings(updated)
                 guard !Task.isCancelled else { return }
                 settings = saved
                 mutationTask = nil
@@ -330,7 +330,7 @@ final class PrivacySettingsView: NSStackView {
             setControlsEnabled(false)
             statusLabel.stringValue = "Deleting Tiro history..."
             do {
-                try await workerClient.deleteAllHistory()
+                try await service.deleteAllHistory()
                 guard !Task.isCancelled else { return }
                 mutationTask = nil
                 statusLabel.stringValue = "All Tiro history was removed."

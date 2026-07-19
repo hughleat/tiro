@@ -9,7 +9,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     var onDownloadCompleted: (() -> Void)?
     var onComplete: (() -> Void)?
 
-    private let workerClient: WorkerClient
+    private let service: TiroService
     private let shortcutName: String
     private let microphoneRow = SetupStatusRow(title: "Microphone")
     private let accessibilityRow = SetupStatusRow(title: "Accessibility")
@@ -28,8 +28,8 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     private var downloadTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
 
-    init(workerClient: WorkerClient, shortcutName: String) {
-        self.workerClient = workerClient
+    init(service: TiroService, shortcutName: String) {
+        self.service = service
         self.shortcutName = shortcutName
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 540, height: 500),
@@ -174,16 +174,9 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         modelRow.set(status: "Checking...", ready: false, actionTitle: nil)
         refreshTask = Task { [weak self] in
             guard let self else { return }
-            do {
-                let models = try await workerClient.models()
-                guard !Task.isCancelled else { return }
-                apply(models)
-            } catch {
-                guard !Task.isCancelled else { return }
-                showError(error.localizedDescription)
-                modelRow.set(status: "Unavailable", ready: false, actionTitle: "Retry")
-                modelRow.button.action = #selector(retryModels)
-            }
+            let models = await service.models()
+            guard !Task.isCancelled else { return }
+            apply(models)
         }
     }
 
@@ -275,10 +268,10 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         downloadTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await workerClient.downloadModel(key: "coreml-compact")
+                try await service.downloadModel(key: "coreml-compact")
                 guard !Task.isCancelled else { return }
                 DictationModel.select(DictationModel.all[0])
-                let models = try await workerClient.models()
+                let models = await service.models()
                 downloadTask = nil
                 stopPolling()
                 downloadProgress.stopAnimation(nil)
@@ -303,7 +296,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 750_000_000)
                 guard let self, !Task.isCancelled else { return }
-                if let models = try? await workerClient.models() { apply(models) }
+                apply(await service.models())
             }
         }
     }

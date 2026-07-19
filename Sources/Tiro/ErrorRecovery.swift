@@ -4,7 +4,7 @@ enum RecoveryAction: Equatable {
     case openMicrophoneSettings
     case openAccessibilitySettings
     case openModels
-    case retryWorker
+    case retryModels
     case retryTranscription
 }
 
@@ -19,7 +19,7 @@ enum RecoveryCategory {
     case microphoneUnavailable
     case accessibility
     case missingModel
-    case workerUnavailable
+    case modelServiceUnavailable
     case transcription
 }
 
@@ -50,11 +50,11 @@ enum ErrorRecovery {
                 detail: "Download and select a transcription model before dictating.",
                 action: .openModels
             )
-        case .workerUnavailable:
+        case .modelServiceUnavailable:
             return RecoveryPresentation(
-                title: "Tiro Could Not Start",
-                detail: "The local transcription service is unavailable. Try starting it again.",
-                action: .retryWorker
+                title: "Models Unavailable",
+                detail: "Tiro could not inspect the local models. Try loading them again.",
+                action: .retryModels
             )
         case .transcription:
             return RecoveryPresentation(
@@ -89,17 +89,6 @@ enum ErrorRecovery {
                 return .transcription
             }
         }
-        if let workerError = error as? WorkerError {
-            switch workerError {
-            case .runtimeMissing, .unavailable:
-                return .workerUnavailable
-            case .invalidResponse:
-                return .transcription
-            case .server:
-                break
-            }
-        }
-
         let message = (error as? LocalizedError)?.errorDescription?.lowercased()
             ?? error.localizedDescription.lowercased()
         if message.contains("microphone") && (message.contains("permission") || message.contains("access")) {
@@ -110,9 +99,6 @@ enum ErrorRecovery {
         }
         if message.contains("model") && (message.contains("not installed") || message.contains("no model")) {
             return .missingModel
-        }
-        if message.contains("worker did not start") || message.contains("runtime is missing") {
-            return .workerUnavailable
         }
         return .transcription
     }

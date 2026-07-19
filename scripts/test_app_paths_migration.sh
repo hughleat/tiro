@@ -8,21 +8,14 @@ trap 'rm -rf "$TEMP_ROOT"' EXIT
 
 CHECKOUT="$TEMP_ROOT/checkout"
 SUPPORT="$TEMP_ROOT/support"
-MODELS="$TEMP_ROOT/custom-models"
 mkdir -p \
-    "$CHECKOUT/scripts" \
+    "$CHECKOUT/Sources/Tiro" \
     "$CHECKOUT/data/audio/nested" \
-    "$CHECKOUT/.cache/huggingface/hub/model" \
-    "$SUPPORT/data/audio/nested" \
-    "$MODELS/hub/existing"
-touch "$CHECKOUT/app.py" "$CHECKOUT/scripts/worker_entry.py"
+    "$SUPPORT/data/audio/nested"
+touch "$CHECKOUT/Package.swift" "$CHECKOUT/Sources/Tiro/AppDelegate.swift"
 print -n 'source-new' > "$CHECKOUT/data/audio/nested/new.wav"
 print -n 'source-value' > "$CHECKOUT/data/audio/nested/existing.wav"
-print -n 'shared-worker-token' > "$CHECKOUT/data/worker-token"
 print -n 'destination-value' > "$SUPPORT/data/audio/nested/existing.wav"
-print -n 'offline-model' > "$CHECKOUT/.cache/huggingface/hub/model/weights.bin"
-ln -s 'weights.bin' "$CHECKOUT/.cache/huggingface/hub/model/linked-weights.bin"
-print -n 'destination-model' > "$MODELS/hub/existing/config.json"
 
 HARNESS="$TEMP_ROOT/main.swift"
 cat > "$HARNESS" <<'SWIFT'
@@ -31,7 +24,6 @@ import Foundation
 do {
     let report = try AppPaths.migrateLegacyProjectDataIfNeeded()
     print("copied=\(report.copiedItems.count)")
-    print("models=\(AppPaths.modelsDirectory.path)")
 } catch {
     fputs("\(error)\n", stderr)
     exit(1)
@@ -43,21 +35,13 @@ swiftc "$ROOT/Sources/Tiro/AppPaths.swift" "$HARNESS" -o "$TEMP_ROOT/migration-h
 env \
     TIRO_PROJECT_ROOT="$CHECKOUT" \
     TIRO_DATA_DIR="$SUPPORT" \
-    TIRO_MODEL_DIR="$MODELS" \
     "$TEMP_ROOT/migration-harness" > "$TEMP_ROOT/output"
 
 [[ "$(cat "$SUPPORT/data/audio/nested/new.wav")" == 'source-new' ]]
 [[ "$(cat "$SUPPORT/data/audio/nested/existing.wav")" == 'destination-value' ]]
-[[ "$(cat "$SUPPORT/data/worker-token")" == 'shared-worker-token' ]]
-[[ "$(cat "$MODELS/hub/model/weights.bin")" == 'offline-model' ]]
-[[ -L "$MODELS/hub/model/linked-weights.bin" ]]
-[[ "$(readlink "$MODELS/hub/model/linked-weights.bin")" == 'weights.bin' ]]
-[[ "$(cat "$MODELS/hub/existing/config.json")" == 'destination-model' ]]
 [[ "$(cat "$CHECKOUT/data/audio/nested/new.wav")" == 'source-new' ]]
-[[ "$(cat "$CHECKOUT/.cache/huggingface/hub/model/weights.bin")" == 'offline-model' ]]
 [[ -f "$SUPPORT/.legacy-project-data-migrated-v4" ]]
 [[ "$(cat "$SUPPORT/.legacy-project-root")" -ef "$CHECKOUT" ]]
-grep -q "models=$MODELS" "$TEMP_ROOT/output"
 
 # Installed releases can recover the checkout remembered by an earlier development run.
 rm "$SUPPORT/.legacy-project-data-migrated-v4"
@@ -66,7 +50,6 @@ print -n 'remembered-root' > "$CHECKOUT/data/audio/remembered.wav"
     cd "$TEMP_ROOT"
     env \
         TIRO_DATA_DIR="$SUPPORT" \
-        TIRO_MODEL_DIR="$MODELS" \
         "$TEMP_ROOT/migration-harness" >/dev/null
 )
 [[ "$(cat "$SUPPORT/data/audio/remembered.wav")" == 'remembered-root' ]]
@@ -75,14 +58,13 @@ print -n 'remembered-root' > "$CHECKOUT/data/audio/remembered.wav"
 # A file/directory conflict is unresolved: preserve both sides and leave migration retryable.
 FAIL_CHECKOUT="$TEMP_ROOT/failing-checkout"
 FAIL_SUPPORT="$TEMP_ROOT/failing-support"
-mkdir -p "$FAIL_CHECKOUT/scripts" "$FAIL_CHECKOUT/data/audio" "$FAIL_SUPPORT/data"
-touch "$FAIL_CHECKOUT/app.py" "$FAIL_CHECKOUT/scripts/worker_entry.py"
+mkdir -p "$FAIL_CHECKOUT/Sources/Tiro" "$FAIL_CHECKOUT/data/audio" "$FAIL_SUPPORT/data"
+touch "$FAIL_CHECKOUT/Package.swift" "$FAIL_CHECKOUT/Sources/Tiro/AppDelegate.swift"
 print -n 'recording' > "$FAIL_CHECKOUT/data/audio/kept.wav"
 print -n 'blocking-file' > "$FAIL_SUPPORT/data/audio"
 if env \
     TIRO_PROJECT_ROOT="$FAIL_CHECKOUT" \
     TIRO_DATA_DIR="$FAIL_SUPPORT" \
-    TIRO_MODEL_DIR="$TEMP_ROOT/failing-models" \
     "$TEMP_ROOT/migration-harness" >/dev/null 2>&1; then
     print -u2 "expected conflicting migration to fail"
     exit 1

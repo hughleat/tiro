@@ -7,7 +7,7 @@ struct SettingsConstructionTests {
     @Test @MainActor
     func settingsWindowCanBeConstructedDuringLaunch() {
         _ = NSApplication.shared
-        let controller = SettingsWindowController(workerClient: WorkerClient())
+        let controller = SettingsWindowController(service: TiroService())
 
         #expect(controller.window != nil)
     }

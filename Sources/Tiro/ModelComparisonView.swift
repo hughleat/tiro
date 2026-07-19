@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor
 final class ModelComparisonView: NSStackView {
-    private let workerClient: WorkerClient
+    private let service: TiroService
     private let recordingPicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private let modelChoices = NSStackView()
     private let compareButton = NSButton(title: "Compare", target: nil, action: nil)
@@ -14,12 +14,13 @@ final class ModelComparisonView: NSStackView {
     private var history: [HistoryEntry] = []
     private var installedModels: [ManagedModel] = []
     private var selectedModelKeys: Set<String> = []
+    private var modelChoiceButtons: [NSButton] = []
     private var historyTask: Task<Void, Never>?
     private var comparisonTask: Task<Void, Never>?
     private var comparisonID: String?
 
-    init(workerClient: WorkerClient) {
-        self.workerClient = workerClient
+    init(service: TiroService) {
+        self.service = service
         super.init(frame: .zero)
         buildContent()
     }
@@ -37,7 +38,7 @@ final class ModelComparisonView: NSStackView {
         historyTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let entries = try await workerClient.searchHistory(limit: 200).filter(\.audio_available)
+                let entries = try await service.searchHistory(limit: 200).filter(\.audio_available)
                 guard !Task.isCancelled else { return }
                 history = entries
                 rebuildRecordingPicker()
@@ -55,7 +56,7 @@ final class ModelComparisonView: NSStackView {
         comparisonTask?.cancel()
         comparisonTask = nil
         if let comparisonID {
-            Task { [workerClient] in await workerClient.cancelComparison(id: comparisonID) }
+            service.cancelComparison(id: comparisonID)
         }
         comparisonID = nil
         setComparing(false)
@@ -63,7 +64,7 @@ final class ModelComparisonView: NSStackView {
 
     func setModels(_ models: [ManagedModel]) {
         let previouslySelected = selectedModelKeys
-        installedModels = models.filter { $0.installed && $0.supportsComparison }
+        installedModels = models.filter(\.installed)
         selectedModelKeys = previouslySelected.intersection(installedModels.map(\.key))
         if selectedModelKeys.count < 2 {
             selectedModelKeys.formUnion(installedModels.prefix(2).map(\.key))
@@ -89,9 +90,9 @@ final class ModelComparisonView: NSStackView {
         recordingRow.alignment = .centerY
         recordingRow.spacing = 8
 
-        modelChoices.orientation = .horizontal
-        modelChoices.alignment = .centerY
-        modelChoices.spacing = 12
+        modelChoices.orientation = .vertical
+        modelChoices.alignment = .leading
+        modelChoices.spacing = 5
 
         compareButton.image = NSImage(systemSymbolName: "rectangle.split.2x1", accessibilityDescription: "Compare models")
         compareButton.imagePosition = .imageLeading
@@ -170,12 +171,20 @@ final class ModelComparisonView: NSStackView {
             modelChoices.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
+        modelChoiceButtons = []
         for (index, model) in installedModels.enumerated() {
             let button = NSButton(checkboxWithTitle: model.name, target: self, action: #selector(modelChoiceChanged(_:)))
             button.tag = index
             button.state = selectedModelKeys.contains(model.key) ? .on : .off
             button.setAccessibilityLabel("Include \(model.name) in comparison")
-            modelChoices.addArrangedSubview(button)
+            modelChoiceButtons.append(button)
+        }
+        for start in stride(from: 0, to: modelChoiceButtons.count, by: 2) {
+            let row = NSStackView(views: Array(modelChoiceButtons[start..<min(start + 2, modelChoiceButtons.count)]))
+            row.orientation = .horizontal
+            row.alignment = .centerY
+            row.spacing = 12
+            modelChoices.addArrangedSubview(row)
         }
         if installedModels.isEmpty {
             let label = NSTextField(labelWithString: "No installed models")
@@ -208,6 +217,11 @@ final class ModelComparisonView: NSStackView {
     }
 
     @objc private func compare() {
+        if comparisonTask != nil {
+            cancelWork()
+            showState("Comparison cancelled.")
+            return
+        }
         guard let entry = selectedHistoryEntry else { return }
         let keys = installedModels.map(\.key).filter(selectedModelKeys.contains)
         guard keys.count >= 2 else { return }
@@ -220,7 +234,7 @@ final class ModelComparisonView: NSStackView {
         comparisonTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let results = try await workerClient.compareModels(
+                let results = try await service.compareModels(
                     historyID: entry.id,
                     modelKeys: keys,
                     comparisonID: comparisonID
@@ -242,11 +256,19 @@ final class ModelComparisonView: NSStackView {
 
     private func setComparing(_ comparing: Bool) {
         recordingPicker.isEnabled = !comparing && !history.isEmpty
-        for case let button as NSButton in modelChoices.arrangedSubviews { button.isEnabled = !comparing }
+        for button in modelChoiceButtons { button.isEnabled = !comparing }
         if comparing { activityIndicator.startAnimation(nil) }
         else { activityIndicator.stopAnimation(nil) }
-        if comparing { compareButton.isEnabled = false }
-        else { updateCompareButton() }
+        compareButton.title = comparing ? "Cancel" : "Compare"
+        compareButton.image = NSImage(
+            systemSymbolName: comparing ? "xmark" : "rectangle.split.2x1",
+            accessibilityDescription: comparing ? "Cancel comparison" : "Compare models"
+        )
+        if comparing {
+            compareButton.isEnabled = true
+        } else {
+            updateCompareButton()
+        }
     }
 
     private func show(results: [ModelComparisonResult], requestedKeys: [String]) {

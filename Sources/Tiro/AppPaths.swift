@@ -31,7 +31,6 @@ enum AppPaths {
         "snippets.json",
         "vocabulary.json",
         "vocabulary.txt",
-        "worker-token",
     ]
 
     private static let rawApplicationSupportDirectory: URL = {
@@ -40,14 +39,6 @@ enum AppPaths {
         }
         return fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Tiro", isDirectory: true)
-    }()
-
-    private static let rawModelsDirectory: URL = {
-        if let configuredPath = ProcessInfo.processInfo.environment["TIRO_MODEL_DIR"] {
-            return URL(fileURLWithPath: configuredPath, isDirectory: true)
-        }
-        return rawApplicationSupportDirectory
-            .appendingPathComponent("Models/huggingface", isDirectory: true)
     }()
 
     /// The checkout root used only by development builds and legacy migration.
@@ -96,14 +87,6 @@ enum AppPaths {
         return currentDirectory
     }()
 
-    static let logsDirectory: URL = {
-        if let configuredPath = ProcessInfo.processInfo.environment["TIRO_LOG_DIR"] {
-            return URL(fileURLWithPath: configuredPath, isDirectory: true)
-        }
-        return fileManager.urls(for: .libraryDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Logs/Tiro", isDirectory: true)
-    }()
-
     /// Evaluating a mutable path attempts the copy-only migration once per process.
     static let migrationResult: Result<MigrationReport, Error> = Result {
         try migrateLegacyProjectDataIfNeeded()
@@ -118,11 +101,6 @@ enum AppPaths {
         applicationSupportDirectory.appendingPathComponent("data", isDirectory: true)
     }
 
-    static var modelsDirectory: URL {
-        _ = migrationResult
-        return rawModelsDirectory
-    }
-
     static var coreMLModelsDirectory: URL {
         applicationSupportDirectory.appendingPathComponent("Models/coreml", isDirectory: true)
     }
@@ -131,8 +109,28 @@ enum AppPaths {
         dataDirectory.appendingPathComponent("history.jsonl")
     }
 
+    static var recordingsDirectory: URL {
+        dataDirectory.appendingPathComponent("audio", isDirectory: true)
+    }
+
     static var transientRecordingsDirectory: URL {
         dataDirectory.appendingPathComponent("transient-audio", isDirectory: true)
+    }
+
+    static var privacyFile: URL {
+        dataDirectory.appendingPathComponent("privacy.json")
+    }
+
+    static var profilesFile: URL {
+        dataDirectory.appendingPathComponent("profiles.json")
+    }
+
+    static var snippetsFile: URL {
+        dataDirectory.appendingPathComponent("snippets.json")
+    }
+
+    static var suggestionsFile: URL {
+        dataDirectory.appendingPathComponent("suggestions.json")
     }
 
     static var legacyRetentionFile: URL {
@@ -147,38 +145,7 @@ enum AppPaths {
         dataDirectory.appendingPathComponent("vocabulary.txt")
     }
 
-    static var workerTokenFile: URL {
-        dataDirectory.appendingPathComponent("worker-token")
-    }
-
-    static var workerLog: URL {
-        logsDirectory.appendingPathComponent("worker.log")
-    }
-
-    static var embeddedWorkerExecutable: URL {
-        if let configuredPath = ProcessInfo.processInfo.environment["TIRO_WORKER_EXECUTABLE"] {
-            return URL(fileURLWithPath: configuredPath)
-        }
-        return Bundle.main.resourceURL!
-            .appendingPathComponent("worker/tiro-worker")
-    }
-
-    static var developmentWorkerEntryPoint: URL {
-        projectRoot.appendingPathComponent("scripts/worker_entry.py")
-    }
-
-    static func workerEnvironment(
-        inheriting environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> [String: String] {
-        var result = environment
-        result["TIRO_DATA_DIR"] = dataDirectory.path
-        result["TIRO_MODEL_DIR"] = modelsDirectory.path
-        result["TIRO_LOG_DIR"] = logsDirectory.path
-        result["HF_HOME"] = modelsDirectory.path
-        return result
-    }
-
-    /// Merges known checkout data and model cache without overwriting or deleting source files.
+    /// Merges known checkout data without overwriting or deleting source files.
     @discardableResult
     static func migrateLegacyProjectDataIfNeeded() throws -> MigrationReport {
         let marker = rawApplicationSupportDirectory.appendingPathComponent(migrationMarkerName)
@@ -188,7 +155,6 @@ enum AppPaths {
 
         let root = projectRoot
         let legacyData = root.appendingPathComponent("data", isDirectory: true)
-        let legacyModels = root.appendingPathComponent(".cache/huggingface", isDirectory: true)
         var sources: [URL] = []
         var copied: [String] = []
         var skipped: [String] = []
@@ -208,18 +174,6 @@ enum AppPaths {
                     failures: &failures
                 )
             }
-        }
-
-        if isDirectory(legacyModels), legacyModels.standardizedFileURL != rawModelsDirectory.standardizedFileURL {
-            sources.append(legacyModels)
-            mergeItem(
-                from: legacyModels,
-                to: rawModelsDirectory,
-                label: ".cache/huggingface",
-                copied: &copied,
-                skipped: &skipped,
-                failures: &failures
-            )
         }
 
         guard !sources.isEmpty else {
@@ -338,9 +292,9 @@ enum AppPaths {
     }
 
     private static func isProjectRoot(_ url: URL) -> Bool {
-        fileManager.fileExists(atPath: url.appendingPathComponent("app.py").path)
+        fileManager.fileExists(atPath: url.appendingPathComponent("Package.swift").path)
             && fileManager.fileExists(
-                atPath: url.appendingPathComponent("scripts/worker_entry.py").path
+                atPath: url.appendingPathComponent("Sources/Tiro/AppDelegate.swift").path
             )
     }
 

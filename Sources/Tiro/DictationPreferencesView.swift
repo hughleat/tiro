@@ -99,8 +99,16 @@ final class DictationPreferencesView: NSStackView {
         punctuationPicker.isEnabled = DictationPreferences.current.mode == .standard
         for (index, item) in languagePicker.itemArray.enumerated() {
             let language = DictationLanguage.allCases[index]
-            item.isEnabled = selectedModel.key == "qwen" || language == .auto || language == .english
+            switch selectedModel.languageSupport {
+            case .english:
+                item.isEnabled = language == .english
+            case .automatic:
+                item.isEnabled = language == .auto
+            case .selectable:
+                item.isEnabled = true
+            }
         }
+        languagePicker.isEnabled = selectedModel.languageSupport == .selectable
     }
 
     private func selectLanguage(_ language: DictationLanguage) {

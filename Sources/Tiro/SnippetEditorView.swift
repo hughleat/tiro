@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor
 final class SnippetEditorView: NSStackView, NSTableViewDataSource, NSTableViewDelegate {
-    private let workerClient: WorkerClient
+    private let service: TiroService
     private let table = NSTableView()
     private let addButton = NSButton()
     private let removeButton = NSButton()
@@ -14,8 +14,8 @@ final class SnippetEditorView: NSStackView, NSTableViewDataSource, NSTableViewDe
     private var editState = SnippetEditState()
     private let maximumSnippetCount = 200
 
-    init(workerClient: WorkerClient) {
-        self.workerClient = workerClient
+    init(service: TiroService) {
+        self.service = service
         super.init(frame: .zero)
         buildContent()
     }
@@ -41,7 +41,7 @@ final class SnippetEditorView: NSStackView, NSTableViewDataSource, NSTableViewDe
             do {
                 _ = await pendingMutation?.value
                 guard !Task.isCancelled, requestGeneration == generation else { return }
-                let loaded = try await workerClient.snippets()
+                let loaded = try await service.snippets()
                 guard !Task.isCancelled, requestGeneration == generation,
                       !editState.hasDirtyEdits else { return }
                 snippets = loaded
@@ -172,7 +172,7 @@ final class SnippetEditorView: NSStackView, NSTableViewDataSource, NSTableViewDe
         saveTask = Task { [weak self] in
             _ = await previousSave?.value
             guard let self else { return }
-            do { try await workerClient.deleteSnippet(id: removed.id) }
+            do { try await service.deleteSnippet(id: removed.id) }
             catch {
                 guard !Task.isCancelled,
                       !snippets.contains(where: { $0.id == removed.id }) else { return }
@@ -209,7 +209,7 @@ final class SnippetEditorView: NSStackView, NSTableViewDataSource, NSTableViewDe
             _ = await previousSave?.value
             guard let self else { return }
             do {
-                let saved = try await workerClient.saveSnippet(snippet)
+                let saved = try await service.saveSnippet(snippet)
                 guard !Task.isCancelled,
                       editState.saveSucceeded(id: saved.id, revision: revision),
                       let index = snippets.firstIndex(where: { $0.id == saved.id }) else { return }

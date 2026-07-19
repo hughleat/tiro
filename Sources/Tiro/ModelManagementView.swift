@@ -17,7 +17,7 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         }
     }
 
-    private let workerClient: WorkerClient
+    private let service: TiroService
     private let table = NSTableView()
     private let stateLabel = NSTextField(labelWithString: "")
     private let stateProgress = NSProgressIndicator()
@@ -32,8 +32,8 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
     private var pollGeneration = 0
     private var isApplyingSelection = false
 
-    init(workerClient: WorkerClient) {
-        self.workerClient = workerClient
+    init(service: TiroService) {
+        self.service = service
         super.init(frame: .zero)
         buildContent()
     }
@@ -51,16 +51,9 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         if models.isEmpty { showState("Loading models...", loading: true) }
         loadTask = Task { [weak self] in
             guard let self else { return }
-            do {
-                let loaded = try await workerClient.models()
-                guard !Task.isCancelled else { return }
-                apply(loaded)
-            } catch {
-                guard !Task.isCancelled else { return }
-                if models.isEmpty {
-                    showState("Could not load models.\n\(error.localizedDescription)", action: .retry)
-                }
-            }
+            let loaded = await service.models()
+            guard !Task.isCancelled else { return }
+            apply(loaded)
         }
     }
 
@@ -228,10 +221,8 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await workerClient.activate(model: model)
-                if let loaded = try? await workerClient.models() {
-                    apply(loaded)
-                }
+                try await service.activate(model: model)
+                apply(await service.models())
             } catch {
                 window?.presentError(error)
             }
@@ -271,12 +262,12 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
             guard let self else { return }
             do {
                 switch operation {
-                case .downloading: try await workerClient.downloadModel(key: model.key)
-                case .deleting: try await workerClient.deleteModel(key: model.key)
+                case .downloading: try await service.downloadModel(key: model.key)
+                case .deleting: try await service.deleteModel(key: model.key)
                 }
                 guard !Task.isCancelled else { return }
                 operations[model.key] = nil
-                let loaded = try await workerClient.models()
+                let loaded = await service.models()
                 apply(loaded)
                 stopPollingIfIdle()
             } catch {
@@ -298,7 +289,7 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
                 try? await Task.sleep(nanoseconds: 750_000_000)
                 guard let self, !Task.isCancelled,
                       !operations.isEmpty || models.contains(where: { $0.downloading || $0.deleting }) else { break }
-                if let loaded = try? await workerClient.models() { apply(loaded) }
+                apply(await service.models())
             }
             self?.finishPolling(generation: generation)
         }
@@ -388,7 +379,7 @@ private final class ModelRowView: NSTableCellView {
         let serverState = model.state?.replacingOccurrences(of: "_", with: " ").capitalized
         statusLabel.stringValue = operation
             ?? (isSelectedModel ? "Selected" : nil)
-            ?? (model.downloadError == nil ? serverState : "Download failed")
+            ?? (model.downloadError == nil ? serverState : "Model error")
             ?? (model.installed ? "Installed" : "Not installed")
         statusLabel.textColor = model.installed ? .secondaryLabelColor : .tertiaryLabelColor
 

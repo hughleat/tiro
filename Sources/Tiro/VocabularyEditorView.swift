@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor
 final class VocabularyEditorView: NSStackView, NSTableViewDataSource, NSTableViewDelegate {
-    private let workerClient: WorkerClient
+    private let service: TiroService
     private let profilePicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private let table = NSTableView()
     private let addButton = NSButton()
@@ -21,8 +21,8 @@ final class VocabularyEditorView: NSStackView, NSTableViewDataSource, NSTableVie
     private var editRevision = 0
     private var refreshPending = false
 
-    init(workerClient: WorkerClient) {
-        self.workerClient = workerClient
+    init(service: TiroService) {
+        self.service = service
         super.init(frame: .zero)
         buildContent()
     }
@@ -63,7 +63,7 @@ final class VocabularyEditorView: NSStackView, NSTableViewDataSource, NSTableVie
         loadTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let document = try await workerClient.vocabularyProfiles()
+                let document = try await service.vocabularyProfiles()
                 guard !Task.isCancelled,
                       generation == loadGeneration,
                       startingEditRevision == editRevision else { return }
@@ -219,7 +219,7 @@ final class VocabularyEditorView: NSStackView, NSTableViewDataSource, NSTableVie
             _ = await previousSave?.value
             guard let self, !Task.isCancelled else { return }
             do {
-                let savedEntries = try await workerClient.saveGlobalVocabulary(
+                let savedEntries = try await service.saveGlobalVocabulary(
                     editedEntries,
                     replacing: baselineEntries
                 )
@@ -262,7 +262,7 @@ final class VocabularyEditorView: NSStackView, NSTableViewDataSource, NSTableVie
             _ = await previousSave?.value
             guard let self, !Task.isCancelled else { return }
             do {
-                let savedDocument = try await workerClient.saveVocabularyProfile(
+                let savedDocument = try await service.saveVocabularyProfile(
                     editedProfile,
                     replacing: baselineProfile
                 )

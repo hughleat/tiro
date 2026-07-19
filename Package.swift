@@ -14,12 +14,17 @@ let package = Package(
             url: "https://github.com/FluidInference/FluidAudio.git",
             exact: "0.15.5"
         ),
+        .package(
+            url: "https://github.com/argmaxinc/argmax-oss-swift.git",
+            exact: "1.0.0"
+        ),
     ],
     targets: [
         .target(
             name: "TiroRecognition",
             dependencies: [
-                .product(name: "FluidAudio", package: "FluidAudio")
+                .product(name: "FluidAudio", package: "FluidAudio"),
+                .product(name: "WhisperKit", package: "argmax-oss-swift"),
             ],
             path: "Sources/TiroRecognition"
         ),
@@ -38,10 +43,10 @@ let package = Package(
                 "SupportPromptPolicyAssertions.swift",
             ],
             sources: [
+                "DictationModelCatalogTests.swift",
                 "ErrorRecoveryTests.swift",
-                "WorkerAPITests.swift",
-                "WorkerProcessTests.swift",
-                "WorkerTransportTests.swift",
+                "NativeTextFinalizerTests.swift",
+                "NativeTiroStoreTests.swift",
                 "SetupReadinessTests.swift",
                 "SettingsConstructionTests.swift",
                 "SupportPromptPolicyTests.swift",

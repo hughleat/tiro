@@ -6,7 +6,7 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
     NSTableViewDelegate, AVAudioPlayerDelegate {
     var onCorrectionSaved: (() -> Void)?
 
-    private let workerClient: WorkerClient
+    private let service: TiroService
     private let searchField = NSSearchField()
     private let table = NSTableView()
     private let stateLabel = NSTextField(labelWithString: "")
@@ -18,8 +18,8 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
     private var audioPlayer: AVAudioPlayer?
     private var playingEntryID: String?
 
-    init(workerClient: WorkerClient) {
-        self.workerClient = workerClient
+    init(service: TiroService) {
+        self.service = service
         super.init(frame: .zero)
         buildContent()
     }
@@ -116,7 +116,7 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
             }
             guard let self else { return }
             do {
-                let results = try await workerClient.searchHistory(query: query, limit: 200)
+                let results = try await service.searchHistory(query: query, limit: 200)
                 guard !Task.isCancelled, generation == requestGeneration else { return }
                 entries = newestFirst(results)
                 table.reloadData()
@@ -213,7 +213,7 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
         correctionTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await workerClient.correctHistoryEntry(id: entry.id, correctedText: correctedText)
+                try await service.correctHistoryEntry(id: entry.id, correctedText: correctedText)
                 guard !Task.isCancelled else { return }
                 onCorrectionSaved?()
                 refresh()
@@ -238,12 +238,12 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
         audioTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let data = try await workerClient.historyAudio(id: entry.id)
+                let data = try await service.historyAudio(id: entry.id)
                 guard !Task.isCancelled, playingEntryID == entry.id else { return }
                 let player = try AVAudioPlayer(data: data)
                 player.delegate = self
                 guard player.prepareToPlay(), player.play() else {
-                    throw WorkerError.server("The recording could not be played.")
+                    throw TiroError.message("The recording could not be played.")
                 }
                 audioPlayer = player
             } catch {
@@ -275,7 +275,7 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
         Task { @MainActor [weak self] in
             guard let self, audioPlayer === player else { return }
             stopPlayback()
-            window?.presentError(error ?? WorkerError.server("The recording could not be decoded."))
+            window?.presentError(error ?? TiroError.message("The recording could not be decoded."))
         }
     }
 
@@ -304,7 +304,7 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await workerClient.deleteHistoryEntry(id: entry.id)
+                try await service.deleteHistoryEntry(id: entry.id)
                 if playingEntryID == entry.id { stopPlayback() }
                 refresh()
             } catch {

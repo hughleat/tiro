@@ -13,10 +13,6 @@ LOCAL_SIGNING_KEYCHAIN="${TIRO_LOCAL_SIGNING_KEYCHAIN:-$HOME/Library/Keychains/l
 NOTARY_PROFILE="${TIRO_NOTARY_PROFILE:-}"
 ENTITLEMENTS="$ROOT/native/Tiro.entitlements"
 SKIP_NOTARIZATION=0
-DEVELOPMENT_PYTHON="$ROOT/.venv/bin/python"
-RELEASE_ENVIRONMENT="$ROOT/.build/release-venv"
-RELEASE_PYTHON="$RELEASE_ENVIRONMENT/bin/python"
-RELEASE_PYTHON_VERSION="$(<"$ROOT/.python-version")"
 DEPLOYMENT_TARGET="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$ROOT/native/Info.plist")"
 TARGET_ARCHITECTURE="arm64"
 BUILD_LOCK="$ROOT/.build/native-build.lock"
@@ -31,10 +27,10 @@ usage() {
 usage: build_native_app.sh [development|release|dmg|distribution] [options]
 
 Modes:
-  development   Native app using the checkout worker; locally signed (default)
-  release       Self-contained local app; locally signed
-  dmg           Self-contained ad-hoc-signed DMG for free distribution
-  distribution Self-contained Developer ID app, archive, and checksum
+  development   Native local app; locally signed (default)
+  release       Native local app; locally signed
+  dmg           Native ad-hoc-signed DMG for free distribution
+  distribution Native Developer ID app, archive, and checksum
 
 Options:
   --version VERSION          CFBundleShortVersionString (for example 1.2.0)
@@ -136,113 +132,6 @@ if [[ "$MODE" == "dmg" ]]; then
     [[ -z "$SIGNING_IDENTITY" && -z "$NOTARY_PROFILE" && "$SKIP_NOTARIZATION" -eq 0 ]] \
         || fail "dmg mode does not accept Developer ID or notarization options"
 fi
-
-sync_release_environment() {
-    [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "$TARGET_ARCHITECTURE" ]] \
-        || fail "self-contained builds require an Apple Silicon Mac"
-    [[ -x "$DEVELOPMENT_PYTHON" ]] \
-        || fail "self-contained builds require the project environment at: $DEVELOPMENT_PYTHON"
-
-    env -u VIRTUAL_ENV \
-        UV_PROJECT_ENVIRONMENT="$RELEASE_ENVIRONMENT" \
-        UV_CACHE_DIR="$ROOT/.build/uv-cache" \
-        "$DEVELOPMENT_PYTHON" -m uv sync --locked --extra bundle \
-            --managed-python --python "$RELEASE_PYTHON_VERSION"
-    "$DEVELOPMENT_PYTHON" "$ROOT/scripts/prepare_release_environment.py" \
-        --lock "$ROOT/uv.lock" \
-        --python "$RELEASE_PYTHON" \
-        --target "$DEPLOYMENT_TARGET"
-    if ! "$RELEASE_PYTHON" -c 'import importlib.util, sys; sys.exit(any(importlib.util.find_spec(name) is None for name in ("PyInstaller", "mlx_audio", "parakeet_mlx")))' >/dev/null 2>&1; then
-        fail "release dependencies did not install correctly from uv.lock"
-    fi
-}
-
-build_worker() {
-    local work="$ROOT/.build/pyinstaller"
-    export PYINSTALLER_CONFIG_DIR="$ROOT/.build/pyinstaller-config"
-    rm -rf "$work"
-    "$RELEASE_PYTHON" -m PyInstaller \
-        --noconfirm \
-        --clean \
-        --onedir \
-        --name tiro-worker \
-        --distpath "$work/dist" \
-        --workpath "$work/work" \
-        --specpath "$work" \
-        --paths "$ROOT" \
-        --collect-data mlx_audio \
-        --collect-binaries mlx_audio \
-        --collect-data mlx \
-        --collect-binaries mlx \
-        --hidden-import mlx_audio.stt \
-        --hidden-import mlx_audio.stt.models.qwen3_asr \
-        --hidden-import parakeet_mlx \
-        --hidden-import mlx.core \
-        --hidden-import mlx._reprlib_fix \
-        --hidden-import huggingface_hub \
-        --exclude-module librosa \
-        --exclude-module numba \
-        --exclude-module llvmlite \
-        --exclude-module scipy \
-        --exclude-module sklearn \
-        --exclude-module mlx_audio.tts \
-        --exclude-module mlx_audio.sts \
-        --exclude-module mlx_audio.codec \
-        --exclude-module mlx_audio.lid \
-        --exclude-module mlx_audio.vad \
-        "$ROOT/scripts/worker_entry.py"
-    cp -R "$work/dist/tiro-worker" "$APP/Contents/Resources/worker"
-    local internal="$APP/Contents/Resources/worker/_internal"
-    local -a stale_metadata=(
-        "$internal"/librosa-*.dist-info(N)
-        "$internal"/scipy-*.dist-info(N)
-        "$internal"/scikit_learn-*.dist-info(N)
-    )
-    rm -rf -- "${stale_metadata[@]}" \
-        "$internal/mlx_audio/tts" \
-        "$internal/mlx_audio/sts" \
-        "$internal/mlx_audio/codec" \
-        "$internal/mlx_audio/lid" \
-        "$internal/mlx_audio/vad"
-    local excluded
-    for excluded in librosa numba llvmlite scipy sklearn; do
-        [[ ! -e "$internal/$excluded" ]] \
-            || fail "excluded release dependency was bundled: $excluded"
-    done
-    excluded="$(find "$internal" -maxdepth 1 -type d \
-        \( -name 'librosa-*.dist-info' -o -name 'scipy-*.dist-info' \
-        -o -name 'scikit_learn-*.dist-info' \) -print -quit)"
-    [[ -z "$excluded" ]] \
-        || fail "excluded release dependency metadata was bundled: $excluded"
-    for excluded in tts sts codec lid vad; do
-        [[ ! -e "$internal/mlx_audio/$excluded" ]] \
-            || fail "excluded MLX Audio data was bundled: $excluded"
-    done
-    "$DEVELOPMENT_PYTHON" "$ROOT/scripts/validate_macos_compatibility.py" \
-        --target "$DEPLOYMENT_TARGET" \
-        --architecture "$TARGET_ARCHITECTURE" \
-        "$APP"
-
-    local license_root="$APP/Contents/Resources/Licenses/Python"
-    local site_packages python_stdlib license relative destination
-    site_packages="$("$RELEASE_PYTHON" -c \
-        'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
-    python_stdlib="$("$RELEASE_PYTHON" -c \
-        'import sysconfig; print(sysconfig.get_paths()["stdlib"])')"
-    mkdir -p "$license_root/Packages"
-    while IFS= read -r -d '' license; do
-        relative="${license#$site_packages/}"
-        destination="$license_root/Packages/${relative:h}"
-        mkdir -p "$destination"
-        cp "$license" "$destination/${relative:t}"
-    done < <(find "$site_packages" -type f \
-        \( -iname 'LICENSE*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) \
-        -path '*.dist-info/*' -print0)
-    cp "$python_stdlib/LICENSE.txt" \
-        "$license_root/CPython-LICENSE.txt"
-    [[ "$(find "$license_root/Packages" -type f | wc -l | tr -d ' ')" -ge 50 ]] \
-        || fail "Python dependency license inventory is unexpectedly incomplete"
-}
 
 sign_locally() {
     local identity_matches identity_count fingerprint certificate_matches
@@ -423,10 +312,6 @@ cd "$ROOT"
 acquire_build_lock
 export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
 
-if [[ "$MODE" != "development" ]]; then
-    sync_release_environment
-fi
-
 mkdir -p "$ROOT/.build/ModuleCache" "$ROOT/.build/SwiftPMCache" "$OUTPUT_DIR"
 export CLANG_MODULE_CACHE_PATH="$ROOT/.build/ModuleCache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$ROOT/.build/ModuleCache"
@@ -445,12 +330,12 @@ cp "$ROOT/LICENSE" "$APP/Contents/Resources/Licenses/Tiro-MIT.txt"
 cp "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/Licenses/THIRD_PARTY_NOTICES.md"
 cp "$ROOT/.build/checkouts/FluidAudio/LICENSE" \
     "$APP/Contents/Resources/Licenses/FluidAudio-Apache-2.0.txt"
+cp "$ROOT/.build/checkouts/argmax-oss-swift/LICENSE" \
+    "$APP/Contents/Resources/Licenses/Argmax-OSS-MIT.txt"
+cp "$ROOT/.build/checkouts/argmax-oss-swift/NOTICES" \
+    "$APP/Contents/Resources/Licenses/Argmax-OSS-NOTICES.txt"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP/Contents/Info.plist"
-
-if [[ "$MODE" != "development" ]]; then
-    build_worker
-fi
 
 if [[ "$MODE" == "development" || "$MODE" == "release" ]]; then
     sign_locally

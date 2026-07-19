@@ -12,15 +12,15 @@ public enum CoreMLParakeetError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .modelNotInstalled(let directory):
-            return "The Core ML Compact model is not installed at \(directory.path)."
+            return "The Core ML Parakeet model is not installed at \(directory.path)."
         case .modelNotLoaded:
-            return "Load the Core ML Compact model before transcribing."
+            return "Load the Core ML Parakeet model before transcribing."
         case .downloadIncomplete(let directory):
-            return "The Core ML Compact download is incomplete at \(directory.path)."
+            return "The Core ML Parakeet download is incomplete at \(directory.path)."
         case .unsafeModelDirectory(let directory):
             return "Refusing to delete a model outside its configured root: \(directory.path)."
         case .activityInProgress(let activity):
-            return "The Core ML Compact model is currently \(activity.rawValue)."
+            return "The Core ML Parakeet model is currently \(activity.rawValue)."
         }
     }
 }
@@ -46,8 +46,14 @@ protocol CompactCoreMLRuntime: Sendable {
 }
 
 struct FluidAudioRuntime: CompactCoreMLRuntime {
+    let model: ParakeetModel
+
+    init(model: ParakeetModel = .compact) {
+        self.model = model
+    }
+
     func isInstalled(at directory: URL) async -> Bool {
-        AsrModels.modelsExist(at: directory, version: .tdtCtc110m)
+        AsrModels.modelsExist(at: directory, version: model.fluidAudioVersion)
     }
 
     func download(
@@ -57,7 +63,7 @@ struct FluidAudioRuntime: CompactCoreMLRuntime {
         try await Self.withNetworkAccess {
             _ = try await AsrModels.download(
                 to: directory,
-                version: .tdtCtc110m,
+                version: model.fluidAudioVersion,
                 progressHandler: { update in
                     progress(update.fractionCompleted)
                 }
@@ -72,7 +78,7 @@ struct FluidAudioRuntime: CompactCoreMLRuntime {
             let models = try await AsrModels.load(
                 from: directory,
                 configuration: configuration,
-                version: .tdtCtc110m
+                version: model.fluidAudioVersion
             )
             let manager = AsrManager()
             try await manager.loadModels(models)
@@ -81,21 +87,69 @@ struct FluidAudioRuntime: CompactCoreMLRuntime {
     }
 
     static func withNetworkAccess<T>(
-        _ operation: () async throws -> T
+        _ operation: @Sendable () async throws -> T
     ) async rethrows -> T {
-        let previous = ModelHub.offlineMode
-        ModelHub.offlineMode = false
-        defer { ModelHub.offlineMode = previous }
-        return try await operation()
+        try await FluidAudioBackendAccess.run(offline: false, operation)
     }
 
     private static func withOfflineAccess<T>(
-        _ operation: () async throws -> T
+        _ operation: @Sendable () async throws -> T
     ) async rethrows -> T {
+        try await FluidAudioBackendAccess.run(offline: true, operation)
+    }
+}
+
+private extension ParakeetModel {
+    var fluidAudioVersion: AsrModelVersion {
+        switch self {
+        case .compact: .tdtCtc110m
+        case .v2: .v2
+        case .v3: .v3
+        }
+    }
+}
+
+private enum FluidAudioBackendAccess {
+    private static let lock = AsyncLock()
+
+    static func run<T>(
+        offline: Bool,
+        _ operation: @Sendable () async throws -> T
+    ) async rethrows -> T {
+        await lock.acquire()
         let previous = ModelHub.offlineMode
-        ModelHub.offlineMode = true
-        defer { ModelHub.offlineMode = previous }
-        return try await operation()
+        ModelHub.offlineMode = offline
+        do {
+            let result = try await operation()
+            ModelHub.offlineMode = previous
+            await lock.release()
+            return result
+        } catch {
+            ModelHub.offlineMode = previous
+            await lock.release()
+            throw error
+        }
+    }
+}
+
+private actor AsyncLock {
+    private var isLocked = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if !isLocked {
+            isLocked = true
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        guard !waiters.isEmpty else {
+            isLocked = false
+            return
+        }
+        waiters.removeFirst().resume()
     }
 }
 
@@ -126,6 +180,7 @@ private actor FluidAudioSession: CompactCoreMLSession {
 public actor CoreMLParakeetEngine: RecognitionEngine {
     public static let canonicalDirectoryName = "parakeet-tdt-ctc-110m"
 
+    public nonisolated let model: ParakeetModel
     public nonisolated let modelsRootDirectory: URL
     public nonisolated let modelDirectory: URL
 
@@ -138,33 +193,45 @@ public actor CoreMLParakeetEngine: RecognitionEngine {
     )?
     private var activity = CoreMLModelActivity.idle
     private var lastError: String?
+    private var cachedSizeBytes: Int64?
 
-    public init(modelsRootDirectory: URL) {
+    public init(
+        model: ParakeetModel = .compact,
+        modelsRootDirectory: URL
+    ) {
         self.init(
+            model: model,
             modelsRootDirectory: modelsRootDirectory,
-            runtime: FluidAudioRuntime()
+            runtime: FluidAudioRuntime(model: model)
         )
     }
 
     init(
+        model: ParakeetModel = .compact,
         modelsRootDirectory: URL,
         runtime: any CompactCoreMLRuntime
     ) {
         let root = modelsRootDirectory.standardizedFileURL
+        self.model = model
         self.modelsRootDirectory = root
         modelDirectory = root
-            .appendingPathComponent(Self.canonicalDirectoryName, isDirectory: true)
+            .appendingPathComponent(model.directoryName, isDirectory: true)
             .standardizedFileURL
         self.runtime = runtime
     }
 
     public func status() async -> CoreMLModelStatus {
         let installed = await runtime.isInstalled(at: modelDirectory)
+        if installed, cachedSizeBytes == nil {
+            cachedSizeBytes = Self.directorySize(at: modelDirectory)
+        } else if !installed {
+            cachedSizeBytes = nil
+        }
         return CoreMLModelStatus(
             directory: modelDirectory,
             installed: installed,
             loaded: session != nil,
-            sizeBytes: installed ? Self.directorySize(at: modelDirectory) : 0,
+            sizeBytes: installed ? cachedSizeBytes ?? 0 : 0,
             activity: activity,
             downloadProgress: activity == .downloading ? progressState.value : nil,
             lastError: lastError
@@ -198,6 +265,7 @@ public actor CoreMLParakeetEngine: RecognitionEngine {
                 throw CoreMLParakeetError.downloadIncomplete(modelDirectory)
             }
             progressState.value = 1
+            cachedSizeBytes = Self.directorySize(at: modelDirectory)
             progress(1)
         } catch {
             lastError = error.localizedDescription
@@ -266,6 +334,7 @@ public actor CoreMLParakeetEngine: RecognitionEngine {
         defer { activity = .idle }
         lastError = nil
         session = nil
+        cachedSizeBytes = nil
         do {
             if FileManager.default.fileExists(atPath: modelDirectory.path) {
                 try FileManager.default.removeItem(at: modelDirectory)
@@ -288,7 +357,7 @@ public actor CoreMLParakeetEngine: RecognitionEngine {
             let result = try await session.transcribe(audioURL)
             return RawTranscript(
                 text: result.text,
-                model: .parakeetCompactCoreML,
+                model: model.recognitionModel,
                 audioSeconds: result.audioSeconds,
                 transcriptionSeconds: result.transcriptionSeconds,
                 timesFasterThanRealtime: result.timesFasterThanRealtime
@@ -307,7 +376,7 @@ public actor CoreMLParakeetEngine: RecognitionEngine {
     }
 
     private var isConfiguredModelDirectorySafe: Bool {
-        modelDirectory.lastPathComponent == Self.canonicalDirectoryName
+        modelDirectory.lastPathComponent == model.directoryName
             && modelDirectory.deletingLastPathComponent().standardizedFileURL
                 == modelsRootDirectory
     }

@@ -9,17 +9,13 @@ zsh -n \
     "$ROOT/scripts/setup_local_signing.sh" \
     "$ROOT/scripts/test_coreml_production.sh" \
     "$ROOT/scripts/smoke_release.sh"
-"$ROOT/.venv/bin/python" -m py_compile \
-    "$ROOT/scripts/prepare_release_environment.py" \
-    "$ROOT/scripts/validate_macos_compatibility.py" \
-    "$ROOT/scripts/worker_entry.py"
-rg -q -F 'api_version raw "$TEMP_ROOT/status.json")" == "9"' "$ROOT/scripts/smoke_release.sh"
-rg -q -F '"$WORKER" --self-test' "$ROOT/scripts/smoke_release.sh"
+rg -q -F 'native release unexpectedly contains Python source' "$ROOT/scripts/smoke_release.sh"
+rg -q -F 'native release unexpectedly contains MLX' "$ROOT/scripts/smoke_release.sh"
+rg -q -F 'release unexpectedly contains model weights' "$ROOT/scripts/smoke_release.sh"
+rg -q -F 'vtool -show-build' "$ROOT/scripts/smoke_release.sh"
+rg -q -F 'lipo -archs' "$ROOT/scripts/smoke_release.sh"
 rg -q -F 'expected-entitlements.plist' "$ROOT/scripts/smoke_release.sh"
 rg -q -F -- '--expected-entitlements "$ENTITLEMENTS"' "$ROOT/scripts/build_native_app.sh"
-rg -q -F -- '--target "$DEPLOYMENT_TARGET"' "$ROOT/scripts/build_native_app.sh"
-rg -q -F -- '--python "$RELEASE_PYTHON_VERSION"' "$ROOT/scripts/build_native_app.sh"
-rg -q -F -- 'uv sync --locked' "$ROOT/scripts/build_native_app.sh"
 rg -q -F 'Tiro-notarization-submission.zip' "$ROOT/scripts/build_native_app.sh"
 archive_cleanup_line="$(rg -n -F 'rm -f "$archive" "$archive.sha256" "$archive.partial"' "$ROOT/scripts/build_native_app.sh" | tail -1 | cut -d: -f1)"
 notarization_line="$(rg -n -F 'xcrun notarytool submit' "$ROOT/scripts/build_native_app.sh" | head -1 | cut -d: -f1)"
@@ -34,12 +30,9 @@ rg -q -F 'ln -s /Applications "$DMG_STAGING/Applications"' "$ROOT/scripts/build_
 rg -q -F '"$ROOT/scripts/build_native_app.sh" dmg' "$ROOT/scripts/test_all.sh"
 rg -q -F '"$ROOT/scripts/test_coreml_production.sh"' "$ROOT/scripts/test_all.sh"
 rg -q -F 'FluidAudio-Apache-2.0.txt' "$ROOT/scripts/build_native_app.sh"
+rg -q -F 'Argmax-OSS-MIT.txt' "$ROOT/scripts/build_native_app.sh"
+rg -q -F 'Argmax-OSS-NOTICES.txt' "$ROOT/scripts/build_native_app.sh"
 rg -q -F 'THIRD_PARTY_NOTICES.md' "$ROOT/scripts/build_native_app.sh"
-rg -q -F 'CPython-LICENSE.txt' "$ROOT/scripts/build_native_app.sh"
-rg -q -F "license inventory is unexpectedly incomplete" "$ROOT/scripts/build_native_app.sh"
-for dependency in librosa numba llvmlite scipy sklearn; do
-    rg -q -F -- "--exclude-module $dependency" "$ROOT/scripts/build_native_app.sh"
-done
 rg -q -F -- '--app "$DMG_MOUNT_POINT/Tiro.app"' "$ROOT/scripts/build_native_app.sh"
 rg -q -F -- '--ad-hoc-only' "$ROOT/scripts/build_native_app.sh"
 rg -q -F "'^Signature=adhoc$'" "$ROOT/scripts/smoke_release.sh"
@@ -56,9 +49,10 @@ rg -q -F 'DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer' "$MACO
 rg -q -F 'run: brew install ripgrep' "$MACOS_14_WORKFLOW"
 rg -q -F "run: swift --version | grep -q 'Swift version 6\\.'" "$MACOS_14_WORKFLOW"
 rg -q -F 'run: ./scripts/test_all.sh' "$MACOS_14_WORKFLOW"
-rg -q -F 'uv sync --locked --extra bundle' "$MACOS_14_WORKFLOW"
-rg -q -F 'uv python install "$(cat .python-version)"' "$MACOS_14_WORKFLOW"
-rg -q -F 'version: "0.11.28"' "$MACOS_14_WORKFLOW"
+if rg -q 'setup-uv|uv sync|python install' "$MACOS_14_WORKFLOW"; then
+    print -u2 "native acceptance workflow still installs Python"
+    exit 1
+fi
 
 help="$($ROOT/scripts/build_native_app.sh --help)"
 print -r -- "$help" | rg -q 'distribution'

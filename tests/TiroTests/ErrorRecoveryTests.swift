@@ -69,7 +69,7 @@ struct ErrorRecoveryTests {
         (.microphoneUnavailable, .retryTranscription),
         (.accessibility, .openAccessibilitySettings),
         (.missingModel, .openModels),
-        (.workerUnavailable, .retryWorker),
+        (.modelServiceUnavailable, .retryModels),
         (.transcription, .retryTranscription),
     ])
     func categoryHasExpectedAction(category: RecoveryCategory, action: RecoveryAction) {
@@ -82,9 +82,8 @@ struct ErrorRecoveryTests {
         #expect(ErrorRecovery.presentation(for: RecorderError.noInput).action == .openMicrophoneSettings)
         #expect(ErrorRecovery.presentation(for: RecorderError.noInput, microphoneAuthorized: true).action == .retryTranscription)
         #expect(ErrorRecovery.presentation(for: RecorderError.emptyRecording).action == .retryTranscription)
-        #expect(ErrorRecovery.presentation(for: WorkerError.runtimeMissing("python")).action == .retryWorker)
-        #expect(ErrorRecovery.presentation(for: WorkerError.server("Model is not installed.")).action == .openModels)
-        #expect(ErrorRecovery.presentation(for: WorkerError.invalidResponse).action == .retryTranscription)
+        #expect(ErrorRecovery.presentation(for: TiroError.message("Model is not installed.")).action == .openModels)
+        #expect(ErrorRecovery.presentation(for: TiroError.message("Could not decode audio.")).action == .retryTranscription)
         #expect(ErrorRecovery.presentation(for: PasteCoordinator.PasteError.keyboardEventRejected).action == .openAccessibilitySettings)
         #expect(ErrorRecovery.presentation(for: PasteCoordinator.PasteError.secureDestination).action == .retryTranscription)
     }

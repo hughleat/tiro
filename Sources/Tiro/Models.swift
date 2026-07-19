@@ -1,4 +1,5 @@
 import Foundation
+import TiroRecognition
 
 enum DictationMode: String, CaseIterable {
     case standard
@@ -49,14 +50,49 @@ enum DictationLanguage: String, CaseIterable {
     case macedonian
 
     var title: String { rawValue.capitalized }
+
+    var whisperCode: String? {
+        switch self {
+        case .auto: nil
+        case .english: "en"
+        case .cantonese: "yue"
+        case .arabic: "ar"
+        case .french: "fr"
+        case .german: "de"
+        case .spanish: "es"
+        case .italian: "it"
+        case .portuguese: "pt"
+        case .dutch: "nl"
+        case .chinese: "zh"
+        case .japanese: "ja"
+        case .korean: "ko"
+        case .russian: "ru"
+        case .indonesian: "id"
+        case .thai: "th"
+        case .vietnamese: "vi"
+        case .turkish: "tr"
+        case .hindi: "hi"
+        case .malay: "ms"
+        case .swedish: "sv"
+        case .danish: "da"
+        case .finnish: "fi"
+        case .polish: "pl"
+        case .czech: "cs"
+        case .filipino: "tl"
+        case .persian: "fa"
+        case .greek: "el"
+        case .romanian: "ro"
+        case .hungarian: "hu"
+        case .macedonian: "mk"
+        }
+    }
 }
 
 struct DictationPreferences {
     private enum Key {
         static let mode = "dictationMode"
         static let punctuation = "punctuationMode"
-        static let qwenLanguage = "dictationLanguage"
-        static let parakeetLanguage = "parakeetLanguage"
+        static let language = "dictationLanguage"
     }
 
     let mode: DictationMode
@@ -71,7 +107,7 @@ struct DictationPreferences {
                 rawValue: defaults.string(forKey: Key.punctuation) ?? ""
             ) ?? .automatic,
             language: DictationLanguage(
-                rawValue: defaults.string(forKey: Key.qwenLanguage) ?? ""
+                rawValue: defaults.string(forKey: Key.language) ?? ""
             ) ?? .auto
         )
     }
@@ -86,10 +122,14 @@ struct DictationPreferences {
     }
 
     static func language(for model: DictationModel) -> DictationLanguage {
-        guard model.key != "qwen" else { return current.language }
-        let stored = UserDefaults.standard.string(forKey: Key.parakeetLanguage) ?? ""
-        let language = DictationLanguage(rawValue: stored) ?? .english
-        return language == .auto ? .auto : .english
+        switch model.languageSupport {
+        case .english:
+            return .english
+        case .automatic:
+            return .auto
+        case .selectable:
+            return current.language
+        }
     }
 
     static func save(
@@ -101,8 +141,9 @@ struct DictationPreferences {
         let defaults = UserDefaults.standard
         defaults.set(mode.rawValue, forKey: Key.mode)
         defaults.set(punctuation.rawValue, forKey: Key.punctuation)
-        let key = model.key == "qwen" ? Key.qwenLanguage : Key.parakeetLanguage
-        defaults.set(language.rawValue, forKey: key)
+        if model.languageSupport == .selectable {
+            defaults.set(language.rawValue, forKey: Key.language)
+        }
     }
 }
 
@@ -113,27 +154,90 @@ struct UserSnippet: Codable, Hashable {
 }
 
 struct DictationModel: Hashable {
+    enum LanguageSupport: Hashable {
+        case english
+        case automatic
+        case selectable
+    }
+
     let key: String
     let name: String
     let detail: String
+    let downloadSizeBytes: Int64
+    let languageSupport: LanguageSupport
+    let isSupported: Bool
 
     static let coreMLCompactKey = "coreml-compact"
     static let coreMLCompact = DictationModel(
         key: coreMLCompactKey,
         name: "Parakeet Compact",
-        detail: "Core ML · English · 220 MB"
+        detail: "English · Fastest Parakeet",
+        downloadSizeBytes: 228_000_000,
+        languageSupport: .english,
+        isSupported: true
     )
 
-    static let all: [DictationModel] = [
+    static let catalog: [DictationModel] = [
         coreMLCompact,
         .init(
-            key: "compact",
-            name: "Parakeet Compact (MLX fallback)",
-            detail: "MLX · English · 437 MB"
+            key: "coreml-parakeet-v2",
+            name: "Parakeet 0.6B v2",
+            detail: "English · Higher accuracy",
+            downloadSizeBytes: 500_000_000,
+            languageSupport: .english,
+            isSupported: true
         ),
-        .init(key: "parakeet-v2", name: "Parakeet 0.6B v2", detail: "English · 2.3 GB"),
-        .init(key: "qwen", name: "Qwen3-ASR 0.6B", detail: "Multilingual · 681 MB")
+        .init(
+            key: "coreml-parakeet-v3",
+            name: "Parakeet 0.6B v3",
+            detail: "Multilingual · Automatic detection",
+            downloadSizeBytes: 520_000_000,
+            languageSupport: .automatic,
+            isSupported: true
+        ),
+        .init(
+            key: "coreml-whisper-tiny",
+            name: "Whisper Tiny",
+            detail: "Multilingual · Fastest Whisper",
+            downloadSizeBytes: 154_000_000,
+            languageSupport: .selectable,
+            isSupported: true
+        ),
+        .init(
+            key: "coreml-whisper-base",
+            name: "Whisper Base",
+            detail: "Multilingual · Lightweight",
+            downloadSizeBytes: 290_000_000,
+            languageSupport: .selectable,
+            isSupported: true
+        ),
+        .init(
+            key: "coreml-whisper-small",
+            name: "Whisper Small",
+            detail: "Multilingual · Balanced",
+            downloadSizeBytes: 922_000_000,
+            languageSupport: .selectable,
+            isSupported: true
+        ),
+        .init(
+            key: "coreml-whisper-large-v3",
+            name: "Whisper Large V3",
+            detail: "Multilingual · Highest accuracy",
+            downloadSizeBytes: 626_000_000,
+            languageSupport: .selectable,
+            isSupported: true
+        ),
+        .init(
+            key: "coreml-whisper-turbo",
+            name: "Whisper Large V3 Turbo",
+            detail: "Multilingual · Fast and accurate",
+            downloadSizeBytes: 632_000_000,
+            languageSupport: .selectable,
+            isSupported: WhisperModel.turbo.isSupportedOnCurrentDevice
+        ),
     ]
+
+    static let all = catalog.filter(\.isSupported)
 
     static var selected: DictationModel {
         let key = UserDefaults.standard.string(forKey: "selectedModel") ?? coreMLCompactKey
@@ -145,13 +249,12 @@ struct DictationModel: Hashable {
     }
 }
 
-struct ManagedModel: Decodable, Hashable {
+struct ManagedModel: Hashable {
     let key: String
     let name: String
     let detail: String
     let downloadSizeBytes: Int64?
     let installedSizeBytes: Int64?
-    let sizeText: String?
     let installed: Bool
     let downloading: Bool
     let deleting: Bool
@@ -161,7 +264,6 @@ struct ManagedModel: Decodable, Hashable {
     let state: String?
 
     var sizeDescription: String {
-        if let sizeText, !sizeText.isEmpty { return sizeText }
         if installed, let installedSizeBytes, installedSizeBytes > 0 {
             return ByteCountFormatter.string(fromByteCount: installedSizeBytes, countStyle: .file)
         }
@@ -174,70 +276,6 @@ struct ManagedModel: Decodable, Hashable {
 
     var dictationModel: DictationModel? {
         DictationModel.all.first(where: { $0.key == key })
-    }
-
-    var supportsComparison: Bool {
-        key != DictationModel.coreMLCompactKey
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case key, name, label, detail, backend, size, sizeBytes = "size_bytes"
-        case downloadSizeBytes = "download_size_bytes"
-        case installedSizeBytes = "installed_size_bytes"
-        case installed, downloaded, downloading, deleting, loaded, progress, state, status
-        case downloadError = "download_error"
-    }
-
-    init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        let decodedKey = try values.decode(String.self, forKey: .key)
-        key = decodedKey
-        let known = DictationModel.all.first(where: { $0.key == decodedKey })
-        let label = try values.decodeIfPresent(String.self, forKey: .label)
-        name = try values.decodeIfPresent(String.self, forKey: .name)
-            ?? label?.replacingOccurrences(of: #"\s*\([^)]*(?:MB|GB)\)\s*$"#, with: "", options: .regularExpression)
-            ?? known?.name
-            ?? key
-        detail = try values.decodeIfPresent(String.self, forKey: .detail)
-            ?? values.decodeIfPresent(String.self, forKey: .backend)
-            ?? known?.detail.components(separatedBy: " · ").first
-            ?? "Transcription model"
-        downloadSizeBytes = try values.decodeIfPresent(Int64.self, forKey: .downloadSizeBytes)
-            ?? values.decodeIfPresent(Int64.self, forKey: .sizeBytes)
-        installedSizeBytes = try values.decodeIfPresent(Int64.self, forKey: .installedSizeBytes)
-        sizeText = try values.decodeIfPresent(String.self, forKey: .size)
-            ?? label.flatMap(Self.sizeSuffix)
-        installed = try values.decodeIfPresent(Bool.self, forKey: .installed)
-            ?? values.decodeIfPresent(Bool.self, forKey: .downloaded)
-            ?? false
-        downloading = try values.decodeIfPresent(Bool.self, forKey: .downloading) ?? false
-        deleting = try values.decodeIfPresent(Bool.self, forKey: .deleting) ?? false
-        loaded = try values.decodeIfPresent(Bool.self, forKey: .loaded) ?? false
-        downloadError = try values.decodeIfPresent(String.self, forKey: .downloadError)
-        progress = try values.decodeIfPresent(Double.self, forKey: .progress)
-        state = try values.decodeIfPresent(String.self, forKey: .state)
-            ?? values.decodeIfPresent(String.self, forKey: .status)
-    }
-
-    init(key: String, payload: ModelPayload) {
-        self.key = key
-        let known = DictationModel.all.first(where: { $0.key == key })
-        name = payload.name ?? payload.label.map {
-            $0.replacingOccurrences(of: #"\s*\([^)]*(?:MB|GB)\)\s*$"#, with: "", options: .regularExpression)
-        } ?? known?.name ?? key
-        detail = payload.detail ?? payload.backend
-            ?? known?.detail.components(separatedBy: " · ").first
-            ?? "Transcription model"
-        downloadSizeBytes = payload.download_size_bytes ?? payload.size_bytes
-        installedSizeBytes = payload.installed_size_bytes
-        sizeText = payload.size ?? payload.label.flatMap(Self.sizeSuffix)
-        installed = payload.installed ?? payload.downloaded ?? false
-        downloading = payload.downloading ?? false
-        deleting = payload.deleting ?? false
-        loaded = payload.loaded ?? false
-        downloadError = payload.download_error
-        progress = payload.progress
-        state = payload.state ?? payload.status
     }
 
     init(
@@ -254,11 +292,9 @@ struct ManagedModel: Decodable, Hashable {
         self.key = key
         let known = DictationModel.all.first(where: { $0.key == key })
         name = known?.name ?? key
-        detail = known?.detail.components(separatedBy: " · ").dropLast().joined(separator: " · ")
-            ?? "Transcription model"
-        downloadSizeBytes = 227_500_000
+        detail = known?.detail ?? "Transcription model"
+        downloadSizeBytes = known?.downloadSizeBytes
         self.installedSizeBytes = installedSizeBytes
-        sizeText = nil
         self.installed = installed
         self.downloading = downloading
         self.deleting = deleting
@@ -268,72 +304,29 @@ struct ManagedModel: Decodable, Hashable {
         self.state = state
     }
 
-    private static func sizeSuffix(_ label: String) -> String? {
-        guard let range = label.range(of: #"[0-9]+(?:\.[0-9]+)?\s*(?:MB|GB)"#, options: .regularExpression) else {
-            return nil
-        }
-        return String(label[range])
-    }
 }
 
-struct ModelPayload: Decodable {
-    let name: String?
-    let label: String?
-    let detail: String?
-    let backend: String?
-    let size: String?
-    let size_bytes: Int64?
-    let download_size_bytes: Int64?
-    let installed_size_bytes: Int64?
-    let installed: Bool?
-    let downloaded: Bool?
-    let downloading: Bool?
-    let deleting: Bool?
-    let loaded: Bool?
-    let download_error: String?
-    let progress: Double?
-    let state: String?
-    let status: String?
-}
-
-struct ModelComparisonResult: Decodable {
+struct ModelComparisonResult {
     let modelKey: String
     let modelName: String?
     let text: String
     let transcriptionSeconds: Double
 
-    private enum CodingKeys: String, CodingKey {
-        case modelKey = "model_key"
-        case key
-        case model
-        case modelName = "model_name"
-        case name
-        case text
-        case transcript
-        case transcriptionSeconds = "transcription_seconds"
-        case seconds
-        case elapsedSeconds = "elapsed_seconds"
+    init(
+        modelKey: String,
+        modelName: String?,
+        text: String,
+        transcriptionSeconds: Double
+    ) {
+        self.modelKey = modelKey
+        self.modelName = modelName
+        self.text = text
+        self.transcriptionSeconds = transcriptionSeconds
     }
 
-    init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        modelKey = try values.decodeIfPresent(String.self, forKey: .modelKey)
-            ?? values.decodeIfPresent(String.self, forKey: .key)
-            ?? values.decodeIfPresent(String.self, forKey: .model)
-            ?? ""
-        modelName = try values.decodeIfPresent(String.self, forKey: .modelName)
-            ?? values.decodeIfPresent(String.self, forKey: .name)
-        text = try values.decodeIfPresent(String.self, forKey: .text)
-            ?? values.decodeIfPresent(String.self, forKey: .transcript)
-            ?? ""
-        transcriptionSeconds = try values.decodeIfPresent(Double.self, forKey: .transcriptionSeconds)
-            ?? values.decodeIfPresent(Double.self, forKey: .seconds)
-            ?? values.decodeIfPresent(Double.self, forKey: .elapsedSeconds)
-            ?? 0
-    }
 }
 
-struct HistoryEntry: Codable {
+struct HistoryEntry {
     let id: String
     let timestamp: String
     let model: String
@@ -347,59 +340,34 @@ struct HistoryEntry: Codable {
 
     var displayText: String { corrected_text ?? text }
 
-    private let audio_file: String?
+    let audio_file: String?
 
-    private enum CodingKeys: String, CodingKey {
-        case id
-        case timestamp
-        case model
-        case audio_file
-        case transcription_seconds
-        case text
-        case raw_text
-        case corrected_text
-        case origin_bundle_id
-        case origin_bundle
-        case origin_app_name
-        case origin_name
-        case audio_available
+    init(
+        id: String,
+        timestamp: String,
+        model: String,
+        transcriptionSeconds: Double,
+        text: String,
+        rawText: String?,
+        correctedText: String?,
+        originBundleID: String?,
+        originAppName: String?,
+        audioAvailable: Bool,
+        audioFile: String?
+    ) {
+        self.id = id
+        self.timestamp = timestamp
+        self.model = model
+        transcription_seconds = transcriptionSeconds
+        self.text = text
+        raw_text = rawText
+        corrected_text = correctedText
+        origin_bundle_id = originBundleID
+        origin_app_name = originAppName
+        audio_available = audioAvailable
+        audio_file = audioFile
     }
 
-    init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        timestamp = try values.decodeIfPresent(String.self, forKey: .timestamp) ?? ""
-        model = try values.decodeIfPresent(String.self, forKey: .model) ?? ""
-        transcription_seconds = try values.decodeIfPresent(Double.self, forKey: .transcription_seconds) ?? 0
-        text = try values.decodeIfPresent(String.self, forKey: .text) ?? ""
-        raw_text = try values.decodeIfPresent(String.self, forKey: .raw_text)
-        corrected_text = try values.decodeIfPresent(String.self, forKey: .corrected_text)
-        origin_bundle_id = try values.decodeIfPresent(String.self, forKey: .origin_bundle_id)
-            ?? values.decodeIfPresent(String.self, forKey: .origin_bundle)
-        let encodedOriginName = try values.decodeIfPresent(String.self, forKey: .origin_app_name)
-            ?? values.decodeIfPresent(String.self, forKey: .origin_name)
-        origin_app_name = encodedOriginName?.removingPercentEncoding ?? encodedOriginName
-        audio_file = try values.decodeIfPresent(String.self, forKey: .audio_file)
-        audio_available = try values.decodeIfPresent(Bool.self, forKey: .audio_available)
-            ?? !(audio_file ?? "").isEmpty
-        id = try values.decodeIfPresent(String.self, forKey: .id)
-            ?? audio_file
-            ?? [timestamp, model, text].joined(separator: "|")
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var values = encoder.container(keyedBy: CodingKeys.self)
-        try values.encode(id, forKey: .id)
-        try values.encode(timestamp, forKey: .timestamp)
-        try values.encode(model, forKey: .model)
-        try values.encode(transcription_seconds, forKey: .transcription_seconds)
-        try values.encode(text, forKey: .text)
-        try values.encodeIfPresent(raw_text, forKey: .raw_text)
-        try values.encodeIfPresent(corrected_text, forKey: .corrected_text)
-        try values.encodeIfPresent(origin_bundle_id, forKey: .origin_bundle_id)
-        try values.encodeIfPresent(origin_app_name, forKey: .origin_app_name)
-        try values.encode(audio_available, forKey: .audio_available)
-        try values.encodeIfPresent(audio_file, forKey: .audio_file)
-    }
 }
 
 enum VocabularyFile {
@@ -467,7 +435,7 @@ struct VocabularyEntry: Codable, Equatable {
     }
 }
 
-struct VocabularyProfilesDocument: Codable, Equatable {
+struct VocabularyProfilesDocument: Equatable {
     var version: Int
     var profiles: [VocabularyProfile]
 
@@ -477,7 +445,7 @@ struct VocabularyProfilesDocument: Codable, Equatable {
     }
 }
 
-struct VocabularyProfile: Codable, Equatable {
+struct VocabularyProfile: Equatable {
     var bundle_id: String
     var name: String
     var entries: [VocabularyEntry]
@@ -486,7 +454,7 @@ struct VocabularyProfile: Codable, Equatable {
     var displayName: String { name.removingPercentEncoding ?? name }
 }
 
-struct VocabularySuggestion: Decodable {
+struct VocabularySuggestion {
     let id: String
     let spoken: String
     let written: String
@@ -498,40 +466,31 @@ struct VocabularySuggestion: Decodable {
         origin_bundle_id.flatMap { $0.removingPercentEncoding ?? $0 }
     }
 
-    private enum CodingKeys: String, CodingKey {
-        case id
-        case spoken
-        case written
-        case bundle_id
-        case origin_bundle_id
-        case origin_app_name
-        case name
-        case origin_name
-        case count
+    init(
+        id: String,
+        spoken: String,
+        written: String,
+        originBundleID: String?,
+        originAppName: String?,
+        count: Int
+    ) {
+        self.id = id
+        self.spoken = spoken
+        self.written = written
+        origin_bundle_id = originBundleID
+        origin_app_name = originAppName
+        self.count = count
     }
 
-    init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        id = try values.decode(String.self, forKey: .id)
-        spoken = try values.decodeIfPresent(String.self, forKey: .spoken) ?? ""
-        written = try values.decodeIfPresent(String.self, forKey: .written) ?? ""
-        origin_bundle_id = try values.decodeIfPresent(String.self, forKey: .bundle_id)
-            ?? values.decodeIfPresent(String.self, forKey: .origin_bundle_id)
-        let encodedOriginName = try values.decodeIfPresent(String.self, forKey: .origin_app_name)
-            ?? values.decodeIfPresent(String.self, forKey: .name)
-            ?? values.decodeIfPresent(String.self, forKey: .origin_name)
-        origin_app_name = encodedOriginName?.removingPercentEncoding ?? encodedOriginName
-        count = try values.decodeIfPresent(Int.self, forKey: .count) ?? 1
-    }
 }
 
-struct PrivacySettings: Codable, Equatable {
+struct PrivacySettings: Equatable {
     let store_history: Bool
     let store_recordings: Bool
     let retention_days: Int
 }
 
-struct TranscriptionResponse: Decodable {
+struct TranscriptionResponse {
     let timestamp: String
     let model: String
     let audio_file: String?
@@ -539,8 +498,4 @@ struct TranscriptionResponse: Decodable {
     let text: String
     let origin_bundle_id: String?
     let origin_app_name: String?
-}
-
-struct ErrorResponse: Decodable {
-    let error: String
 }

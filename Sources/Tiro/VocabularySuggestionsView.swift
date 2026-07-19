@@ -4,15 +4,15 @@ import AppKit
 final class VocabularySuggestionsView: NSStackView, NSTableViewDataSource, NSTableViewDelegate {
     var onSuggestionsChanged: (() -> Void)?
 
-    private let workerClient: WorkerClient
+    private let service: TiroService
     private let table = NSTableView()
     private let stateLabel = NSTextField(labelWithString: "")
     private var suggestions: [VocabularySuggestion] = []
     private var refreshTask: Task<Void, Never>?
     private var actionTask: Task<Void, Never>?
 
-    init(workerClient: WorkerClient) {
-        self.workerClient = workerClient
+    init(service: TiroService) {
+        self.service = service
         super.init(frame: .zero)
         buildContent()
     }
@@ -30,7 +30,7 @@ final class VocabularySuggestionsView: NSStackView, NSTableViewDataSource, NSTab
         refreshTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let results = try await workerClient.suggestions()
+                let results = try await service.suggestions()
                 guard !Task.isCancelled else { return }
                 suggestions = results
                 table.reloadData()
@@ -133,7 +133,7 @@ final class VocabularySuggestionsView: NSStackView, NSTableViewDataSource, NSTab
             guard let self else { return }
             defer { actionTask = nil }
             do {
-                try await workerClient.dismissSuggestion(id: suggestion.id)
+                try await service.dismissSuggestion(id: suggestion.id)
                 guard !Task.isCancelled else { return }
                 onSuggestionsChanged?()
                 refresh()
@@ -150,7 +150,7 @@ final class VocabularySuggestionsView: NSStackView, NSTableViewDataSource, NSTab
             guard let self else { return }
             defer { actionTask = nil }
             do {
-                try await workerClient.acceptSuggestion(id: suggestion.id, scope: scope)
+                try await service.acceptSuggestion(id: suggestion.id, scope: scope)
                 guard !Task.isCancelled else { return }
                 onSuggestionsChanged?()
                 refresh()

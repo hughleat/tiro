@@ -6,7 +6,7 @@ import ApplicationServices
     private enum State { case idle, starting, recording, transcribing }
 
     private let recorder = AudioRecorder()
-    private let worker = WorkerClient()
+    private let service = TiroService()
     private let overlay = OverlayPanel()
     private let recordingSounds = RecordingSoundPlayer()
     private let hotkeys = HotkeyManager()
@@ -60,7 +60,6 @@ import ApplicationServices
         modelStartupTask?.cancel()
         hotkeys.stop()
         PasteEventGate.shared.stop()
-        worker.stopOwnedWorker()
     }
 
     private func configureStatusItem() {
@@ -131,7 +130,7 @@ import ApplicationServices
     }
 
     private func makeSettingsWindow() -> SettingsWindowController {
-        let controller = SettingsWindowController(workerClient: worker)
+        let controller = SettingsWindowController(service: service)
         controller.onModelChanged = { [weak self] model in
             self?.updateModelChecks()
             if self?.installedModelKeys.contains(model.key) == true {
@@ -279,7 +278,7 @@ import ApplicationServices
             overlay.dismiss(after: 1.2)
             return false
         case .unavailable:
-            presentRecovery(ErrorRecovery.presentation(for: .workerUnavailable))
+            presentRecovery(ErrorRecovery.presentation(for: .modelServiceUnavailable))
             return false
         case .missing:
             modelStatusItem.title = "Model: Download One in Settings"
@@ -342,7 +341,7 @@ import ApplicationServices
             Task {
                 defer { try? FileManager.default.removeItem(at: wavURL) }
                 do {
-                    let response = try await worker.transcribe(
+                    let response = try await service.transcribe(
                         wavURL: wavURL,
                         model: model,
                         originBundleID: originBundleID,
@@ -455,7 +454,7 @@ import ApplicationServices
         switch action {
         case .openMicrophoneSettings, .openAccessibilitySettings: return "Open Permissions"
         case .openModels: return "Open Models"
-        case .retryWorker: return "Retry"
+        case .retryModels: return "Retry"
         case .retryTranscription: return "OK"
         }
     }
@@ -466,7 +465,7 @@ import ApplicationServices
             settingsWindow.showPermissionsSettings()
         case .openModels:
             settingsWindow.showModelsSettings()
-        case .retryWorker:
+        case .retryModels:
             prepareInstalledModel()
         case .retryTranscription:
             break
@@ -502,7 +501,7 @@ import ApplicationServices
 
     private func makeOnboardingWindow() -> OnboardingWindowController {
         let controller = OnboardingWindowController(
-            workerClient: worker,
+            service: service,
             shortcutName: hotkeys.shortcut.displayName
         )
         controller.onRequestMicrophone = { [weak self] in self?.requestMicrophoneAccess() }
@@ -576,8 +575,8 @@ import ApplicationServices
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await worker.activate(model: model)
-                let models = try await worker.models()
+                try await service.activate(model: model)
+                let models = await service.models()
                 applyModelInventory(models)
             } catch {
                 presentError(error)
@@ -603,14 +602,14 @@ import ApplicationServices
         modelStartupTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let models = try await worker.models()
+                let models = await service.models()
                 guard !Task.isCancelled else { return }
                 guard let model = applyModelInventory(models) else {
                     modelStatusItem.title = "Model: None Installed"
                     return
                 }
                 modelStatusItem.title = "Model: Loading…"
-                try await worker.preload(model: model)
+                try await service.preload(model: model)
                 guard !Task.isCancelled else { return }
                 if DictationModel.selected == model {
                     modelStatusItem.title = "Model: Ready"

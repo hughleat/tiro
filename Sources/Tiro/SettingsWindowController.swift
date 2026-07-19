@@ -23,14 +23,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let privacySettingsView: PrivacySettingsView
     private var navigationController: SettingsNavigationController?
 
-    init(workerClient: WorkerClient) {
-        vocabularyEditor = VocabularyEditorView(workerClient: workerClient)
-        snippetEditor = SnippetEditorView(workerClient: workerClient)
-        suggestionsView = VocabularySuggestionsView(workerClient: workerClient)
-        historyView = HistoryView(workerClient: workerClient)
-        modelManagementView = ModelManagementView(workerClient: workerClient)
-        modelComparisonView = ModelComparisonView(workerClient: workerClient)
-        privacySettingsView = PrivacySettingsView(workerClient: workerClient)
+    init(service: TiroService) {
+        vocabularyEditor = VocabularyEditorView(service: service)
+        snippetEditor = SnippetEditorView(service: service)
+        suggestionsView = VocabularySuggestionsView(service: service)
+        historyView = HistoryView(service: service)
+        modelManagementView = ModelManagementView(service: service)
+        modelComparisonView = ModelComparisonView(service: service)
+        privacySettingsView = PrivacySettingsView(service: service)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 860, height: 640),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],

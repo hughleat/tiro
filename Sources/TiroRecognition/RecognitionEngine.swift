@@ -2,6 +2,35 @@ import Foundation
 
 public enum RecognitionModel: String, Codable, Sendable {
     case parakeetCompactCoreML = "parakeet-tdt-ctc-110m-coreml"
+    case parakeetV2CoreML = "parakeet-tdt-0.6b-v2-coreml"
+    case parakeetV3CoreML = "parakeet-tdt-0.6b-v3-coreml"
+    case whisperTinyCoreML = "whisper-tiny-coreml"
+    case whisperBaseCoreML = "whisper-base-coreml"
+    case whisperSmallCoreML = "whisper-small-coreml"
+    case whisperLargeV3CoreML = "whisper-large-v3-coreml"
+    case whisperTurboCoreML = "whisper-large-v3-turbo-coreml"
+}
+
+public enum ParakeetModel: String, CaseIterable, Codable, Sendable {
+    case compact
+    case v2
+    case v3
+
+    public var recognitionModel: RecognitionModel {
+        switch self {
+        case .compact: .parakeetCompactCoreML
+        case .v2: .parakeetV2CoreML
+        case .v3: .parakeetV3CoreML
+        }
+    }
+
+    public var directoryName: String {
+        switch self {
+        case .compact: "parakeet-tdt-ctc-110m"
+        case .v2: "parakeet-tdt-0.6b-v2"
+        case .v3: "parakeet-tdt-0.6b-v3"
+        }
+    }
 }
 
 public struct RawTranscript: Codable, Equatable, Sendable {
