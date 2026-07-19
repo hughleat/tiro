@@ -99,6 +99,11 @@ Apple Developer membership and ongoing development through
 [GitHub Sponsors](https://github.com/sponsors/hughleat). Sponsorship never
 unlocks features or changes how the app works.
 
+After seven days or 20 successful transcriptions, Tiro may show a support
+reminder. It apologizes for the interruption and will not appear more than once
+every six months. Choosing **I already support** disables future reminders.
+Reminder state stays in local macOS preferences; Tiro sends no usage telemetry.
+
 ## License
 
 Tiro is available under the [MIT License](LICENSE).

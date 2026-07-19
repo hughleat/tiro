@@ -2,7 +2,7 @@ import AppKit
 import AVFoundation
 import ApplicationServices
 
-@MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private enum State { case idle, starting, recording, transcribing }
 
     private let recorder = AudioRecorder()
@@ -12,6 +12,8 @@ import ApplicationServices
     private let hotkeys = HotkeyManager()
     private let destinationTracker = DestinationTracker()
     private let pasteCoordinator = PasteCoordinator()
+    private let supportPromptPolicy = SupportPromptPolicy()
+    private lazy var supportPromptWindow = makeSupportPromptWindow()
     private lazy var settingsWindow = makeSettingsWindow()
     private var onboardingWindow: OnboardingWindowController?
     private var statusItem: NSStatusItem!
@@ -26,15 +28,19 @@ import ApplicationServices
     private var modelInventoryStatus = ModelInventoryStatus.loading
     private var modelStartupTask: Task<Void, Never>?
     private var permissionTimer: Timer?
+    private var supportPromptTimer: Timer?
     private var hotkeysStarted = false
     private var isCapturingShortcut = false
     private var destinationSession: DestinationSession?
     private var originApplication: ApplicationIdentity?
     private var shouldAutoPaste = false
     private var awaitingPrivacyReview = false
+    private var isPresentingRecovery = false
+    private var supportPromptSuppressedUntil: Date?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UserDefaults.standard.register(defaults: ["autoPaste": true, "soundFeedback": true])
+        supportPromptPolicy.registerLaunch()
         AudioRecorder.removeStaleRecordings()
         _ = try? VocabularyFile.load()
         NSApp.setActivationPolicy(.accessory)
@@ -43,11 +49,14 @@ import ApplicationServices
         prepareInstalledModel()
         if !UserDefaults.standard.bool(forKey: "setupCompleted") {
             showSetup()
+        } else {
+            scheduleNextSupportPromptCheck(minimumDelay: 1)
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         permissionTimer?.invalidate()
+        supportPromptTimer?.invalidate()
         modelStartupTask?.cancel()
         hotkeys.stop()
         PasteEventGate.shared.stop()
@@ -59,6 +68,7 @@ import ApplicationServices
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Tiro")
 
         let menu = NSMenu()
+        menu.delegate = self
         menuToggleItem = NSMenuItem(title: "Start Recording", action: #selector(toggleRecording), keyEquivalent: "")
         menuToggleItem.target = self
         menu.addItem(menuToggleItem)
@@ -112,6 +122,9 @@ import ApplicationServices
         let setup = NSMenuItem(title: "Setup…", action: #selector(showSetup), keyEquivalent: "")
         setup.target = self
         menu.addItem(setup)
+        let support = NSMenuItem(title: "Support Tiro…", action: #selector(supportTiro), keyEquivalent: "")
+        support.target = self
+        menu.addItem(support)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Tiro", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
@@ -154,6 +167,18 @@ import ApplicationServices
             self?.awaitingPrivacyReview = false
             UserDefaults.standard.set(true, forKey: "privacyMigrationNoticeReviewed")
             self?.privacyNoticeItem.isHidden = true
+        }
+        return controller
+    }
+
+    private func makeSupportPromptWindow() -> SupportPromptWindowController {
+        let controller = SupportPromptWindowController()
+        controller.onSupport = {
+            NSWorkspace.shared.open(SupportPromptPolicy.sponsorsURL)
+        }
+        controller.onAlreadySupporting = { [weak self] in
+            self?.supportPromptPolicy.markAlreadySupporting()
+            self?.supportPromptTimer?.invalidate()
         }
         return controller
     }
@@ -246,6 +271,7 @@ import ApplicationServices
     @discardableResult
     private func startRecording(playStartSound: Bool = true) -> Bool {
         guard state == .idle else { return false }
+        supportPromptWindow.close()
         switch modelInventoryStatus {
         case .loading:
             modelStatusItem.title = "Model: Checking Installed Models..."
@@ -359,6 +385,8 @@ import ApplicationServices
         originApplication = nil
         var completionOverlay = OverlayState.copied
         if !response.text.isEmpty {
+            supportPromptPolicy.recordSuccessfulTranscription()
+            scheduleNextSupportPromptCheck(minimumDelay: 1)
             if shouldAutoPaste, let destination {
                 do {
                     let result = try await pasteCoordinator.paste(response.text, to: destination)
@@ -406,6 +434,12 @@ import ApplicationServices
 
     private func presentRecovery(_ presentation: RecoveryPresentation) {
         guard presentation.action != .retryTranscription else { return }
+        guard !isPresentingRecovery else { return }
+        isPresentingRecovery = true
+        defer {
+            isPresentingRecovery = false
+            supportPromptSuppressedUntil = Date().addingTimeInterval(60)
+        }
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = presentation.title
@@ -443,6 +477,10 @@ import ApplicationServices
         settingsWindow.showWindow(nil)
     }
 
+    @objc private func supportTiro() {
+        NSWorkspace.shared.open(SupportPromptPolicy.sponsorsURL)
+    }
+
     @objc private func showPermissionsSettings() {
         settingsWindow.showPermissionsSettings()
     }
@@ -473,10 +511,50 @@ import ApplicationServices
             self?.applyModelInventory(models)
         }
         controller.onDownloadCompleted = { [weak self] in self?.prepareInstalledModel() }
-        controller.onComplete = {
+        controller.onComplete = { [weak self] in
             UserDefaults.standard.set(true, forKey: "setupCompleted")
+            self?.scheduleNextSupportPromptCheck()
         }
         return controller
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        handleSupportPromptCheck()
+    }
+
+    private func scheduleNextSupportPromptCheck(minimumDelay: TimeInterval = 0) {
+        supportPromptTimer?.invalidate()
+        guard let due = supportPromptPolicy.nextPromptDate() else { return }
+        let delay = max(minimumDelay, due.timeIntervalSinceNow)
+        supportPromptTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.handleSupportPromptCheck() }
+        }
+    }
+
+    private func handleSupportPromptCheck() {
+        guard supportPromptPolicy.shouldPrompt() else {
+            scheduleNextSupportPromptCheck()
+            return
+        }
+        let presentation = SupportPromptPresentationState(
+            isIdle: state == .idle,
+            setupCompleted: UserDefaults.standard.bool(forKey: "setupCompleted"),
+            onboardingVisible: onboardingWindow?.window?.isVisible == true,
+            presentingRecovery: isPresentingRecovery,
+            overlayVisible: overlay.isVisible,
+            promptVisible: supportPromptWindow.window?.isVisible == true,
+            suppressedUntil: supportPromptSuppressedUntil
+        )
+        guard presentation.canPresent() else {
+            supportPromptTimer?.invalidate()
+            supportPromptTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: false) { [weak self] _ in
+                Task { @MainActor in self?.handleSupportPromptCheck() }
+            }
+            return
+        }
+        supportPromptPolicy.markShown()
+        supportPromptWindow.showWindow(nil)
+        scheduleNextSupportPromptCheck()
     }
 
     private func refreshSetupPermissions() {

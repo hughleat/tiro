@@ -20,6 +20,7 @@ let package = Package(
             exclude: [
                 "ModifierEventStateTests.swift",
                 "SnippetEditStateTests.swift",
+                "SupportPromptPolicyAssertions.swift",
             ],
             sources: [
                 "ErrorRecoveryTests.swift",
@@ -28,6 +29,7 @@ let package = Package(
                 "WorkerTransportTests.swift",
                 "SetupReadinessTests.swift",
                 "SettingsConstructionTests.swift",
+                "SupportPromptPolicyTests.swift",
             ]
         )
     ],

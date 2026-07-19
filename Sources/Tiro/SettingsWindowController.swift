@@ -210,7 +210,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
         let versionLabel = NSTextField(labelWithString: Self.versionText(version: version, build: build))
         versionLabel.textColor = .secondaryLabelColor
-        let details = NSStackView(views: [name, versionLabel])
+        let supportButton = NSButton(
+            title: "Support Tiro",
+            target: self,
+            action: #selector(supportTiro)
+        )
+        supportButton.bezelStyle = .rounded
+        let details = NSStackView(views: [name, versionLabel, supportButton])
         details.orientation = .vertical
         details.alignment = .leading
         details.spacing = 4
@@ -257,6 +263,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             refreshLaunchAtLogin()
             window?.presentError(error)
         }
+    }
+
+    @objc private func supportTiro() {
+        NSWorkspace.shared.open(SupportPromptPolicy.sponsorsURL)
     }
 
     private func refreshLaunchAtLogin() {
