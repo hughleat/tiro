@@ -1,6 +1,6 @@
 # Tiro
 
-Tiro is a private, local dictation app for Apple Silicon Macs. A native menu-bar app records microphone audio, sends a 16 kHz mono WAV to a local Python worker, copies the transcript, and optionally pastes it into the active application.
+Tiro is a free, open-source, local dictation app for Apple Silicon Macs. A native menu-bar app records microphone audio, sends a 16 kHz mono WAV to a local Python worker, copies the transcript, and optionally pastes it into the active application.
 
 ## Download and install
 
@@ -91,3 +91,14 @@ Run `scripts/setup_local_signing.sh` once before local development. It creates a
 Distribution builds use the hardened runtime and sign nested code inside-out. A distribution build can also submit to Apple's notary service, staple the accepted ticket, verify Gatekeeper acceptance, and emit a ZIP plus SHA-256 checksum. See [`docs/RELEASING.md`](docs/RELEASING.md) for the credentialed commands and release checklist.
 
 Free GitHub releases use `./scripts/build_native_app.sh dmg`. This creates an ad-hoc-signed, self-contained DMG with an Applications shortcut and SHA-256 checksum. It needs no paid Apple credentials; users approve each downloaded version in System Settings.
+
+## Support Tiro
+
+Tiro is free and open source. If it saves you time, you can help fund an
+Apple Developer membership and ongoing development through
+[GitHub Sponsors](https://github.com/sponsors/hughleat). Sponsorship never
+unlocks features or changes how the app works.
+
+## License
+
+Tiro is available under the [MIT License](LICENSE).
