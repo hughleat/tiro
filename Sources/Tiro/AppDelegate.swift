@@ -27,6 +27,8 @@ import ApplicationServices
     private var installedModelKeys: Set<String> = []
     private var modelInventoryStatus = ModelInventoryStatus.loading
     private var modelStartupTask: Task<Void, Never>?
+    private var transcriptionTask: Task<Void, Never>?
+    private var transcriptionID: UUID?
     private var permissionTimer: Timer?
     private var supportPromptTimer: Timer?
     private var hotkeysStarted = false
@@ -58,6 +60,7 @@ import ApplicationServices
         permissionTimer?.invalidate()
         supportPromptTimer?.invalidate()
         modelStartupTask?.cancel()
+        transcriptionTask?.cancel()
         hotkeys.stop()
         PasteEventGate.shared.stop()
     }
@@ -190,6 +193,7 @@ import ApplicationServices
         hotkeys.onEscape = { [weak self] in self?.cancelRecording() }
         hotkeys.shouldHandleEscape = { [weak self] in
             self?.state == .starting || self?.state == .recording
+                || self?.state == .transcribing
         }
 
         installHotkeysWhenPermitted()
@@ -338,8 +342,17 @@ import ApplicationServices
             let originBundleID = originApplication?.bundleIdentifier
             let originName = originApplication?.applicationName
 
-            Task {
+            let transcriptionID = UUID()
+            self.transcriptionID = transcriptionID
+            transcriptionTask = Task { [weak self] in
+                guard let self else { return }
                 defer { try? FileManager.default.removeItem(at: wavURL) }
+                defer {
+                    if self.transcriptionID == transcriptionID {
+                        self.transcriptionTask = nil
+                        self.transcriptionID = nil
+                    }
+                }
                 do {
                     let response = try await service.transcribe(
                         wavURL: wavURL,
@@ -347,9 +360,17 @@ import ApplicationServices
                         originBundleID: originBundleID,
                         originName: originName
                     )
+                    try Task.checkCancellation()
+                    guard self.transcriptionID == transcriptionID else { return }
                     await complete(response, model: model)
+                } catch is CancellationError {
+                    if self.transcriptionID == transcriptionID {
+                        finishCancelledTranscription()
+                    }
                 } catch {
-                    await MainActor.run { presentError(error) }
+                    if self.transcriptionID == transcriptionID {
+                        await MainActor.run { self.presentError(error) }
+                    }
                 }
             }
         } catch {
@@ -358,6 +379,12 @@ import ApplicationServices
     }
 
     private func cancelRecording() {
+        if state == .transcribing {
+            transcriptionTask?.cancel()
+            transcriptionID = nil
+            finishCancelledTranscription()
+            return
+        }
         if state == .starting {
             recordingSounds.cancelStart()
             destinationSession = nil
@@ -374,6 +401,21 @@ import ApplicationServices
         state = .idle
         menuToggleItem.title = "Start Recording"
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Tiro")
+        statusItem.button?.contentTintColor = nil
+        overlay.dismiss()
+    }
+
+    private func finishCancelledTranscription() {
+        transcriptionTask = nil
+        transcriptionID = nil
+        destinationSession = nil
+        originApplication = nil
+        state = .idle
+        menuToggleItem.title = "Start Recording"
+        statusItem.button?.image = NSImage(
+            systemSymbolName: "waveform",
+            accessibilityDescription: "Tiro"
+        )
         statusItem.button?.contentTintColor = nil
         overlay.dismiss()
     }
@@ -452,7 +494,9 @@ import ApplicationServices
 
     private func recoveryButtonTitle(for action: RecoveryAction) -> String {
         switch action {
-        case .openMicrophoneSettings, .openAccessibilitySettings: return "Open Permissions"
+        case .openMicrophoneSettings, .openSpeechRecognitionSettings,
+             .openAccessibilitySettings:
+            return "Open Permissions"
         case .openModels: return "Open Models"
         case .retryModels: return "Retry"
         case .retryTranscription: return "OK"
@@ -461,7 +505,8 @@ import ApplicationServices
 
     private func performRecovery(_ action: RecoveryAction) {
         switch action {
-        case .openMicrophoneSettings, .openAccessibilitySettings:
+        case .openMicrophoneSettings, .openSpeechRecognitionSettings,
+             .openAccessibilitySettings:
             settingsWindow.showPermissionsSettings()
         case .openModels:
             settingsWindow.showModelsSettings()
@@ -626,7 +671,7 @@ import ApplicationServices
 
     @discardableResult
     private func applyModelInventory(_ models: [ManagedModel]) -> DictationModel? {
-        installedModelKeys = Set(models.lazy.filter { $0.installed && !$0.deleting }.map(\.key))
+        installedModelKeys = Set(models.lazy.filter { $0.usable && !$0.deleting }.map(\.key))
         var selected = DictationModel.selected
         if !installedModelKeys.contains(selected.key),
            let fallback = DictationModel.all.first(where: { installedModelKeys.contains($0.key) }) {

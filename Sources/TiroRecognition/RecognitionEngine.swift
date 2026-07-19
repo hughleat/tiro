@@ -1,12 +1,17 @@
 import Foundation
 
 public enum RecognitionModel: String, Codable, Sendable {
+    case appleSpeech = "apple-speech"
     case parakeetCompactCoreML = "parakeet-tdt-ctc-110m-coreml"
     case parakeetV2CoreML = "parakeet-tdt-0.6b-v2-coreml"
     case parakeetV3CoreML = "parakeet-tdt-0.6b-v3-coreml"
+    case whisperTinyEnglishCoreML = "whisper-tiny-english-coreml"
+    case whisperBaseEnglishCoreML = "whisper-base-english-coreml"
+    case whisperSmallEnglishCoreML = "whisper-small-english-coreml"
     case whisperTinyCoreML = "whisper-tiny-coreml"
     case whisperBaseCoreML = "whisper-base-coreml"
     case whisperSmallCoreML = "whisper-small-coreml"
+    case whisperDistilLargeV3CoreML = "whisper-distil-large-v3-coreml"
     case whisperLargeV3CoreML = "whisper-large-v3-coreml"
     case whisperTurboCoreML = "whisper-large-v3-turbo-coreml"
 }

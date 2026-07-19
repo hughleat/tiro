@@ -188,7 +188,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
             downloadProgress.doubleValue = (compact.progress ?? 0) * 100
             downloadProgress.startAnimation(nil)
         }
-        let installed = Set(models.lazy.filter { $0.installed && !$0.deleting }.map(\.key))
+        let installed = Set(models.lazy.filter { $0.usable && !$0.deleting }.map(\.key))
         readiness = SetupReadiness(
             microphoneAllowed: readiness.microphoneAllowed,
             accessibilityAllowed: readiness.accessibilityAllowed,
@@ -270,7 +270,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
             do {
                 try await service.downloadModel(key: "coreml-compact")
                 guard !Task.isCancelled else { return }
-                DictationModel.select(DictationModel.all[0])
+                DictationModel.select(.coreMLCompact)
                 let models = await service.models()
                 downloadTask = nil
                 stopPolling()

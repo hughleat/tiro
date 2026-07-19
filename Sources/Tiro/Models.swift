@@ -86,6 +86,27 @@ enum DictationLanguage: String, CaseIterable {
         case .macedonian: "mk"
         }
     }
+
+    var appleLocaleIdentifier: String {
+        guard let code = whisperCode else { return Locale.current.identifier }
+        if let preferred = Locale.preferredLanguages.first(where: {
+            Locale(identifier: $0).language.languageCode?.identifier == code
+        }) {
+            return preferred
+        }
+        return Self.appleLocaleDefaults[code] ?? code
+    }
+
+    private static let appleLocaleDefaults = [
+        "yue": "yue-HK", "en": "en-US", "ar": "ar-SA", "fr": "fr-FR",
+        "de": "de-DE", "es": "es-ES", "it": "it-IT", "pt": "pt-PT",
+        "nl": "nl-NL", "zh": "zh-CN", "ja": "ja-JP", "ko": "ko-KR",
+        "ru": "ru-RU", "id": "id-ID", "th": "th-TH", "vi": "vi-VN",
+        "tr": "tr-TR", "hi": "hi-IN", "ms": "ms-MY", "sv": "sv-SE",
+        "da": "da-DK", "fi": "fi-FI", "pl": "pl-PL", "cs": "cs-CZ",
+        "tl": "fil-PH", "fa": "fa-IR", "el": "el-GR", "ro": "ro-RO",
+        "hu": "hu-HU", "mk": "mk-MK",
+    ]
 }
 
 struct DictationPreferences {
@@ -160,30 +181,50 @@ struct DictationModel: Hashable {
         case selectable
     }
 
+    enum Provisioning: Hashable {
+        case systemManaged
+        case downloadable(bytes: Int64)
+    }
+
     let key: String
     let name: String
     let detail: String
-    let downloadSizeBytes: Int64
+    let provisioning: Provisioning
     let languageSupport: LanguageSupport
     let isSupported: Bool
 
+    var downloadSizeBytes: Int64? {
+        guard case .downloadable(let bytes) = provisioning else { return nil }
+        return bytes
+    }
+
+    static let appleSpeechKey = "apple-speech"
     static let coreMLCompactKey = "coreml-compact"
+    static let appleSpeech = DictationModel(
+        key: appleSpeechKey,
+        name: "Apple Speech",
+        detail: "Apple recognition · On-device",
+        provisioning: .systemManaged,
+        languageSupport: .selectable,
+        isSupported: true
+    )
     static let coreMLCompact = DictationModel(
         key: coreMLCompactKey,
         name: "Parakeet Compact",
         detail: "English · Fastest Parakeet",
-        downloadSizeBytes: 228_000_000,
+        provisioning: .downloadable(bytes: 228_000_000),
         languageSupport: .english,
         isSupported: true
     )
 
     static let catalog: [DictationModel] = [
+        appleSpeech,
         coreMLCompact,
         .init(
             key: "coreml-parakeet-v2",
             name: "Parakeet 0.6B v2",
             detail: "English · Higher accuracy",
-            downloadSizeBytes: 500_000_000,
+            provisioning: .downloadable(bytes: 500_000_000),
             languageSupport: .english,
             isSupported: true
         ),
@@ -191,15 +232,39 @@ struct DictationModel: Hashable {
             key: "coreml-parakeet-v3",
             name: "Parakeet 0.6B v3",
             detail: "Multilingual · Automatic detection",
-            downloadSizeBytes: 520_000_000,
+            provisioning: .downloadable(bytes: 520_000_000),
             languageSupport: .automatic,
             isSupported: true
+        ),
+        .init(
+            key: "coreml-whisper-tiny-english",
+            name: "Whisper Tiny English",
+            detail: "English · Fastest Whisper",
+            provisioning: .downloadable(bytes: 154_000_000),
+            languageSupport: .english,
+            isSupported: WhisperModel.tinyEnglish.isSupportedOnCurrentDevice
+        ),
+        .init(
+            key: "coreml-whisper-base-english",
+            name: "Whisper Base English",
+            detail: "English · Lightweight",
+            provisioning: .downloadable(bytes: 290_000_000),
+            languageSupport: .english,
+            isSupported: WhisperModel.baseEnglish.isSupportedOnCurrentDevice
+        ),
+        .init(
+            key: "coreml-whisper-small-english",
+            name: "Whisper Small English",
+            detail: "English · Balanced",
+            provisioning: .downloadable(bytes: 922_000_000),
+            languageSupport: .english,
+            isSupported: WhisperModel.smallEnglish.isSupportedOnCurrentDevice
         ),
         .init(
             key: "coreml-whisper-tiny",
             name: "Whisper Tiny",
             detail: "Multilingual · Fastest Whisper",
-            downloadSizeBytes: 154_000_000,
+            provisioning: .downloadable(bytes: 154_000_000),
             languageSupport: .selectable,
             isSupported: true
         ),
@@ -207,7 +272,7 @@ struct DictationModel: Hashable {
             key: "coreml-whisper-base",
             name: "Whisper Base",
             detail: "Multilingual · Lightweight",
-            downloadSizeBytes: 290_000_000,
+            provisioning: .downloadable(bytes: 290_000_000),
             languageSupport: .selectable,
             isSupported: true
         ),
@@ -215,15 +280,23 @@ struct DictationModel: Hashable {
             key: "coreml-whisper-small",
             name: "Whisper Small",
             detail: "Multilingual · Balanced",
-            downloadSizeBytes: 922_000_000,
+            provisioning: .downloadable(bytes: 922_000_000),
             languageSupport: .selectable,
             isSupported: true
+        ),
+        .init(
+            key: "coreml-whisper-distil-large-v3",
+            name: "Distil Whisper Large V3",
+            detail: "Multilingual · Fast high accuracy",
+            provisioning: .downloadable(bytes: 594_000_000),
+            languageSupport: .selectable,
+            isSupported: WhisperModel.distilLargeV3.isSupportedOnCurrentDevice
         ),
         .init(
             key: "coreml-whisper-large-v3",
             name: "Whisper Large V3",
             detail: "Multilingual · Highest accuracy",
-            downloadSizeBytes: 626_000_000,
+            provisioning: .downloadable(bytes: 626_000_000),
             languageSupport: .selectable,
             isSupported: true
         ),
@@ -231,7 +304,7 @@ struct DictationModel: Hashable {
             key: "coreml-whisper-turbo",
             name: "Whisper Large V3 Turbo",
             detail: "Multilingual · Fast and accurate",
-            downloadSizeBytes: 632_000_000,
+            provisioning: .downloadable(bytes: 632_000_000),
             languageSupport: .selectable,
             isSupported: WhisperModel.turbo.isSupportedOnCurrentDevice
         ),
@@ -253,9 +326,10 @@ struct ManagedModel: Hashable {
     let key: String
     let name: String
     let detail: String
-    let downloadSizeBytes: Int64?
+    let provisioning: DictationModel.Provisioning
     let installedSizeBytes: Int64?
     let installed: Bool
+    let usable: Bool
     let downloading: Bool
     let deleting: Bool
     let loaded: Bool
@@ -263,7 +337,17 @@ struct ManagedModel: Hashable {
     let progress: Double?
     let state: String?
 
+    var isSystemManaged: Bool { provisioning == .systemManaged }
+
+    var downloadSizeBytes: Int64? {
+        guard case .downloadable(let bytes) = provisioning else { return nil }
+        return bytes
+    }
+
     var sizeDescription: String {
+        if isSystemManaged {
+            return "Provided by macOS"
+        }
         if installed, let installedSizeBytes, installedSizeBytes > 0 {
             return ByteCountFormatter.string(fromByteCount: installedSizeBytes, countStyle: .file)
         }
@@ -282,6 +366,7 @@ struct ManagedModel: Hashable {
         key: String,
         installedSizeBytes: Int64?,
         installed: Bool,
+        usable: Bool? = nil,
         downloading: Bool,
         deleting: Bool,
         loaded: Bool,
@@ -293,9 +378,10 @@ struct ManagedModel: Hashable {
         let known = DictationModel.all.first(where: { $0.key == key })
         name = known?.name ?? key
         detail = known?.detail ?? "Transcription model"
-        downloadSizeBytes = known?.downloadSizeBytes
+        provisioning = known?.provisioning ?? .downloadable(bytes: 0)
         self.installedSizeBytes = installedSizeBytes
         self.installed = installed
+        self.usable = usable ?? installed
         self.downloading = downloading
         self.deleting = deleting
         self.loaded = loaded
@@ -311,17 +397,20 @@ struct ModelComparisonResult {
     let modelName: String?
     let text: String
     let transcriptionSeconds: Double
+    let error: String?
 
     init(
         modelKey: String,
         modelName: String?,
         text: String,
-        transcriptionSeconds: Double
+        transcriptionSeconds: Double,
+        error: String? = nil
     ) {
         self.modelKey = modelKey
         self.modelName = modelName
         self.text = text
         self.transcriptionSeconds = transcriptionSeconds
+        self.error = error
     }
 
 }

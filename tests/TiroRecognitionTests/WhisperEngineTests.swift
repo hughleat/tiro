@@ -7,11 +7,26 @@ struct WhisperEngineTests {
     @Test
     func curatedCatalogHasStableExplicitSpecs() {
         #expect(WhisperModel.allCases == [
-            .tiny, .base, .small, .largeV3, .turbo,
+            .tinyEnglish,
+            .baseEnglish,
+            .smallEnglish,
+            .tiny,
+            .base,
+            .small,
+            .distilLargeV3,
+            .largeV3,
+            .turbo,
         ])
+        #expect(WhisperModel.tinyEnglish.spec.variant == "openai_whisper-tiny.en")
+        #expect(WhisperModel.baseEnglish.spec.variant == "openai_whisper-base.en")
+        #expect(WhisperModel.smallEnglish.spec.variant == "openai_whisper-small.en")
         #expect(WhisperModel.tiny.spec.variant == "openai_whisper-tiny")
         #expect(WhisperModel.base.spec.variant == "openai_whisper-base")
         #expect(WhisperModel.small.spec.variant == "openai_whisper-small")
+        #expect(
+            WhisperModel.distilLargeV3.spec.variant
+                == "distil-whisper_distil-large-v3_594MB"
+        )
         #expect(WhisperModel.largeV3.spec.variant == "large-v3-v20240930_626MB")
         #expect(
             WhisperModel.turbo.spec.directoryName

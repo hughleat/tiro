@@ -51,6 +51,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             modelComparisonView?.setModels(models)
             self?.onModelsChanged?(models)
         }
+        permissionSettingsView.onPermissionChanged = { [weak modelManagementView] in
+            modelManagementView?.refresh()
+        }
         suggestionsView.onSuggestionsChanged = { [weak vocabularyEditor, weak historyView] in
             vocabularyEditor?.load()
             historyView?.refresh()

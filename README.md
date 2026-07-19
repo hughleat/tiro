@@ -13,10 +13,12 @@ and drag Tiro to Applications.
 Community builds are ad-hoc signed and are not Apple-notarized. On first
 launch, try to open Tiro, then approve it under **System Settings > Privacy &
 Security > Open Anyway**. Grant Microphone access for recording and
-Accessibility access for the global shortcut and automatic paste.
+Accessibility access for the global shortcut and automatic paste. Speech
+Recognition access is needed only when Apple Speech is selected.
 
 Models are never bundled with the app. Tiro downloads only models selected by
-the user, and all transcription remains local.
+the user, and all transcription remains local. Apple Speech uses macOS-managed
+on-device recognition and language data.
 
 ## Controls
 
@@ -31,17 +33,23 @@ snippets, spoken formatting, privacy controls, and model comparison.
 
 ## Models
 
-Tiro offers native Core ML models through FluidAudio and WhisperKit:
+Tiro offers Apple Speech and native Core ML models through FluidAudio and
+WhisperKit:
 
-- Parakeet Compact: small, fast, English-only, and the default.
+- Apple Speech: Apple's on-device recognizer, with no Tiro-managed download.
+- Parakeet Compact: small, fast, and English-only.
 - Parakeet 0.6B v2: larger English model.
 - Parakeet 0.6B v3: larger multilingual model with automatic detection.
+- Whisper Tiny, Base, and Small English: English-specialized versions.
 - Whisper Tiny, Base, and Small: progressively more accurate multilingual models.
+- Distil Whisper Large V3: fast, high-accuracy multilingual transcription.
 - Whisper Large V3 and Large V3 Turbo: high-accuracy multilingual models.
 
 English-only Parakeet models keep the language fixed to English. Parakeet v3
 detects its supported languages automatically. Whisper supports automatic
-detection or an explicit language choice.
+detection or an explicit language choice. Apple Speech uses the selected
+language, with Auto following the Mac's current locale. Tiro supplies up to 100
+saved vocabulary terms as recognition hints to Apple Speech.
 
 Downloaded models live under:
 

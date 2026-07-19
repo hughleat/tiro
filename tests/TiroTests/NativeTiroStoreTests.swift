@@ -81,6 +81,37 @@ struct NativeTiroStoreTests {
     }
 
     @Test
+    func cancelledFinalizationDoesNotPersistHistoryOrAudio() async throws {
+        try await withStore { store, root in
+            _ = try await store.updatePrivacySettings(NativePrivacySettings(
+                storeHistory: true,
+                storeRecordings: true,
+                retentionDays: 0
+            ))
+            let task = Task {
+                withUnsafeCurrentTask { $0?.cancel() }
+                return try await store.finalize(NativeFinalizationRequest(
+                    rawText: "cancelled",
+                    modelID: "model",
+                    transcriptionSeconds: 0.1,
+                    audio: Data("private audio".utf8)
+                ))
+            }
+
+            await #expect(throws: CancellationError.self) {
+                _ = try await task.value
+            }
+            #expect(!FileManager.default.fileExists(
+                atPath: root.appendingPathComponent("history.jsonl").path
+            ))
+            #expect((try FileManager.default.contentsOfDirectory(
+                at: root.appendingPathComponent("audio"),
+                includingPropertiesForKeys: nil
+            )).isEmpty)
+        }
+    }
+
+    @Test
     func profileVocabularyOverridesGlobalVocabulary() async throws {
         try await withStore { store, _ in
             _ = try await store.updatePrivacySettings(NativePrivacySettings(

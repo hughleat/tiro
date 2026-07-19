@@ -1,4 +1,5 @@
 import AppKit
+import Speech
 
 @MainActor
 final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableViewDelegate {
@@ -143,10 +144,12 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
     private func restoreSafeSelection() {
         let selectedKey = DictationModel.selected.key
         let selectedRow = models.firstIndex {
-            $0.key == selectedKey && $0.installed && !$0.deleting
+            $0.key == selectedKey
+                && ($0.usable || ($0.isSystemManaged && $0.installed))
+                && !$0.deleting
         }
         let fallbackRow = models.firstIndex {
-            $0.installed && !$0.deleting && $0.dictationModel != nil
+            $0.usable && !$0.deleting && $0.dictationModel != nil
         }
         guard let row = selectedRow ?? fallbackRow else {
             isApplyingSelection = true
@@ -207,7 +210,8 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !isApplyingSelection else { return }
         let row = table.selectedRow
-        guard models.indices.contains(row), models[row].installed,
+        guard models.indices.contains(row),
+              models[row].usable || (models[row].isSystemManaged && models[row].installed),
               operations[models[row].key] == nil,
               !models[row].downloading, !models[row].deleting,
               let model = models[row].dictationModel else {
@@ -251,6 +255,20 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         }
         if let window { alert.beginSheetModal(for: window, completionHandler: completion) }
         else { completion(alert.runModal()) }
+    }
+
+    @objc fileprivate func allowSystemModel(_ sender: NSButton) {
+        guard models.indices.contains(sender.tag),
+              models[sender.tag].isSystemManaged else { return }
+        if SFSpeechRecognizer.authorizationStatus() == .notDetermined {
+            SFSpeechRecognizer.requestAuthorization { [weak self] _ in
+                Task { @MainActor in self?.refresh() }
+            }
+        } else if let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition"
+        ) {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func beginMutation(_ operation: Operation, model: ManagedModel) {
@@ -377,11 +395,14 @@ private final class ModelRowView: NSTableCellView {
         nameLabel.stringValue = model.name
         detailLabel.stringValue = [model.detail, model.sizeDescription].filter { !$0.isEmpty }.joined(separator: " · ")
         let serverState = model.state?.replacingOccurrences(of: "_", with: " ").capitalized
+        let selectionState = isSelectedModel
+            ? (model.usable ? "Selected" : "Selected · Unavailable")
+            : nil
         statusLabel.stringValue = operation
-            ?? (isSelectedModel ? "Selected" : nil)
+            ?? selectionState
             ?? (model.downloadError == nil ? serverState : "Model error")
             ?? (model.installed ? "Installed" : "Not installed")
-        statusLabel.textColor = model.installed ? .secondaryLabelColor : .tertiaryLabelColor
+        statusLabel.textColor = model.usable ? .secondaryLabelColor : .tertiaryLabelColor
 
         if operation != nil {
             progress.startAnimation(nil)
@@ -389,10 +410,14 @@ private final class ModelRowView: NSTableCellView {
             progress.stopAnimation(nil)
         }
 
-        let isDelete = model.installed
-        let label = isDelete ? "Delete \(model.name)" : "Download \(model.name)"
+        let isDelete = model.installed && !model.isSystemManaged
+        let label = model.isSystemManaged
+            ? "Allow \(model.name)"
+            : (isDelete ? "Delete \(model.name)" : "Download \(model.name)")
         actionButton.image = NSImage(
-            systemSymbolName: isDelete ? "trash" : "arrow.down.circle",
+            systemSymbolName: model.isSystemManaged
+                ? "lock.open"
+                : (isDelete ? "trash" : "arrow.down.circle"),
             accessibilityDescription: label
         )
         actionButton.imagePosition = .imageOnly
@@ -400,9 +425,12 @@ private final class ModelRowView: NSTableCellView {
         actionButton.isBordered = false
         actionButton.tag = row
         actionButton.target = target
-        actionButton.action = isDelete
-            ? #selector(ModelManagementView.deleteModel(_:))
-            : #selector(ModelManagementView.download(_:))
+        actionButton.action = model.isSystemManaged
+            ? #selector(ModelManagementView.allowSystemModel(_:))
+            : (isDelete
+                ? #selector(ModelManagementView.deleteModel(_:))
+                : #selector(ModelManagementView.download(_:)))
+        actionButton.isHidden = model.isSystemManaged && model.installed
         let deletionBlocked = isDelete && (isSelectedModel || model.loaded)
         actionButton.isEnabled = operation == nil
             && !model.downloading
@@ -416,7 +444,14 @@ private final class ModelRowView: NSTableCellView {
             actionButton.toolTip = model.downloadError ?? label
         }
         actionButton.setAccessibilityLabel(label)
-        let selectionStatus = isSelectedModel ? "Selected model" : (model.installed ? "Installed" : "Not installed")
+        let selectionStatus: String
+        if isSelectedModel {
+            selectionStatus = "Selected model"
+        } else if model.isSystemManaged {
+            selectionStatus = "Provided by macOS"
+        } else {
+            selectionStatus = model.installed ? "Installed" : "Not installed"
+        }
         setAccessibilityLabel(model.name)
         setAccessibilityValue("\(selectionStatus), \(detailLabel.stringValue), \(statusLabel.stringValue)")
         setAccessibilitySelected(isSelectedModel)

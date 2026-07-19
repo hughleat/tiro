@@ -3,14 +3,24 @@ import Foundation
 import WhisperKit
 
 public enum WhisperModel: String, CaseIterable, Codable, Sendable {
+    case tinyEnglish = "openai_whisper-tiny.en"
+    case baseEnglish = "openai_whisper-base.en"
+    case smallEnglish = "openai_whisper-small.en"
     case tiny = "openai_whisper-tiny"
     case base = "openai_whisper-base"
     case small = "openai_whisper-small"
+    case distilLargeV3 = "distil-whisper_distil-large-v3_594MB"
     case largeV3 = "large-v3-v20240930_626MB"
     case turbo = "large-v3-v20240930_turbo_632MB"
 
     public var spec: WhisperModelSpec {
         switch self {
+        case .tinyEnglish, .baseEnglish, .smallEnglish:
+            WhisperModelSpec(
+                model: self,
+                variant: rawValue,
+                directoryName: rawValue
+            )
         case .tiny:
             WhisperModelSpec(
                 model: self,
@@ -29,6 +39,12 @@ public enum WhisperModel: String, CaseIterable, Codable, Sendable {
                 variant: rawValue,
                 directoryName: "openai_whisper-small"
             )
+        case .distilLargeV3:
+            WhisperModelSpec(
+                model: self,
+                variant: rawValue,
+                directoryName: rawValue
+            )
         case .largeV3:
             WhisperModelSpec(
                 model: self,
@@ -46,9 +62,13 @@ public enum WhisperModel: String, CaseIterable, Codable, Sendable {
 
     public var recognitionModel: RecognitionModel {
         switch self {
+        case .tinyEnglish: .whisperTinyEnglishCoreML
+        case .baseEnglish: .whisperBaseEnglishCoreML
+        case .smallEnglish: .whisperSmallEnglishCoreML
         case .tiny: .whisperTinyCoreML
         case .base: .whisperBaseCoreML
         case .small: .whisperSmallCoreML
+        case .distilLargeV3: .whisperDistilLargeV3CoreML
         case .largeV3: .whisperLargeV3CoreML
         case .turbo: .whisperTurboCoreML
         }

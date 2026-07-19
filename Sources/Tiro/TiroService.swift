@@ -5,6 +5,7 @@ import TiroRecognition
 final class TiroService {
     private let store: NativeTiroStore?
     private let storeError: Error?
+    private let appleSpeechEngine = AppleSpeechEngine()
     private let parakeetEngines: [String: CoreMLParakeetEngine]
     private let whisperEngines: [String: CoreMLWhisperEngine]
     private var comparisonTasks: [String: Task<[ModelComparisonResult], Error>] = [:]
@@ -34,9 +35,25 @@ final class TiroService {
             ),
         ]
         whisperEngines = [
+            "coreml-whisper-tiny-english": CoreMLWhisperEngine(
+                model: .tinyEnglish,
+                modelsRootDirectory: root
+            ),
+            "coreml-whisper-base-english": CoreMLWhisperEngine(
+                model: .baseEnglish,
+                modelsRootDirectory: root
+            ),
+            "coreml-whisper-small-english": CoreMLWhisperEngine(
+                model: .smallEnglish,
+                modelsRootDirectory: root
+            ),
             "coreml-whisper-tiny": CoreMLWhisperEngine(model: .tiny, modelsRootDirectory: root),
             "coreml-whisper-base": CoreMLWhisperEngine(model: .base, modelsRootDirectory: root),
             "coreml-whisper-small": CoreMLWhisperEngine(model: .small, modelsRootDirectory: root),
+            "coreml-whisper-distil-large-v3": CoreMLWhisperEngine(
+                model: .distilLargeV3,
+                modelsRootDirectory: root
+            ),
             "coreml-whisper-large-v3": CoreMLWhisperEngine(model: .largeV3, modelsRootDirectory: root),
             "coreml-whisper-turbo": CoreMLWhisperEngine(model: .turbo, modelsRootDirectory: root),
         ]
@@ -50,8 +67,18 @@ final class TiroService {
     ) async throws -> TranscriptionResponse {
         let preferences = DictationPreferences.snapshot(for: model)
         try await unloadModels(except: model.key)
-        let raw = try await rawTranscript(wavURL: wavURL, model: model, preferences: preferences)
+        let contextualStrings = model.key == DictationModel.appleSpeechKey
+            ? try await contextualStrings(for: originBundleID)
+            : []
+        let raw = try await rawTranscript(
+            wavURL: wavURL,
+            model: model,
+            preferences: preferences,
+            contextualStrings: contextualStrings
+        )
+        try Task.checkCancellation()
         let audio = try Data(contentsOf: wavURL)
+        try Task.checkCancellation()
         let entry = try await requireStore().finalize(NativeFinalizationRequest(
             rawText: raw.text,
             modelID: model.key,
@@ -79,7 +106,17 @@ final class TiroService {
 
     func preload(model: DictationModel) async throws {
         try await unloadModels(except: model.key)
-        if let engine = parakeetEngines[model.key] {
+        if model.key == DictationModel.appleSpeechKey {
+            let locale = DictationPreferences.language(for: model).appleLocaleIdentifier
+            let availability = AppleSpeechEngine.availability(localeIdentifier: locale)
+            guard availability.permissionGranted else {
+                throw AppleSpeechError.permissionDenied
+            }
+            guard availability.usable else {
+                throw AppleSpeechError.onDeviceRecognitionUnavailable(locale)
+            }
+            return
+        } else if let engine = parakeetEngines[model.key] {
             try await engine.preload()
         } else if let engine = whisperEngines[model.key] {
             try await engine.preload()
@@ -95,6 +132,25 @@ final class TiroService {
     func models() async -> [ManagedModel] {
         var result: [ManagedModel] = []
         for model in DictationModel.all {
+            if model.key == DictationModel.appleSpeechKey {
+                let availability = AppleSpeechEngine.availability(
+                    localeIdentifier: DictationPreferences.language(for: model)
+                        .appleLocaleIdentifier
+                )
+                result.append(ManagedModel(
+                    key: model.key,
+                    installedSizeBytes: nil,
+                    installed: availability.permissionGranted,
+                    usable: availability.usable,
+                    downloading: false,
+                    deleting: false,
+                    loaded: availability.usable,
+                    downloadError: nil,
+                    progress: nil,
+                    state: availability.state.rawValue
+                ))
+                continue
+            }
             let status: CoreMLModelStatus?
             if let engine = parakeetEngines[model.key] {
                 status = await engine.status()
@@ -108,6 +164,7 @@ final class TiroService {
                 key: model.key,
                 installedSizeBytes: status.installed ? status.sizeBytes : nil,
                 installed: status.installed,
+                usable: status.installed,
                 downloading: status.activity == .downloading,
                 deleting: status.activity == .deleting,
                 loaded: status.loaded,
@@ -120,7 +177,9 @@ final class TiroService {
     }
 
     func downloadModel(key: String) async throws {
-        if let engine = parakeetEngines[key] {
+        if key == DictationModel.appleSpeechKey {
+            throw TiroError.message("Apple Speech is managed by macOS and needs no Tiro download.")
+        } else if let engine = parakeetEngines[key] {
             try await engine.download()
         } else if let engine = whisperEngines[key] {
             try await engine.download()
@@ -130,7 +189,9 @@ final class TiroService {
     }
 
     func deleteModel(key: String) async throws {
-        if let engine = parakeetEngines[key] {
+        if key == DictationModel.appleSpeechKey {
+            throw TiroError.message("Apple Speech is managed by macOS and cannot be deleted by Tiro.")
+        } else if let engine = parakeetEngines[key] {
             try await engine.delete()
         } else if let engine = whisperEngines[key] {
             try await engine.delete()
@@ -180,21 +241,37 @@ final class TiroService {
                 }
                 try await unloadModels(except: key)
                 let current = DictationPreferences.snapshot(for: model)
-                let raw = try await rawTranscript(
-                    wavURL: temporaryURL,
-                    model: model,
-                    preferences: DictationPreferences(
-                        mode: current.mode,
-                        punctuation: current.punctuation,
-                        language: .auto
+                let language = model.key == DictationModel.appleSpeechKey
+                    ? current.language
+                    : .auto
+                do {
+                    let raw = try await rawTranscript(
+                        wavURL: temporaryURL,
+                        model: model,
+                        preferences: DictationPreferences(
+                            mode: current.mode,
+                            punctuation: current.punctuation,
+                            language: language
+                        ),
+                        contextualStrings: []
                     )
-                )
-                results.append(ModelComparisonResult(
-                    modelKey: key,
-                    modelName: model.name,
-                    text: raw.text,
-                    transcriptionSeconds: raw.transcriptionSeconds
-                ))
+                    results.append(ModelComparisonResult(
+                        modelKey: key,
+                        modelName: model.name,
+                        text: raw.text,
+                        transcriptionSeconds: raw.transcriptionSeconds
+                    ))
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    results.append(ModelComparisonResult(
+                        modelKey: key,
+                        modelName: model.name,
+                        text: "",
+                        transcriptionSeconds: 0,
+                        error: error.localizedDescription
+                    ))
+                }
             }
             return results
         }
@@ -365,8 +442,27 @@ final class TiroService {
     private func rawTranscript(
         wavURL: URL,
         model: DictationModel,
-        preferences: DictationPreferences
+        preferences: DictationPreferences,
+        contextualStrings: [String]
     ) async throws -> RawTranscript {
+        if model.key == DictationModel.appleSpeechKey {
+            let result = try await appleSpeechEngine.transcribe(
+                wavURL,
+                options: AppleSpeechOptions(
+                    localeIdentifier: preferences.language.appleLocaleIdentifier,
+                    contextualStrings: contextualStrings
+                )
+            )
+            return RawTranscript(
+                text: result.text,
+                model: .appleSpeech,
+                audioSeconds: result.audioSeconds,
+                transcriptionSeconds: result.transcriptionSeconds,
+                timesFasterThanRealtime: result.transcriptionSeconds > 0
+                    ? result.audioSeconds / result.transcriptionSeconds
+                    : 0
+            )
+        }
         if let engine = parakeetEngines[model.key] {
             try await engine.preload()
             return try await engine.transcribe(wavURL)
@@ -386,6 +482,26 @@ final class TiroService {
             )
         }
         throw TiroError.message("The selected transcription model is unavailable.")
+    }
+
+    private func contextualStrings(for bundleID: String?) async throws -> [String] {
+        let store = try requireStore()
+        var terms: [String] = []
+        if let bundleID {
+            let profiles = try await store.vocabularyProfiles()
+            terms = profiles.profiles
+                .first(where: { $0.bundleID == bundleID })?
+                .entries
+                .map(\.written) ?? []
+        }
+        terms += try await store.vocabulary().map(\.written)
+        var seen = Set<String>()
+        return terms.filter {
+            let key = $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            return !$0.isEmpty && seen.insert(key).inserted
+        }
+        .prefix(100)
+        .map { $0 }
     }
 
     private func unloadModels(except retainedKey: String?) async throws {

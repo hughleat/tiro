@@ -66,9 +66,11 @@ struct ErrorRecoveryTests {
 
     @Test(arguments: [
         (RecoveryCategory.microphonePermission, RecoveryAction.openMicrophoneSettings),
+        (.speechRecognitionPermission, .openSpeechRecognitionSettings),
         (.microphoneUnavailable, .retryTranscription),
         (.accessibility, .openAccessibilitySettings),
         (.missingModel, .openModels),
+        (.appleSpeechUnavailable, .openModels),
         (.modelServiceUnavailable, .retryModels),
         (.transcription, .retryTranscription),
     ])
@@ -82,6 +84,16 @@ struct ErrorRecoveryTests {
         #expect(ErrorRecovery.presentation(for: RecorderError.noInput).action == .openMicrophoneSettings)
         #expect(ErrorRecovery.presentation(for: RecorderError.noInput, microphoneAuthorized: true).action == .retryTranscription)
         #expect(ErrorRecovery.presentation(for: RecorderError.emptyRecording).action == .retryTranscription)
+        #expect(
+            ErrorRecovery.presentation(
+                for: TiroError.message("Speech Recognition permission is required.")
+            ).action == .openSpeechRecognitionSettings
+        )
+        #expect(
+            ErrorRecovery.presentation(
+                for: TiroError.message("On-device Apple Speech is unavailable.")
+            ).action == .openModels
+        )
         #expect(ErrorRecovery.presentation(for: TiroError.message("Model is not installed.")).action == .openModels)
         #expect(ErrorRecovery.presentation(for: TiroError.message("Could not decode audio.")).action == .retryTranscription)
         #expect(ErrorRecovery.presentation(for: PasteCoordinator.PasteError.keyboardEventRejected).action == .openAccessibilitySettings)

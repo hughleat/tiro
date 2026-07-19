@@ -30,6 +30,7 @@ actor NativeTiroStore {
     }
 
     func finalize(_ request: NativeFinalizationRequest) throws -> NativeHistoryEntry {
+        try Task.checkCancellation()
         let raw = request.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard raw.count <= Limits.transcript else {
             throw NativeStoreError.invalidData("Transcription text is too long.")
@@ -71,15 +72,17 @@ actor NativeTiroStore {
         guard privacy.storeHistory else { return entry }
 
         var recordedURL: URL?
-        if privacy.storeRecordings, let audio = request.audio {
-            let name = Self.audioTimestampFormatter.string(from: request.timestamp) +
-                "-\(request.id.uuidString.lowercased()).wav"
-            let url = files.audio.appendingPathComponent(name)
-            try writePrivate(audio, to: url)
-            recordedURL = url
-            entry.audioFile = relativeAudioPath(name: name)
-        }
         do {
+            try Task.checkCancellation()
+            if privacy.storeRecordings, let audio = request.audio {
+                let name = Self.audioTimestampFormatter.string(from: request.timestamp) +
+                    "-\(request.id.uuidString.lowercased()).wav"
+                let url = files.audio.appendingPathComponent(name)
+                try writePrivate(audio, to: url)
+                recordedURL = url
+                entry.audioFile = relativeAudioPath(name: name)
+            }
+            try Task.checkCancellation()
             var entries = try loadHistory()
             entries.append(entry)
             try saveHistory(entries)

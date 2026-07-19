@@ -2,6 +2,7 @@ import Foundation
 
 enum RecoveryAction: Equatable {
     case openMicrophoneSettings
+    case openSpeechRecognitionSettings
     case openAccessibilitySettings
     case openModels
     case retryModels
@@ -16,9 +17,11 @@ struct RecoveryPresentation: Equatable {
 
 enum RecoveryCategory {
     case microphonePermission
+    case speechRecognitionPermission
     case microphoneUnavailable
     case accessibility
     case missingModel
+    case appleSpeechUnavailable
     case modelServiceUnavailable
     case transcription
 }
@@ -31,6 +34,12 @@ enum ErrorRecovery {
                 title: "Microphone Access Needed",
                 detail: "Allow Tiro to use the microphone, then try dictating again.",
                 action: .openMicrophoneSettings
+            )
+        case .speechRecognitionPermission:
+            return RecoveryPresentation(
+                title: "Speech Recognition Access Needed",
+                detail: "Allow Tiro to use Apple Speech, then try dictating again.",
+                action: .openSpeechRecognitionSettings
             )
         case .microphoneUnavailable:
             return RecoveryPresentation(
@@ -48,6 +57,12 @@ enum ErrorRecovery {
             return RecoveryPresentation(
                 title: "No Model Available",
                 detail: "Download and select a transcription model before dictating.",
+                action: .openModels
+            )
+        case .appleSpeechUnavailable:
+            return RecoveryPresentation(
+                title: "Apple Speech Unavailable",
+                detail: "Choose another language or transcription model, then try again.",
                 action: .openModels
             )
         case .modelServiceUnavailable:
@@ -93,6 +108,13 @@ enum ErrorRecovery {
             ?? error.localizedDescription.lowercased()
         if message.contains("microphone") && (message.contains("permission") || message.contains("access")) {
             return .microphonePermission
+        }
+        if message.contains("speech recognition") && message.contains("permission") {
+            return .speechRecognitionPermission
+        }
+        if message.contains("apple speech")
+            && (message.contains("unavailable") || message.contains("does not support")) {
+            return .appleSpeechUnavailable
         }
         if message.contains("accessibility") || message.contains("automatic paste") {
             return .accessibility

@@ -1,4 +1,5 @@
 import AppKit
+import TiroRecognition
 
 @MainActor
 final class DictationPreferencesView: NSStackView {
@@ -97,15 +98,21 @@ final class DictationPreferencesView: NSStackView {
 
     private func updateAvailability() {
         punctuationPicker.isEnabled = DictationPreferences.current.mode == .standard
+        let isAppleSpeech = selectedModel.key == DictationModel.appleSpeechKey
         for (index, item) in languagePicker.itemArray.enumerated() {
             let language = DictationLanguage.allCases[index]
+            item.title = isAppleSpeech && language == .auto
+                ? "System Language"
+                : language.title
             switch selectedModel.languageSupport {
             case .english:
                 item.isEnabled = language == .english
             case .automatic:
                 item.isEnabled = language == .auto
             case .selectable:
-                item.isEnabled = true
+                item.isEnabled = !isAppleSpeech || AppleSpeechEngine.supports(
+                    localeIdentifier: language.appleLocaleIdentifier
+                )
             }
         }
         languagePicker.isEnabled = selectedModel.languageSupport == .selectable

@@ -1,9 +1,12 @@
 import AppKit
 import ApplicationServices
 import AVFoundation
+import Speech
 
 @MainActor
 final class PermissionSettingsView: NSStackView {
+    var onPermissionChanged: (() -> Void)?
+
     private let microphone = PermissionRow(
         symbolName: "mic",
         title: "Microphone",
@@ -16,8 +19,15 @@ final class PermissionSettingsView: NSStackView {
         explanation: "Enables the global shortcut and pastes transcriptions into other apps.",
         buttonTitle: "Open System Settings"
     )
+    private let speechRecognition = PermissionRow(
+        symbolName: "waveform",
+        title: "Speech Recognition",
+        explanation: "Allows transcription when Apple Speech is selected.",
+        buttonTitle: "Request Access"
+    )
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
+    private var previousSpeechStatus: SFSpeechRecognizerAuthorizationStatus?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -49,6 +59,16 @@ final class PermissionSettingsView: NSStackView {
             granted: accessibilityGranted,
             buttonTitle: "Open System Settings"
         )
+        let speechStatus = SFSpeechRecognizer.authorizationStatus()
+        speechRecognition.setStatus(
+            text: Self.speechStatusText(speechStatus),
+            granted: speechStatus == .authorized,
+            buttonTitle: speechStatus == .notDetermined ? "Request Access" : "Open System Settings"
+        )
+        if let previousSpeechStatus, previousSpeechStatus != speechStatus {
+            onPermissionChanged?()
+        }
+        previousSpeechStatus = speechStatus
     }
 
     private func buildContent() {
@@ -58,11 +78,21 @@ final class PermissionSettingsView: NSStackView {
 
         microphone.onAction = { [weak self] in self?.requestMicrophone() }
         accessibility.onAction = { [weak self] in self?.requestAccessibility() }
-        let separator = divider()
-        [microphone, separator, accessibility].forEach(addArrangedSubview)
+        speechRecognition.onAction = { [weak self] in self?.requestSpeechRecognition() }
+        let firstSeparator = divider()
+        let secondSeparator = divider()
+        [
+            microphone,
+            firstSeparator,
+            accessibility,
+            secondSeparator,
+            speechRecognition,
+        ].forEach(addArrangedSubview)
         microphone.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-        separator.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        firstSeparator.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         accessibility.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        secondSeparator.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        speechRecognition.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
 
         observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
@@ -110,12 +140,34 @@ final class PermissionSettingsView: NSStackView {
         openSystemSettings("Privacy_Accessibility")
     }
 
+    private func requestSpeechRecognition() {
+        if SFSpeechRecognizer.authorizationStatus() == .notDetermined {
+            SFSpeechRecognizer.requestAuthorization { [weak self] _ in
+                Task { @MainActor in self?.refresh() }
+            }
+        } else {
+            openSystemSettings("Privacy_SpeechRecognition")
+        }
+    }
+
     private func openSystemSettings(_ pane: String) {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") else { return }
         NSWorkspace.shared.open(url)
     }
 
     private static func microphoneStatusText(_ status: AVAuthorizationStatus) -> String {
+        switch status {
+        case .authorized: return "Allowed"
+        case .denied: return "Not allowed"
+        case .restricted: return "Restricted"
+        case .notDetermined: return "Not requested"
+        @unknown default: return "Unknown"
+        }
+    }
+
+    private static func speechStatusText(
+        _ status: SFSpeechRecognizerAuthorizationStatus
+    ) -> String {
         switch status {
         case .authorized: return "Allowed"
         case .denied: return "Not allowed"

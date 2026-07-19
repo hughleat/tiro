@@ -73,6 +73,8 @@ done
     || fail "expected entitlements not found: $EXPECTED_ENTITLEMENTS"
 INFO="$APP/Contents/Info.plist"
 [[ -f "$INFO" ]] || fail "Info.plist not found in app bundle"
+[[ -n "$(/usr/libexec/PlistBuddy -c 'Print :NSSpeechRecognitionUsageDescription' "$INFO")" ]] \
+    || fail "Speech Recognition usage description is missing"
 [[ -f "$APP/Contents/Resources/Licenses/FluidAudio-Apache-2.0.txt" ]] \
     || fail "FluidAudio license is missing"
 [[ -f "$APP/Contents/Resources/Licenses/Argmax-OSS-MIT.txt" ]] \

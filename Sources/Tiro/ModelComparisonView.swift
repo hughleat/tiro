@@ -64,7 +64,7 @@ final class ModelComparisonView: NSStackView {
 
     func setModels(_ models: [ManagedModel]) {
         let previouslySelected = selectedModelKeys
-        installedModels = models.filter(\.installed)
+        installedModels = models.filter(\.usable)
         selectedModelKeys = previouslySelected.intersection(installedModels.map(\.key))
         if selectedModelKeys.count < 2 {
             selectedModelKeys.formUnion(installedModels.prefix(2).map(\.key))
@@ -283,8 +283,9 @@ final class ModelComparisonView: NSStackView {
             let knownName = installedModels.first(where: { $0.key == result.modelKey })?.name
             let column = ComparisonResultView(
                 name: result.modelName ?? knownName ?? result.modelKey,
-                seconds: result.transcriptionSeconds,
-                transcript: result.text
+                seconds: result.error == nil ? result.transcriptionSeconds : nil,
+                transcript: result.text,
+                error: result.error
             )
             resultsStack.addArrangedSubview(column)
             column.widthAnchor.constraint(greaterThanOrEqualToConstant: 230).isActive = true
@@ -327,7 +328,7 @@ final class ModelComparisonView: NSStackView {
 }
 
 private final class ComparisonResultView: NSStackView {
-    init(name: String, seconds: Double, transcript: String) {
+    init(name: String, seconds: Double?, transcript: String, error: String?) {
         super.init(frame: .zero)
         orientation = .vertical
         alignment = .leading
@@ -336,17 +337,23 @@ private final class ComparisonResultView: NSStackView {
         let nameLabel = NSTextField(labelWithString: name)
         nameLabel.font = .systemFont(ofSize: 13, weight: .medium)
         nameLabel.lineBreakMode = .byTruncatingTail
-        let timingLabel = NSTextField(labelWithString: String(format: "%.2f seconds", seconds))
+        let timingLabel = NSTextField(
+            labelWithString: seconds.map { String(format: "%.2f seconds", $0) } ?? ""
+        )
         timingLabel.font = .systemFont(ofSize: 11)
         timingLabel.textColor = .secondaryLabelColor
+        timingLabel.isHidden = seconds == nil
 
         let textView = NSTextView()
         textView.isEditable = false
         textView.isSelectable = true
         textView.font = .systemFont(ofSize: 12)
-        textView.string = transcript
+        textView.string = error ?? transcript
+        textView.textColor = error == nil ? .textColor : .systemRed
         textView.textContainerInset = NSSize(width: 7, height: 7)
-        textView.setAccessibilityLabel("Transcript from \(name)")
+        textView.setAccessibilityLabel(
+            error == nil ? "Transcript from \(name)" : "Error from \(name)"
+        )
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.borderType = .bezelBorder

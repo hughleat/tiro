@@ -30,5 +30,7 @@
     <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>Tiro records your voice for local transcription.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Tiro uses Apple Speech only when you select it as your transcription model.</string>
 </dict>
 </plist>
