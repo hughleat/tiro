@@ -7,12 +7,13 @@ MACOS_14_WORKFLOW="$ROOT/.github/workflows/macos-14.yml"
 zsh -n \
     "$ROOT/scripts/build_native_app.sh" \
     "$ROOT/scripts/setup_local_signing.sh" \
+    "$ROOT/scripts/test_coreml_production.sh" \
     "$ROOT/scripts/smoke_release.sh"
 "$ROOT/.venv/bin/python" -m py_compile \
     "$ROOT/scripts/prepare_release_environment.py" \
     "$ROOT/scripts/validate_macos_compatibility.py" \
     "$ROOT/scripts/worker_entry.py"
-rg -q -F 'api_version raw "$TEMP_ROOT/status.json")" == "8"' "$ROOT/scripts/smoke_release.sh"
+rg -q -F 'api_version raw "$TEMP_ROOT/status.json")" == "9"' "$ROOT/scripts/smoke_release.sh"
 rg -q -F '"$WORKER" --self-test' "$ROOT/scripts/smoke_release.sh"
 rg -q -F 'expected-entitlements.plist' "$ROOT/scripts/smoke_release.sh"
 rg -q -F -- '--expected-entitlements "$ENTITLEMENTS"' "$ROOT/scripts/build_native_app.sh"
@@ -31,6 +32,11 @@ rg -q -F 'hdiutil verify "$DMG_PARTIAL"' "$ROOT/scripts/build_native_app.sh"
 rg -q -F 'hdiutil attach -quiet -readonly -nobrowse' "$ROOT/scripts/build_native_app.sh"
 rg -q -F 'ln -s /Applications "$DMG_STAGING/Applications"' "$ROOT/scripts/build_native_app.sh"
 rg -q -F '"$ROOT/scripts/build_native_app.sh" dmg' "$ROOT/scripts/test_all.sh"
+rg -q -F '"$ROOT/scripts/test_coreml_production.sh"' "$ROOT/scripts/test_all.sh"
+rg -q -F 'FluidAudio-Apache-2.0.txt' "$ROOT/scripts/build_native_app.sh"
+rg -q -F 'THIRD_PARTY_NOTICES.md' "$ROOT/scripts/build_native_app.sh"
+rg -q -F 'CPython-LICENSE.txt' "$ROOT/scripts/build_native_app.sh"
+rg -q -F "license inventory is unexpectedly incomplete" "$ROOT/scripts/build_native_app.sh"
 for dependency in librosa numba llvmlite scipy sklearn; do
     rg -q -F -- "--exclude-module $dependency" "$ROOT/scripts/build_native_app.sh"
 done

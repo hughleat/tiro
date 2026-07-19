@@ -96,7 +96,8 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         modelRow.button.action = #selector(downloadCompactModel)
 
         downloadProgress.style = .bar
-        downloadProgress.isIndeterminate = true
+        downloadProgress.minValue = 0
+        downloadProgress.maxValue = 100
         downloadProgress.isDisplayedWhenStopped = false
         downloadProgress.controlSize = .small
 
@@ -188,6 +189,12 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
 
     private func apply(_ models: [ManagedModel]) {
         self.models = models
+        if let compact = models.first(where: { $0.key == DictationModel.coreMLCompactKey }),
+           compact.downloading {
+            downloadProgress.isIndeterminate = compact.progress == nil
+            downloadProgress.doubleValue = (compact.progress ?? 0) * 100
+            downloadProgress.startAnimation(nil)
+        }
         let installed = Set(models.lazy.filter { $0.installed && !$0.deleting }.map(\.key))
         readiness = SetupReadiness(
             microphoneAllowed: readiness.microphoneAllowed,
@@ -225,10 +232,11 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
             let installedName = models.first(where: { readiness.installedModelKeys.contains($0.key) })?.name
                 ?? "Installed"
             modelRow.set(status: installedName, ready: true, actionTitle: nil)
-        } else if models.first(where: { $0.key == "compact" })?.downloading == true || downloadTask != nil {
+        } else if models.first(where: { $0.key == "coreml-compact" })?.downloading == true
+                    || downloadTask != nil {
             modelRow.set(status: "Downloading Parakeet Compact...", ready: false, actionTitle: nil)
         } else {
-            modelRow.set(status: "Parakeet Compact, 437 MB", ready: false, actionTitle: "Download")
+            modelRow.set(status: "Parakeet Compact, 220 MB", ready: false, actionTitle: "Download")
             modelRow.button.action = #selector(downloadCompactModel)
         }
         finishButton.isEnabled = readiness.canFinish
@@ -267,7 +275,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         downloadTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await workerClient.downloadModel(key: "compact")
+                try await workerClient.downloadModel(key: "coreml-compact")
                 guard !Task.isCancelled else { return }
                 DictationModel.select(DictationModel.all[0])
                 let models = try await workerClient.models()

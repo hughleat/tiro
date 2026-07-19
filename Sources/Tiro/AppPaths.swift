@@ -123,6 +123,10 @@ enum AppPaths {
         return rawModelsDirectory
     }
 
+    static var coreMLModelsDirectory: URL {
+        applicationSupportDirectory.appendingPathComponent("Models/coreml", isDirectory: true)
+    }
+
     static var historyFile: URL {
         dataDirectory.appendingPathComponent("history.jsonl")
     }

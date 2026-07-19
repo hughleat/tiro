@@ -573,6 +573,16 @@ import ApplicationServices
         updateModelChecks()
         settingsWindow.refreshModel()
         modelStatusItem.title = "Model: Loads on First Dictation"
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await worker.activate(model: model)
+                let models = try await worker.models()
+                applyModelInventory(models)
+            } catch {
+                presentError(error)
+            }
+        }
     }
 
     private func updateModelChecks() {

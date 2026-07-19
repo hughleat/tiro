@@ -1,7 +1,7 @@
 import Foundation
 
 @MainActor final class WorkerProcess {
-    private static let supportedAPIVersion = 7
+    private static let supportedAPIVersion = 9
     private let baseURL: URL
     private let transport: WorkerTransport
     private let tokenFile: URL

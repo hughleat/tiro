@@ -1900,6 +1900,15 @@ for sample_rate, n_fft, n_mels in ((16_000, 512, 80), (16_000, 512, 128)):
                 model_service.preload_model("compact")
         loader.assert_not_called()
 
+    def test_unload_clears_the_loaded_model_under_the_operation_lock(self):
+        generation = model_service._model_generation
+        with patch.object(model_service, "_clear_loaded_model") as clear:
+            self.assertEqual(
+                model_service.unload_model(), {"unloaded": True}
+            )
+        clear.assert_called_once_with()
+        self.assertEqual(model_service._model_generation, generation + 1)
+
 
 class ModelManagementTests(unittest.TestCase):
     def setUp(self):
@@ -2374,6 +2383,22 @@ class ModelManagementEndpointTests(unittest.TestCase):
             (200, {"loaded_model": "local-model"}),
         )
         preload.assert_called_once_with("compact")
+
+    def test_unload_requires_worker_token(self):
+        with history_environment(), worker_server() as address, patch.object(
+            model_service, "unload_model", return_value={"unloaded": True}
+        ) as unload:
+            self.assertEqual(
+                request(address, "POST", "/api/unload")[0], 403
+            )
+            status, _, body = request(
+                address, "POST", "/api/unload", token="secret"
+            )
+        self.assertEqual(
+            (status, json.loads(body)),
+            (200, {"unloaded": True}),
+        )
+        unload.assert_called_once_with()
 
     def test_endpoints_require_authentication(self):
         with history_environment(), worker_server() as address, patch.object(
@@ -3073,7 +3098,7 @@ class NativeFinalizationTests(unittest.TestCase):
 
 class WorkerProtocolTests(unittest.TestCase):
     def test_protocol_version_is_current(self):
-        self.assertEqual(common.API_VERSION, 8)
+        self.assertEqual(common.API_VERSION, 9)
 
     def test_status_reports_protocol_version(self):
         with history_environment(), worker_server() as address:
@@ -3082,7 +3107,7 @@ class WorkerProtocolTests(unittest.TestCase):
                 address, "GET", "/api/status", token="secret"
             )
             self.assertEqual(status, 200)
-            self.assertEqual(json.loads(body)["api_version"], 8)
+            self.assertEqual(json.loads(body)["api_version"], 9)
 
     def test_status_reports_current_loaded_model(self):
         with history_environment(), patch.object(model_service, "_model_id", "loaded-now"), worker_server() as address:
@@ -3108,6 +3133,7 @@ class WorkerProtocolTests(unittest.TestCase):
                 ("GET", "/api/history"),
                 ("POST", "/api/transcribe"),
                 ("POST", "/api/transcriptions/finalize"),
+                ("POST", "/api/unload"),
             ):
                 self.assertEqual(request(address, method, path)[0], 403)
 

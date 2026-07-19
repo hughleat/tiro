@@ -33,7 +33,8 @@ import Foundation
         wavURL: URL,
         model: DictationModel,
         originBundleID: String?,
-        originName: String?
+        originName: String?,
+        preferences: DictationPreferences
     ) async throws -> TranscriptionResponse {
         try await ensureRunning()
         var request = URLRequest(url: baseURL.appendingPathComponent("api/transcribe"))
@@ -41,11 +42,10 @@ import Foundation
         request.timeoutInterval = 1_800
         request.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
         request.setValue(model.key, forHTTPHeaderField: "X-Parakeet-Model")
-        let preferences = DictationPreferences.current
         request.setValue(preferences.mode.rawValue, forHTTPHeaderField: "X-Tiro-Mode")
         request.setValue(preferences.punctuation.rawValue, forHTTPHeaderField: "X-Tiro-Punctuation")
         request.setValue(
-            DictationPreferences.language(for: model).rawValue,
+            preferences.language.rawValue,
             forHTTPHeaderField: "X-Tiro-Language"
         )
         try authenticate(&request)
@@ -54,6 +54,32 @@ import Foundation
         request.httpBody = try Data(contentsOf: wavURL)
 
         let data = try await transport.send(request, operation: "Transcription")
+        return try JSONDecoder().decode(TranscriptionResponse.self, from: data)
+    }
+
+    func finalizeNativeTranscription(
+        wavURL: URL,
+        rawText: String,
+        transcriptionSeconds: Double,
+        originBundleID: String?,
+        originName: String?,
+        preferences: DictationPreferences
+    ) async throws -> TranscriptionResponse {
+        let data = try await authenticatedJSONPost(
+            path: "api/transcriptions/finalize",
+            body: NativeTranscriptionRequest(
+                raw_text: rawText,
+                engine: DictationModel.coreMLCompactKey,
+                transcription_seconds: transcriptionSeconds,
+                recording_name: wavURL.lastPathComponent,
+                origin_bundle_id: originBundleID,
+                origin_app_name: originName,
+                mode: preferences.mode.rawValue,
+                punctuation: preferences.punctuation.rawValue,
+                language: preferences.language.rawValue
+            ),
+            operation: "Transcription finalization"
+        )
         return try JSONDecoder().decode(TranscriptionResponse.self, from: data)
     }
 
@@ -68,6 +94,15 @@ import Foundation
         request.setValue(model.key, forHTTPHeaderField: "X-Parakeet-Model")
         try authenticate(&request)
         _ = try await transport.send(request, operation: "Model preload")
+    }
+
+    func unloadModel() async throws {
+        _ = try await authenticatedJSONPost(
+            path: "api/unload",
+            body: EmptyRequest(),
+            operation: "Model unload",
+            timeout: 1_800
+        )
     }
 
     func models() async throws -> [ManagedModel] {
@@ -337,6 +372,20 @@ private struct SnippetsResponse: Decodable {
 private struct ModelKeyRequest: Encodable {
     let key: String
     let model: String
+}
+
+private struct EmptyRequest: Encodable {}
+
+private struct NativeTranscriptionRequest: Encodable {
+    let raw_text: String
+    let engine: String
+    let transcription_seconds: Double
+    let recording_name: String
+    let origin_bundle_id: String?
+    let origin_app_name: String?
+    let mode: String
+    let punctuation: String
+    let language: String
 }
 
 private struct ModelComparisonRequest: Encodable {

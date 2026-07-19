@@ -53,7 +53,7 @@ struct WorkerProcessTests {
             recorder.append(request)
             if request.url?.path == "/api/status" {
                 let body = try JSONSerialization.data(withJSONObject: [
-                    "api_version": 7,
+                    "api_version": 9,
                     "history_file": AppPaths.historyFile.path,
                 ])
                 return (200, body)
@@ -84,7 +84,7 @@ struct WorkerProcessTests {
                 return (200, Data("{}".utf8))
             }
             let body = try JSONSerialization.data(withJSONObject: [
-                "api_version": 6,
+                "api_version": 8,
                 "history_file": AppPaths.historyFile.path,
             ])
             return (200, body)

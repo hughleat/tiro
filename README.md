@@ -1,6 +1,6 @@
 # Tiro
 
-Tiro is a free, open-source, local dictation app for Apple Silicon Macs. A native menu-bar app records microphone audio, sends a 16 kHz mono WAV to a local Python worker, copies the transcript, and optionally pastes it into the active application.
+Tiro is a free, open-source, local dictation app for Apple Silicon Macs. A native menu-bar app records microphone audio, transcribes it locally, copies the transcript, and optionally pastes it into the active application.
 
 ## Download and install
 
@@ -33,7 +33,8 @@ Tiro can launch automatically at login from Settings. It also warms the selected
 
 ## Models
 
-- `mlx-community/parakeet-tdt_ctc-110m`: compact English model; the default.
+- `FluidInference/parakeet-tdt-ctc-110m-coreml`: compact English Core ML model; the default.
+- `mlx-community/parakeet-tdt_ctc-110m`: compact English MLX fallback.
 - `mlx-community/parakeet-tdt-0.6b-v2`: larger English model with stronger punctuation.
 - `mlx-community/Qwen3-ASR-0.6B-4bit`: compact multilingual model.
 
@@ -43,6 +44,7 @@ Tiro keeps mutable files outside the application bundle:
 
 - History, optional recordings, vocabulary, privacy settings, token: `~/Library/Application Support/Tiro/data/`
 - Downloaded model cache: `~/Library/Application Support/Tiro/Models/huggingface/`
+- Downloaded Core ML models: `~/Library/Application Support/Tiro/Models/coreml/`
 - Worker output: `~/Library/Logs/Tiro/worker.log`
 
 On first access, `AppPaths.migrateLegacyProjectDataIfNeeded()` recursively merges known files from the old checkout-local `data/` directory and `.cache/huggingface` model cache. It copies missing files with the native filesystem copy operation, never overwrites destination files, and never deletes the source. Keeping the `data/` component preserves audio references in existing history. A versioned completion marker is written only after every discovered source is resolved successfully; a copy error or file/directory conflict leaves migration retryable.
@@ -67,11 +69,16 @@ open "dist/Tiro.app"
 
 The aggregate check runs the worker suite, data-migration assertions, native shortcut and snippet-state assertions, and a mounted self-contained DMG build.
 
-The development app does not embed Python. It uses `.venv/bin/python scripts/worker_entry.py` from `TIRO_PROJECT_ROOT` (or the checkout inferred from `dist/Tiro.app`) so development and release share the same data-location behavior.
+The development app does not embed Python. It uses `.venv/bin/python scripts/worker_entry.py` from `TIRO_PROJECT_ROOT` (or the checkout inferred from `dist/Tiro.app`) for history, privacy, vocabulary, snippets, and the optional MLX models.
 
 ## Self-contained App
 
-The release build uses PyInstaller `onedir` to embed the Python interpreter, `scripts/worker_entry.py`, MLX libraries, and their Python dependencies under `Tiro.app/Contents/Resources/worker/`. It creates an isolated `.build/release-venv` exactly from `uv.lock`, including the `bundle` dependencies and macOS 14 MLX wheels, then builds with:
+The default Parakeet Compact engine is native Swift and Core ML, using
+FluidAudio with CPU and Apple Neural Engine compute. The Python worker still
+owns the shared history, privacy, vocabulary, and snippet transaction, and
+provides the optional MLX models.
+
+The release build uses PyInstaller `onedir` to embed that worker, the Python interpreter, MLX libraries, and their Python dependencies under `Tiro.app/Contents/Resources/worker/`. It creates an isolated `.build/release-venv` exactly from `uv.lock`, including the `bundle` dependencies and macOS 14 MLX wheels, then builds with:
 
 ```sh
 ./scripts/build_native_app.sh release
@@ -122,4 +129,5 @@ Reminder state stays in local macOS preferences; Tiro sends no usage telemetry.
 
 ## License
 
-Tiro is available under the [MIT License](LICENSE).
+Tiro is available under the [MIT License](LICENSE). Dependency and model
+attributions are listed in [Third-Party Notices](THIRD_PARTY_NOTICES.md).

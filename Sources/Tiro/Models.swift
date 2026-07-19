@@ -76,6 +76,15 @@ struct DictationPreferences {
         )
     }
 
+    static func snapshot(for model: DictationModel) -> DictationPreferences {
+        let current = current
+        return DictationPreferences(
+            mode: current.mode,
+            punctuation: current.punctuation,
+            language: language(for: model)
+        )
+    }
+
     static func language(for model: DictationModel) -> DictationLanguage {
         guard model.key != "qwen" else { return current.language }
         let stored = UserDefaults.standard.string(forKey: Key.parakeetLanguage) ?? ""
@@ -108,14 +117,26 @@ struct DictationModel: Hashable {
     let name: String
     let detail: String
 
+    static let coreMLCompactKey = "coreml-compact"
+    static let coreMLCompact = DictationModel(
+        key: coreMLCompactKey,
+        name: "Parakeet Compact",
+        detail: "Core ML · English · 220 MB"
+    )
+
     static let all: [DictationModel] = [
-        .init(key: "compact", name: "Parakeet Compact", detail: "English · 437 MB"),
+        coreMLCompact,
+        .init(
+            key: "compact",
+            name: "Parakeet Compact (MLX fallback)",
+            detail: "MLX · English · 437 MB"
+        ),
         .init(key: "parakeet-v2", name: "Parakeet 0.6B v2", detail: "English · 2.3 GB"),
         .init(key: "qwen", name: "Qwen3-ASR 0.6B", detail: "Multilingual · 681 MB")
     ]
 
     static var selected: DictationModel {
-        let key = UserDefaults.standard.string(forKey: "selectedModel") ?? "compact"
+        let key = UserDefaults.standard.string(forKey: "selectedModel") ?? coreMLCompactKey
         return all.first(where: { $0.key == key }) ?? all[0]
     }
 
@@ -153,6 +174,10 @@ struct ManagedModel: Decodable, Hashable {
 
     var dictationModel: DictationModel? {
         DictationModel.all.first(where: { $0.key == key })
+    }
+
+    var supportsComparison: Bool {
+        key != DictationModel.coreMLCompactKey
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -213,6 +238,34 @@ struct ManagedModel: Decodable, Hashable {
         downloadError = payload.download_error
         progress = payload.progress
         state = payload.state ?? payload.status
+    }
+
+    init(
+        key: String,
+        installedSizeBytes: Int64?,
+        installed: Bool,
+        downloading: Bool,
+        deleting: Bool,
+        loaded: Bool,
+        downloadError: String?,
+        progress: Double?,
+        state: String?
+    ) {
+        self.key = key
+        let known = DictationModel.all.first(where: { $0.key == key })
+        name = known?.name ?? key
+        detail = known?.detail.components(separatedBy: " · ").dropLast().joined(separator: " · ")
+            ?? "Transcription model"
+        downloadSizeBytes = 227_500_000
+        self.installedSizeBytes = installedSizeBytes
+        sizeText = nil
+        self.installed = installed
+        self.downloading = downloading
+        self.deleting = deleting
+        self.loaded = loaded
+        self.downloadError = downloadError
+        self.progress = progress
+        self.state = state
     }
 
     private static func sizeSuffix(_ label: String) -> String? {

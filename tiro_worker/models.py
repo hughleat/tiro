@@ -345,6 +345,18 @@ def preload_model(model_key: str) -> dict[str, str]:
     return _run_model_operation(_preload_model, model_key)
 
 
+def _unload_model() -> dict[str, bool]:
+    global _model_generation
+    with _operation_lock:
+        _clear_loaded_model()
+        _model_generation += 1
+    return {"unloaded": True}
+
+
+def unload_model() -> dict[str, bool]:
+    return _run_model_operation(_unload_model)
+
+
 def _comparison_context() -> dict:
     with _operation_lock:
         return {

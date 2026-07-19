@@ -195,10 +195,15 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         let cell = (tableView.makeView(withIdentifier: identifier, owner: self) as? ModelRowView)
             ?? ModelRowView(identifier: identifier)
         let model = models[row]
+        let downloadStatus = model.progress.map {
+            "Downloading \(Int(($0 * 100).rounded()))%"
+        } ?? "Downloading..."
         cell.configure(
             model: model,
-            operation: operations[model.key]?.label
-                ?? (model.downloading ? "Downloading..." : model.deleting ? "Deleting..." : nil),
+            operation: model.downloading
+                ? downloadStatus
+                : operations[model.key]?.label
+                    ?? (model.deleting ? "Deleting..." : nil),
             isSelectedModel: DictationModel.selected.key == model.key,
             row: row,
             target: self
@@ -220,6 +225,17 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         table.reloadData()
         table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         onModelChanged?(model)
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await workerClient.activate(model: model)
+                if let loaded = try? await workerClient.models() {
+                    apply(loaded)
+                }
+            } catch {
+                window?.presentError(error)
+            }
+        }
     }
 
     @objc fileprivate func download(_ sender: NSButton) {

@@ -78,6 +78,12 @@ INFO="$APP/Contents/Info.plist"
 WORKER="$APP/Contents/Resources/worker/tiro-worker"
 [[ -f "$INFO" ]] || fail "Info.plist not found in app bundle"
 [[ -x "$WORKER" ]] || fail "release worker not found; build a self-contained release first"
+[[ -f "$APP/Contents/Resources/Licenses/FluidAudio-Apache-2.0.txt" ]] \
+    || fail "FluidAudio license is missing"
+[[ -f "$APP/Contents/Resources/Licenses/Python/CPython-LICENSE.txt" ]] \
+    || fail "CPython license is missing"
+[[ "$(find "$APP/Contents/Resources/Licenses/Python/Packages" -type f | wc -l | tr -d ' ')" -ge 50 ]] \
+    || fail "Python dependency license inventory is incomplete"
 plutil -lint "$INFO" >/dev/null
 
 actual_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")"
@@ -192,7 +198,7 @@ if (( ! ready )); then
     fail "packaged worker did not become ready within 20 seconds"
 fi
 
-[[ "$(plutil -extract api_version raw "$TEMP_ROOT/status.json")" == "8" ]] \
+[[ "$(plutil -extract api_version raw "$TEMP_ROOT/status.json")" == "9" ]] \
     || fail "packaged worker reported an incompatible API version"
 [[ "$(plutil -extract ready raw "$TEMP_ROOT/status.json")" == "true" ]] \
     || fail "packaged worker did not report ready"

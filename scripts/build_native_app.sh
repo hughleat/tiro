@@ -222,6 +222,26 @@ build_worker() {
         --target "$DEPLOYMENT_TARGET" \
         --architecture "$TARGET_ARCHITECTURE" \
         "$APP"
+
+    local license_root="$APP/Contents/Resources/Licenses/Python"
+    local site_packages python_stdlib license relative destination
+    site_packages="$("$RELEASE_PYTHON" -c \
+        'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+    python_stdlib="$("$RELEASE_PYTHON" -c \
+        'import sysconfig; print(sysconfig.get_paths()["stdlib"])')"
+    mkdir -p "$license_root/Packages"
+    while IFS= read -r -d '' license; do
+        relative="${license#$site_packages/}"
+        destination="$license_root/Packages/${relative:h}"
+        mkdir -p "$destination"
+        cp "$license" "$destination/${relative:t}"
+    done < <(find "$site_packages" -type f \
+        \( -iname 'LICENSE*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) \
+        -path '*.dist-info/*' -print0)
+    cp "$python_stdlib/LICENSE.txt" \
+        "$license_root/CPython-LICENSE.txt"
+    [[ "$(find "$license_root/Packages" -type f | wc -l | tr -d ' ')" -ge 50 ]] \
+        || fail "Python dependency license inventory is unexpectedly incomplete"
 }
 
 sign_locally() {
@@ -420,6 +440,11 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/.build/release/Tiro" "$APP/Contents/MacOS/Tiro"
 cp "$ROOT/native/Info.plist" "$APP/Contents/Info.plist"
+mkdir -p "$APP/Contents/Resources/Licenses"
+cp "$ROOT/LICENSE" "$APP/Contents/Resources/Licenses/Tiro-MIT.txt"
+cp "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/Licenses/THIRD_PARTY_NOTICES.md"
+cp "$ROOT/.build/checkouts/FluidAudio/LICENSE" \
+    "$APP/Contents/Resources/Licenses/FluidAudio-Apache-2.0.txt"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP/Contents/Info.plist"
 

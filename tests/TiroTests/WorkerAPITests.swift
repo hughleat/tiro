@@ -100,11 +100,29 @@ struct WorkerAPITests {
 
         _ = try await api.transcribe(
             wavURL: audioURL,
-            model: DictationModel.all[0],
+            model: DictationModel.all[1],
             originBundleID: "com.example.editor",
-            originName: "Editor"
+            originName: "Editor",
+            preferences: DictationPreferences(
+                mode: .standard,
+                punctuation: .automatic,
+                language: .english
+            )
         )
-        try await api.preload(model: DictationModel.all[0])
+        _ = try await api.finalizeNativeTranscription(
+            wavURL: audioURL,
+            rawText: "hello",
+            transcriptionSeconds: 0.05,
+            originBundleID: "com.example.editor",
+            originName: "Editor",
+            preferences: DictationPreferences(
+                mode: .standard,
+                punctuation: .automatic,
+                language: .english
+            )
+        )
+        try await api.preload(model: DictationModel.all[1])
+        try await api.unloadModel()
         _ = try await api.models()
         try await api.downloadModel(key: "compact")
         try await api.deleteModel(key: "compact")
@@ -135,15 +153,17 @@ struct WorkerAPITests {
         try await api.dismissSuggestion(id: "v")
 
         let requests = recorder.requests
-        #expect(ensureRunningCount == 22)
-        #expect(requests.count == 23)
+        #expect(ensureRunningCount == 24)
+        #expect(requests.count == 25)
         #expect(requests.allSatisfy {
             $0.value(forHTTPHeaderField: "X-Tiro-Worker-Token") == "test-token"
         })
         #expect(Set(requests.map(Self.requestKey)) == Set([
             "POST /api/transcribe",
+            "POST /api/transcriptions/finalize",
             "GET /api/models",
             "POST /api/preload",
+            "POST /api/unload",
             "POST /api/models/download",
             "POST /api/models/delete",
             "GET /api/snippets",
@@ -164,6 +184,25 @@ struct WorkerAPITests {
             "POST /api/suggestions/accept",
             "POST /api/suggestions/dismiss",
         ]))
+
+        let finalizationRequest = try #require(requests.first {
+            $0.url?.path == "/api/transcriptions/finalize"
+        })
+        let finalizationBody = try #require(finalizationRequest.httpBody)
+        let finalization = try #require(
+            JSONSerialization.jsonObject(with: finalizationBody) as? [String: Any]
+        )
+        #expect(finalization["mode"] as? String == "standard")
+        #expect(finalization["punctuation"] as? String == "automatic")
+        #expect(finalization["language"] as? String == "english")
+        #expect(finalization["engine"] as? String == "coreml-compact")
+
+        let transcriptionRequest = try #require(requests.first {
+            $0.url?.path == "/api/transcribe"
+        })
+        #expect(transcriptionRequest.value(forHTTPHeaderField: "X-Tiro-Mode") == "standard")
+        #expect(transcriptionRequest.value(forHTTPHeaderField: "X-Tiro-Punctuation") == "automatic")
+        #expect(transcriptionRequest.value(forHTTPHeaderField: "X-Tiro-Language") == "english")
 
         let privacyRequest = try #require(requests.first {
             $0.url?.path == "/api/privacy" && $0.httpMethod == "POST"
@@ -227,6 +266,8 @@ struct WorkerAPITests {
         switch request.url?.path {
         case "/api/transcribe":
             value = #"{"timestamp":"now","model":"compact","audio_file":"a.wav","transcription_seconds":0.1,"text":"hello"}"#
+        case "/api/transcriptions/finalize":
+            value = #"{"timestamp":"now","model":"parakeet-tdt-ctc-110m-coreml","transcription_seconds":0.05,"text":"hello"}"#
         case "/api/models":
             value = #"{"models":[{"key":"compact","installed":true}]}"#
         case "/api/snippets" where request.httpMethod == "GET":

@@ -287,6 +287,18 @@ class TiroHandler(BaseHTTPRequestHandler):
                 )
             return
 
+        if path == "/api/unload":
+            try:
+                json_response(self, models.unload_model())
+            except Exception as exc:
+                common._log_exception("Model unload failed", exc)
+                json_response(
+                    self,
+                    {"error": "Could not unload the transcription model."},
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
         mutation_paths = {
             "/api/history/delete",
             "/api/history/delete-all",

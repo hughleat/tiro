@@ -1,8 +1,12 @@
 import Foundation
+import TiroRecognition
 
 @MainActor final class WorkerClient {
     private let process: WorkerProcess
     private let api: WorkerAPI
+    private let coreML = CoreMLParakeetEngine(
+        modelsRootDirectory: AppPaths.coreMLModelsDirectory
+    )
     private let mutationGate = WorkerMutationGate()
 
     init() {
@@ -22,27 +26,82 @@ import Foundation
         originBundleID: String? = nil,
         originName: String? = nil
     ) async throws -> TranscriptionResponse {
-        try await api.transcribe(
+        let preferences = DictationPreferences.snapshot(for: model)
+        if model.key == DictationModel.coreMLCompactKey {
+            try await api.unloadModel()
+            try await coreML.preload()
+            let raw = try await coreML.transcribe(wavURL)
+            return try await api.finalizeNativeTranscription(
+                wavURL: wavURL,
+                rawText: raw.text,
+                transcriptionSeconds: raw.transcriptionSeconds,
+                originBundleID: originBundleID,
+                originName: originName,
+                preferences: preferences
+            )
+        }
+        try await coreML.unload()
+        return try await api.transcribe(
             wavURL: wavURL,
             model: model,
             originBundleID: originBundleID,
-            originName: originName
+            originName: originName,
+            preferences: preferences
         )
     }
 
     func preload(model: DictationModel) async throws {
+        if model.key == DictationModel.coreMLCompactKey {
+            try await api.unloadModel()
+            try await coreML.preload()
+            return
+        }
+        try await coreML.unload()
         try await api.preload(model: model)
     }
 
+    func activate(model: DictationModel) async throws {
+        try await serializedMutation {
+            if model.key == DictationModel.coreMLCompactKey {
+                try await self.api.unloadModel()
+            } else {
+                try await self.coreML.unload()
+            }
+        }
+    }
+
     func models() async throws -> [ManagedModel] {
-        try await api.models()
+        let workerModels = try await api.models()
+        let status = await coreML.status()
+        let nativeModel = ManagedModel(
+            key: DictationModel.coreMLCompactKey,
+            installedSizeBytes: status.installed ? status.sizeBytes : nil,
+            installed: status.installed,
+            downloading: status.activity == .downloading,
+            deleting: status.activity == .deleting,
+            loaded: status.loaded,
+            downloadError: status.lastError,
+            progress: status.downloadProgress,
+            state: status.activity == .idle
+                ? (status.loaded ? "ready" : status.installed ? "installed" : "not_installed")
+                : status.activity.rawValue
+        )
+        return [nativeModel] + workerModels
     }
 
     func downloadModel(key: String) async throws {
+        if key == DictationModel.coreMLCompactKey {
+            try await serializedMutation { try await self.coreML.download() }
+            return
+        }
         try await serializedMutation { try await self.api.downloadModel(key: key) }
     }
 
     func deleteModel(key: String) async throws {
+        if key == DictationModel.coreMLCompactKey {
+            try await serializedMutation { try await self.coreML.delete() }
+            return
+        }
         try await serializedMutation { try await self.api.deleteModel(key: key) }
     }
 

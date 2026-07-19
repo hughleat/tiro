@@ -7,7 +7,13 @@ Tiro has four native build modes:
 - `dmg` embeds the worker, ad-hoc signs it, verifies the packaged runtime, and emits a compressed DMG plus SHA-256 checksum without paid Apple credentials.
 - `distribution` embeds the worker, signs nested Mach-O code inside-out with a Developer ID Application identity and hardened runtime, notarizes and staples the app, verifies it with Gatekeeper, and emits a ZIP plus SHA-256 checksum.
 
-Self-contained builds target arm64 macOS 14. The build creates `.build/release-venv`, synchronizes the exact lockfile there, and installs the lockfile's macOS 14 MLX wheel variants. It never reuses host-specific MLX binaries from `.venv` and never raises the deployment target to make an incompatible bundle pass.
+Self-contained builds target arm64 macOS 14. The app links the pinned
+FluidAudio package for native Core ML recognition and includes its Apache 2.0
+license and the model attribution notice. The build creates
+`.build/release-venv`, synchronizes the exact lockfile there, and installs the
+lockfile's macOS 14 MLX wheel variants for the optional fallback models. It
+never reuses host-specific MLX binaries from `.venv` and never raises the
+deployment target to make an incompatible bundle pass.
 
 The source `native/Info.plist` contains development defaults. Pass release metadata explicitly so the packaged copy is changed without rewriting source files:
 
