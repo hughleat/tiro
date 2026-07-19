@@ -6,6 +6,7 @@ APP="$ROOT/dist/Tiro.app"
 SIGNING_LEVEL="any"
 EXPECTED_VERSION=""
 EXPECTED_BUILD=""
+EXPECTED_SPONSORSHIP=""
 EXPECTED_ENTITLEMENTS="$ROOT/native/Tiro.entitlements"
 
 usage() {
@@ -19,6 +20,8 @@ Options:
   --notarized                Also require a staple and Gatekeeper acceptance
   --expected-version VERSION Assert CFBundleShortVersionString
   --expected-build NUMBER    Assert CFBundleVersion
+  --expected-sponsorship BOOL
+                             Assert whether sponsorship UI was compiled in
   --expected-entitlements PATH
                              Assert the app's exact entitlement policy
   -h, --help                 Show this help
@@ -32,7 +35,7 @@ fail() {
 
 while (( $# > 0 )); do
     case "$1" in
-        --app|--expected-version|--expected-build|--expected-entitlements)
+        --app|--expected-version|--expected-build|--expected-sponsorship|--expected-entitlements)
             (( $# >= 2 )) || fail "$1 requires a value"
             option="$1"
             value="$2"
@@ -41,6 +44,7 @@ while (( $# > 0 )); do
                 --app) APP="${value:A}" ;;
                 --expected-version) EXPECTED_VERSION="$value" ;;
                 --expected-build) EXPECTED_BUILD="$value" ;;
+                --expected-sponsorship) EXPECTED_SPONSORSHIP="$value" ;;
                 --expected-entitlements) EXPECTED_ENTITLEMENTS="${value:A}" ;;
             esac
             ;;
@@ -91,11 +95,30 @@ plutil -lint "$INFO" >/dev/null
 
 actual_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")"
 actual_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")"
+sponsorship_enabled="$(/usr/libexec/PlistBuddy -c 'Print :TiroSponsorshipEnabled' "$INFO")"
+reported_features="$("$APP/Contents/MacOS/Tiro" --print-build-features)"
+case "$reported_features" in
+    "sponsorship=true") executable_sponsorship=true ;;
+    "sponsorship=false") executable_sponsorship=false ;;
+    *) fail "executable returned invalid build features: $reported_features" ;;
+esac
 [[ -n "$actual_version" && -n "$actual_build" ]] || fail "bundle version metadata is empty"
 [[ -z "$EXPECTED_VERSION" || "$actual_version" == "$EXPECTED_VERSION" ]] \
     || fail "expected version $EXPECTED_VERSION, found $actual_version"
 [[ -z "$EXPECTED_BUILD" || "$actual_build" == "$EXPECTED_BUILD" ]] \
     || fail "expected build $EXPECTED_BUILD, found $actual_build"
+[[ -z "$EXPECTED_SPONSORSHIP" || "$sponsorship_enabled" == "$EXPECTED_SPONSORSHIP" ]] \
+    || fail "expected sponsorship $EXPECTED_SPONSORSHIP, found $sponsorship_enabled"
+[[ "$executable_sponsorship" == "$sponsorship_enabled" ]] \
+    || fail "executable and bundle sponsorship states do not match"
+if [[ "$EXPECTED_SPONSORSHIP" == "false" ]]; then
+    if strings "$APP/Contents/MacOS/Tiro" | rg -F 'github.com/sponsors' >/dev/null; then
+        fail "sponsorship-disabled executable contains a Sponsors URL"
+    fi
+elif [[ "$EXPECTED_SPONSORSHIP" == "true" ]]; then
+    strings "$APP/Contents/MacOS/Tiro" | rg -F 'github.com/sponsors' >/dev/null \
+        || fail "sponsorship-enabled executable is missing its Sponsors URL"
+fi
 
 deployment_target="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$INFO")"
 version_code() {

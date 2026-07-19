@@ -1,5 +1,6 @@
 import AppKit
 
+#if TIRO_SPONSORSHIP_ENABLED
 @MainActor
 final class SupportPromptWindowController: NSWindowController, NSWindowDelegate {
     static let titleText = "Support Tiro"
@@ -45,7 +46,7 @@ final class SupportPromptWindowController: NSWindowController, NSWindowDelegate 
         message.maximumNumberOfLines = 0
 
         let supportButton = NSButton(
-            title: "Support Tiro",
+            title: BuildFeatures.sponsorshipButtonTitle!,
             target: self,
             action: #selector(supportTiro)
         )
@@ -95,3 +96,4 @@ final class SupportPromptWindowController: NSWindowController, NSWindowDelegate 
         onAlreadySupporting?()
     }
 }
+#endif

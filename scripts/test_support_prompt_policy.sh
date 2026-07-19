@@ -6,10 +6,20 @@ SDKS=(/Library/Developer/CommandLineTools/SDKs/MacOSX*.sdk(N/))
 SDK="${SDKS[1]:-$(xcrun --sdk macosx --show-sdk-path)}"
 mkdir -p "$ROOT/.build/ModuleCache"
 
-SDKROOT="$SDK" swiftc \
-    -module-cache-path "$ROOT/.build/ModuleCache" \
-    "$ROOT/Sources/Tiro/SupportPromptPolicy.swift" \
-    "$ROOT/tests/TiroTests/SupportPromptPolicyAssertions.swift" \
-    -o "$ROOT/.build/support-prompt-policy-tests"
+compile_and_run() {
+    local state="$1"
+    shift
+    local executable="$ROOT/.build/support-prompt-policy-tests-$state"
 
-"$ROOT/.build/support-prompt-policy-tests"
+    SDKROOT="$SDK" swiftc \
+        -module-cache-path "$ROOT/.build/ModuleCache" \
+        "$@" \
+        "$ROOT/Sources/Tiro/BuildFeatures.swift" \
+        "$ROOT/Sources/Tiro/SupportPromptPolicy.swift" \
+        "$ROOT/tests/TiroTests/SupportPromptPolicyAssertions.swift" \
+        -o "$executable"
+    "$executable" "$state"
+}
+
+compile_and_run disabled
+compile_and_run enabled -D TIRO_SPONSORSHIP_ENABLED

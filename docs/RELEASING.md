@@ -11,6 +11,10 @@ All modes build a native arm64 macOS 14 app. No model, Python interpreter, MLX
 runtime, or external service is packaged. FluidAudio and Argmax OSS license
 files are copied into the app.
 
+Sponsorship links and reminders are excluded unless the maintainer explicitly
+passes `--enable-sponsorship`. Community and distribution builds should leave
+this option off while sponsorship is unavailable.
+
 ## Community DMG
 
 ```sh

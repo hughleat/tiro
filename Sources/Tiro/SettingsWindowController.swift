@@ -213,13 +213,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
         let versionLabel = NSTextField(labelWithString: Self.versionText(version: version, build: build))
         versionLabel.textColor = .secondaryLabelColor
+        var detailViews: [NSView] = [name, versionLabel]
+#if TIRO_SPONSORSHIP_ENABLED
         let supportButton = NSButton(
-            title: "Support Tiro",
+            title: BuildFeatures.sponsorshipButtonTitle!,
             target: self,
             action: #selector(supportTiro)
         )
         supportButton.bezelStyle = .rounded
-        let details = NSStackView(views: [name, versionLabel, supportButton])
+        detailViews.append(supportButton)
+#endif
+        let details = NSStackView(views: detailViews)
         details.orientation = .vertical
         details.alignment = .leading
         details.spacing = 4
@@ -268,9 +272,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+#if TIRO_SPONSORSHIP_ENABLED
     @objc private func supportTiro() {
-        NSWorkspace.shared.open(SupportPromptPolicy.sponsorsURL)
+        NSWorkspace.shared.open(BuildFeatures.sponsorsURL)
     }
+#endif
 
     private func refreshLaunchAtLogin() {
         launchAtLoginButton.state = LoginItemManager.isEnabled ? .on : .off

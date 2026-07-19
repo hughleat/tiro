@@ -94,16 +94,17 @@ Create the free GitHub release artifact with:
 Models are downloaded by the app and are not part of the app or DMG. See
 [`docs/RELEASING.md`](docs/RELEASING.md) for signed and notarized builds.
 
-## Support Tiro
+## Optional sponsorship UI
 
-Tiro is free and open source. Sponsorship through
-[GitHub Sponsors](https://github.com/sponsors/hughleat) never unlocks features
-or changes how the app works.
+Support links and reminders are compiled out by default. Maintainer builds can
+include them explicitly with:
 
-After seven days or 20 successful transcriptions, Tiro may show a support
-reminder. It apologizes for the interruption and appears at most once every
-six months. Choosing **I already support** disables future reminders. Tiro
-sends no usage telemetry.
+```sh
+./scripts/build_native_app.sh development --enable-sponsorship
+```
+
+Sponsorship never unlocks features or changes how Tiro works. Tiro sends no
+usage telemetry.
 
 ## License
 

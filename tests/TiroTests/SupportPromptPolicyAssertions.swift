@@ -3,6 +3,11 @@ import Foundation
 @main
 struct SupportPromptPolicyAssertions {
     static func main() {
+        let expectedSponsorship = CommandLine.arguments.dropFirst().first == "enabled"
+        assert(BuildFeatures.sponsorshipEnabled == expectedSponsorship)
+        assert((BuildFeatures.sponsorshipMenuTitle != nil) == expectedSponsorship)
+        assert((BuildFeatures.sponsorshipButtonTitle != nil) == expectedSponsorship)
+
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         let launch = Date(timeIntervalSince1970: 1_700_000_000)
@@ -57,6 +62,6 @@ struct SupportPromptPolicyAssertions {
         let name = "SupportPromptPolicyAssertions.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         defaults.removePersistentDomain(forName: name)
-        return SupportPromptPolicy(defaults: defaults, calendar: calendar)
+        return SupportPromptPolicy(enabled: true, defaults: defaults, calendar: calendar)
     }
 }

@@ -12,6 +12,7 @@ cd "$ROOT"
 "$ROOT/scripts/test_private_file_permissions.sh"
 "$ROOT/scripts/test_release_engineering.sh"
 "$ROOT/scripts/test_coreml_production.sh"
+"$ROOT/scripts/test_sponsorship_builds.sh"
 "$ROOT/scripts/build_native_app.sh" development
 "$ROOT/scripts/build_native_app.sh" dmg
 

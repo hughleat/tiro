@@ -43,6 +43,7 @@ let package = Package(
                 "SupportPromptPolicyAssertions.swift",
             ],
             sources: [
+                "BuildFeaturesTests.swift",
                 "DictationModelCatalogTests.swift",
                 "ErrorRecoveryTests.swift",
                 "NativeTextFinalizerTests.swift",

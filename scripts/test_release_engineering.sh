@@ -8,6 +8,7 @@ zsh -n \
     "$ROOT/scripts/build_native_app.sh" \
     "$ROOT/scripts/setup_local_signing.sh" \
     "$ROOT/scripts/test_coreml_production.sh" \
+    "$ROOT/scripts/test_sponsorship_builds.sh" \
     "$ROOT/scripts/smoke_release.sh"
 rg -q -F 'native release unexpectedly contains Python source' "$ROOT/scripts/smoke_release.sh"
 rg -q -F 'native release unexpectedly contains MLX' "$ROOT/scripts/smoke_release.sh"
@@ -16,6 +17,11 @@ rg -q -F 'vtool -show-build' "$ROOT/scripts/smoke_release.sh"
 rg -q -F 'lipo -archs' "$ROOT/scripts/smoke_release.sh"
 rg -q -F 'expected-entitlements.plist' "$ROOT/scripts/smoke_release.sh"
 rg -q -F -- '--expected-entitlements "$ENTITLEMENTS"' "$ROOT/scripts/build_native_app.sh"
+rg -q -F -- '--expected-sponsorship "$sponsorship_value"' "$ROOT/scripts/build_native_app.sh"
+rg -q -F 'TIRO_SPONSORSHIP_ENABLED' "$ROOT/scripts/build_native_app.sh"
+rg -q -F -- '--print-build-features' "$ROOT/scripts/smoke_release.sh"
+rg -q -F 'executable and bundle sponsorship states do not match' "$ROOT/scripts/smoke_release.sh"
+rg -q -F 'sponsorship-disabled executable contains a Sponsors URL' "$ROOT/scripts/smoke_release.sh"
 rg -q -F 'Tiro-notarization-submission.zip' "$ROOT/scripts/build_native_app.sh"
 archive_cleanup_line="$(rg -n -F 'rm -f "$archive" "$archive.sha256" "$archive.partial"' "$ROOT/scripts/build_native_app.sh" | tail -1 | cut -d: -f1)"
 notarization_line="$(rg -n -F 'xcrun notarytool submit' "$ROOT/scripts/build_native_app.sh" | head -1 | cut -d: -f1)"
@@ -29,6 +35,7 @@ rg -q -F 'hdiutil attach -quiet -readonly -nobrowse' "$ROOT/scripts/build_native
 rg -q -F 'ln -s /Applications "$DMG_STAGING/Applications"' "$ROOT/scripts/build_native_app.sh"
 rg -q -F '"$ROOT/scripts/build_native_app.sh" dmg' "$ROOT/scripts/test_all.sh"
 rg -q -F '"$ROOT/scripts/test_coreml_production.sh"' "$ROOT/scripts/test_all.sh"
+rg -q -F '"$ROOT/scripts/test_sponsorship_builds.sh"' "$ROOT/scripts/test_all.sh"
 rg -q -F 'FluidAudio-Apache-2.0.txt' "$ROOT/scripts/build_native_app.sh"
 rg -q -F 'Argmax-OSS-MIT.txt' "$ROOT/scripts/build_native_app.sh"
 rg -q -F 'Argmax-OSS-NOTICES.txt' "$ROOT/scripts/build_native_app.sh"
@@ -59,6 +66,7 @@ print -r -- "$help" | rg -q 'distribution'
 print -r -- "$help" | rg -q 'dmg'
 print -r -- "$help" | rg -q -- '--notary-profile'
 print -r -- "$help" | rg -q -- '--build-number'
+print -r -- "$help" | rg -q -- '--enable-sponsorship'
 print -r -- "$help" | rg -q 'setup_local_signing.sh'
 
 rg -q -F 'Tiro Local Development' "$ROOT/scripts/setup_local_signing.sh"

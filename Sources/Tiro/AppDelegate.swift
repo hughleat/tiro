@@ -12,8 +12,10 @@ import ApplicationServices
     private let hotkeys = HotkeyManager()
     private let destinationTracker = DestinationTracker()
     private let pasteCoordinator = PasteCoordinator()
+#if TIRO_SPONSORSHIP_ENABLED
     private let supportPromptPolicy = SupportPromptPolicy()
     private lazy var supportPromptWindow = makeSupportPromptWindow()
+#endif
     private lazy var settingsWindow = makeSettingsWindow()
     private var onboardingWindow: OnboardingWindowController?
     private var statusItem: NSStatusItem!
@@ -30,7 +32,9 @@ import ApplicationServices
     private var transcriptionTask: Task<Void, Never>?
     private var transcriptionID: UUID?
     private var permissionTimer: Timer?
+#if TIRO_SPONSORSHIP_ENABLED
     private var supportPromptTimer: Timer?
+#endif
     private var hotkeysStarted = false
     private var isCapturingShortcut = false
     private var destinationSession: DestinationSession?
@@ -38,11 +42,15 @@ import ApplicationServices
     private var shouldAutoPaste = false
     private var awaitingPrivacyReview = false
     private var isPresentingRecovery = false
+#if TIRO_SPONSORSHIP_ENABLED
     private var supportPromptSuppressedUntil: Date?
+#endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UserDefaults.standard.register(defaults: ["autoPaste": true, "soundFeedback": true])
+#if TIRO_SPONSORSHIP_ENABLED
         supportPromptPolicy.registerLaunch()
+#endif
         AudioRecorder.removeStaleRecordings()
         _ = try? VocabularyFile.load()
         NSApp.setActivationPolicy(.accessory)
@@ -51,14 +59,19 @@ import ApplicationServices
         prepareInstalledModel()
         if !UserDefaults.standard.bool(forKey: "setupCompleted") {
             showSetup()
-        } else {
+        }
+#if TIRO_SPONSORSHIP_ENABLED
+        if UserDefaults.standard.bool(forKey: "setupCompleted") {
             scheduleNextSupportPromptCheck(minimumDelay: 1)
         }
+#endif
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         permissionTimer?.invalidate()
+#if TIRO_SPONSORSHIP_ENABLED
         supportPromptTimer?.invalidate()
+#endif
         modelStartupTask?.cancel()
         transcriptionTask?.cancel()
         hotkeys.stop()
@@ -124,9 +137,15 @@ import ApplicationServices
         let setup = NSMenuItem(title: "Setup…", action: #selector(showSetup), keyEquivalent: "")
         setup.target = self
         menu.addItem(setup)
-        let support = NSMenuItem(title: "Support Tiro…", action: #selector(supportTiro), keyEquivalent: "")
+#if TIRO_SPONSORSHIP_ENABLED
+        let support = NSMenuItem(
+            title: BuildFeatures.sponsorshipMenuTitle!,
+            action: #selector(supportTiro),
+            keyEquivalent: ""
+        )
         support.target = self
         menu.addItem(support)
+#endif
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Tiro", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
@@ -173,10 +192,11 @@ import ApplicationServices
         return controller
     }
 
+#if TIRO_SPONSORSHIP_ENABLED
     private func makeSupportPromptWindow() -> SupportPromptWindowController {
         let controller = SupportPromptWindowController()
         controller.onSupport = {
-            NSWorkspace.shared.open(SupportPromptPolicy.sponsorsURL)
+            NSWorkspace.shared.open(BuildFeatures.sponsorsURL)
         }
         controller.onAlreadySupporting = { [weak self] in
             self?.supportPromptPolicy.markAlreadySupporting()
@@ -184,6 +204,7 @@ import ApplicationServices
         }
         return controller
     }
+#endif
 
     private func configurePermissionsAndStart() {
         hotkeys.onTap = { [weak self] in self?.toggleRecording() }
@@ -274,7 +295,9 @@ import ApplicationServices
     @discardableResult
     private func startRecording(playStartSound: Bool = true) -> Bool {
         guard state == .idle else { return false }
+#if TIRO_SPONSORSHIP_ENABLED
         supportPromptWindow.close()
+#endif
         switch modelInventoryStatus {
         case .loading:
             modelStatusItem.title = "Model: Checking Installed Models..."
@@ -426,8 +449,10 @@ import ApplicationServices
         originApplication = nil
         var completionOverlay = OverlayState.copied
         if !response.text.isEmpty {
+#if TIRO_SPONSORSHIP_ENABLED
             supportPromptPolicy.recordSuccessfulTranscription()
             scheduleNextSupportPromptCheck(minimumDelay: 1)
+#endif
             if shouldAutoPaste, let destination {
                 do {
                     let result = try await pasteCoordinator.paste(response.text, to: destination)
@@ -479,7 +504,9 @@ import ApplicationServices
         isPresentingRecovery = true
         defer {
             isPresentingRecovery = false
+#if TIRO_SPONSORSHIP_ENABLED
             supportPromptSuppressedUntil = Date().addingTimeInterval(60)
+#endif
         }
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -521,9 +548,11 @@ import ApplicationServices
         settingsWindow.showWindow(nil)
     }
 
+#if TIRO_SPONSORSHIP_ENABLED
     @objc private func supportTiro() {
-        NSWorkspace.shared.open(SupportPromptPolicy.sponsorsURL)
+        NSWorkspace.shared.open(BuildFeatures.sponsorsURL)
     }
+#endif
 
     @objc private func showPermissionsSettings() {
         settingsWindow.showPermissionsSettings()
@@ -557,15 +586,20 @@ import ApplicationServices
         controller.onDownloadCompleted = { [weak self] in self?.prepareInstalledModel() }
         controller.onComplete = { [weak self] in
             UserDefaults.standard.set(true, forKey: "setupCompleted")
+#if TIRO_SPONSORSHIP_ENABLED
             self?.scheduleNextSupportPromptCheck()
+#endif
         }
         return controller
     }
 
     func menuDidClose(_ menu: NSMenu) {
+#if TIRO_SPONSORSHIP_ENABLED
         handleSupportPromptCheck()
+#endif
     }
 
+#if TIRO_SPONSORSHIP_ENABLED
     private func scheduleNextSupportPromptCheck(minimumDelay: TimeInterval = 0) {
         supportPromptTimer?.invalidate()
         guard let due = supportPromptPolicy.nextPromptDate() else { return }
@@ -600,6 +634,7 @@ import ApplicationServices
         supportPromptWindow.showWindow(nil)
         scheduleNextSupportPromptCheck()
     }
+#endif
 
     private func refreshSetupPermissions() {
         guard let onboardingWindow, onboardingWindow.window?.isVisible == true else { return }

@@ -28,6 +28,8 @@
     </array>
     <key>LSUIElement</key>
     <true/>
+    <key>TiroSponsorshipEnabled</key>
+    <false/>
     <key>NSMicrophoneUsageDescription</key>
     <string>Tiro records your voice for local transcription.</string>
     <key>NSSpeechRecognitionUsageDescription</key>

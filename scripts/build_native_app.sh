@@ -13,6 +13,7 @@ LOCAL_SIGNING_KEYCHAIN="${TIRO_LOCAL_SIGNING_KEYCHAIN:-$HOME/Library/Keychains/l
 NOTARY_PROFILE="${TIRO_NOTARY_PROFILE:-}"
 ENTITLEMENTS="$ROOT/native/Tiro.entitlements"
 SKIP_NOTARIZATION=0
+SPONSORSHIP_ENABLED=0
 DEPLOYMENT_TARGET="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$ROOT/native/Info.plist")"
 TARGET_ARCHITECTURE="arm64"
 BUILD_LOCK="$ROOT/.build/native-build.lock"
@@ -41,6 +42,7 @@ Options:
   --entitlements PATH        Main-app entitlements plist
   --notary-profile NAME      notarytool keychain profile
   --skip-notarization        Signing test only; artifact is not ready to distribute
+  --enable-sponsorship       Include support links and periodic reminders
   -h, --help                 Show this help
 
 TIRO_LOCAL_SIGNING_IDENTITY selects the certificate used for local builds. Run
@@ -86,6 +88,10 @@ while (( $# > 0 )); do
             ;;
         --skip-notarization)
             SKIP_NOTARIZATION=1
+            shift
+            ;;
+        --enable-sponsorship)
+            SPONSORSHIP_ENABLED=1
             shift
             ;;
         -h|--help)
@@ -239,7 +245,8 @@ create_dmg() {
         --ad-hoc-only \
         --expected-entitlements "$ENTITLEMENTS" \
         --expected-version "$VERSION" \
-        --expected-build "$BUILD_NUMBER"
+        --expected-build "$BUILD_NUMBER" \
+        --expected-sponsorship "$sponsorship_value"
 
     hdiutil detach -quiet "$DMG_MOUNT_POINT"
     rmdir "$DMG_MOUNT_POINT"
@@ -317,9 +324,16 @@ export CLANG_MODULE_CACHE_PATH="$ROOT/.build/ModuleCache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$ROOT/.build/ModuleCache"
 export SWIFTPM_PACKAGECACHE_PATH="$ROOT/.build/SwiftPMCache"
 
-swift build --disable-sandbox -c release \
+swift_args=(
+    --disable-sandbox
+    -c release
     -Xswiftc -module-cache-path \
     -Xswiftc "$ROOT/.build/ModuleCache"
+)
+if (( SPONSORSHIP_ENABLED )); then
+    swift_args+=(-Xswiftc -D -Xswiftc TIRO_SPONSORSHIP_ENABLED)
+fi
+swift build "${swift_args[@]}"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -336,6 +350,12 @@ cp "$ROOT/.build/checkouts/argmax-oss-swift/NOTICES" \
     "$APP/Contents/Resources/Licenses/Argmax-OSS-NOTICES.txt"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP/Contents/Info.plist"
+if (( SPONSORSHIP_ENABLED )); then
+    sponsorship_value=true
+else
+    sponsorship_value=false
+fi
+/usr/libexec/PlistBuddy -c "Set :TiroSponsorshipEnabled $sponsorship_value" "$APP/Contents/Info.plist"
 
 if [[ "$MODE" == "development" || "$MODE" == "release" ]]; then
     sign_locally
@@ -379,11 +399,13 @@ if (( ! SKIP_NOTARIZATION )); then
     spctl --assess --type execute --verbose=4 "$APP"
     "$ROOT/scripts/smoke_release.sh" --app "$APP" --notarized \
         --expected-entitlements "$ENTITLEMENTS" \
-        --expected-version "$VERSION" --expected-build "$BUILD_NUMBER"
+        --expected-version "$VERSION" --expected-build "$BUILD_NUMBER" \
+        --expected-sponsorship "$sponsorship_value"
 else
     "$ROOT/scripts/smoke_release.sh" --app "$APP" --developer-id \
         --expected-entitlements "$ENTITLEMENTS" \
-        --expected-version "$VERSION" --expected-build "$BUILD_NUMBER"
+        --expected-version "$VERSION" --expected-build "$BUILD_NUMBER" \
+        --expected-sponsorship "$sponsorship_value"
 fi
 
 create_archive "$archive"

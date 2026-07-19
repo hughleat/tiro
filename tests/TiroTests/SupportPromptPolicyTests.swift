@@ -21,7 +21,7 @@ struct SupportPromptPolicyTests {
     @Test
     func firstPromptUsesSevenDaysOrTwentyTranscriptions() {
         let defaults = makeDefaults()
-        let policy = SupportPromptPolicy(defaults: defaults, calendar: calendar)
+        let policy = SupportPromptPolicy(enabled: true, defaults: defaults, calendar: calendar)
         let launch = Date(timeIntervalSince1970: 1_700_000_000)
         policy.registerLaunch(at: launch)
 
@@ -29,7 +29,7 @@ struct SupportPromptPolicyTests {
         #expect(policy.shouldPrompt(at: calendar.date(byAdding: .day, value: 7, to: launch)!))
 
         let countDefaults = makeDefaults()
-        let countPolicy = SupportPromptPolicy(defaults: countDefaults, calendar: calendar)
+        let countPolicy = SupportPromptPolicy(enabled: true, defaults: countDefaults, calendar: calendar)
         countPolicy.registerLaunch(at: launch)
         for _ in 0..<19 { countPolicy.recordSuccessfulTranscription() }
         #expect(!countPolicy.shouldPrompt(at: launch))
@@ -40,7 +40,7 @@ struct SupportPromptPolicyTests {
     @Test
     func recurringPromptUsesSixCalendarMonths() {
         let defaults = makeDefaults()
-        let policy = SupportPromptPolicy(defaults: defaults, calendar: calendar)
+        let policy = SupportPromptPolicy(enabled: true, defaults: defaults, calendar: calendar)
         let shown = calendar.date(from: DateComponents(year: 2024, month: 8, day: 31))!
         policy.markShown(at: shown)
         let next = calendar.date(byAdding: .month, value: 6, to: shown)!
@@ -53,7 +53,7 @@ struct SupportPromptPolicyTests {
     @Test
     func alreadySupportingPermanentlySuppressesPrompts() {
         let defaults = makeDefaults()
-        let policy = SupportPromptPolicy(defaults: defaults, calendar: calendar)
+        let policy = SupportPromptPolicy(enabled: true, defaults: defaults, calendar: calendar)
         let launch = Date(timeIntervalSince1970: 1_700_000_000)
         policy.registerLaunch(at: launch)
         policy.markAlreadySupporting()
@@ -66,7 +66,7 @@ struct SupportPromptPolicyTests {
         let defaults = makeDefaults()
         defaults.set(Int.max, forKey: "supportPromptSuccessfulTranscriptions")
         defaults.set("not a date", forKey: "supportPromptFirstLaunchDate")
-        let policy = SupportPromptPolicy(defaults: defaults, calendar: calendar)
+        let policy = SupportPromptPolicy(enabled: true, defaults: defaults, calendar: calendar)
 
         policy.recordSuccessfulTranscription()
         policy.registerLaunch(at: Date(timeIntervalSince1970: 1_700_000_000))
@@ -131,7 +131,7 @@ struct SupportPromptPolicyTests {
     @Test
     func registrationDoesNotOverwriteFirstLaunch() {
         let defaults = makeDefaults()
-        let policy = SupportPromptPolicy(defaults: defaults, calendar: calendar)
+        let policy = SupportPromptPolicy(enabled: true, defaults: defaults, calendar: calendar)
         let first = Date(timeIntervalSince1970: 1_700_000_000)
         policy.registerLaunch(at: first)
         policy.registerLaunch(at: first.addingTimeInterval(1_000))
@@ -140,6 +140,34 @@ struct SupportPromptPolicyTests {
         #expect(policy.shouldPrompt(at: calendar.date(byAdding: .day, value: 7, to: first)!))
     }
 
+    @Test
+    func disabledPolicyDoesNotStoreOrScheduleAnything() {
+        let defaults = makeDefaults()
+        let policy = SupportPromptPolicy(
+            enabled: false,
+            defaults: defaults,
+            calendar: calendar
+        )
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+        policy.registerLaunch(at: now)
+        policy.recordSuccessfulTranscription()
+        policy.markShown(at: now)
+        policy.markAlreadySupporting()
+
+        for key in [
+            "supportPromptFirstLaunchDate",
+            "supportPromptSuccessfulTranscriptions",
+            "supportPromptLastShownDate",
+            "supportPromptAlreadySupporting",
+        ] {
+            #expect(defaults.object(forKey: key) == nil)
+        }
+        #expect(!policy.shouldPrompt(at: now))
+        #expect(policy.nextPromptDate(relativeTo: now) == nil)
+    }
+
+#if TIRO_SPONSORSHIP_ENABLED
     @Test @MainActor
     func promptHasExpectedCopyAndExactlyTwoActions() {
         _ = NSApplication.shared
@@ -163,4 +191,5 @@ struct SupportPromptPolicyTests {
             return visibleButtons(in: child)
         }
     }
+#endif
 }

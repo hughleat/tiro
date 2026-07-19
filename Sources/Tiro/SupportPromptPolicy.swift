@@ -1,8 +1,6 @@
 import Foundation
 
 struct SupportPromptPolicy {
-    static let sponsorsURL = URL(string: "https://github.com/sponsors/hughleat")!
-
     private enum Key {
         static let firstLaunch = "supportPromptFirstLaunchDate"
         static let successfulTranscriptions = "supportPromptSuccessfulTranscriptions"
@@ -12,18 +10,26 @@ struct SupportPromptPolicy {
 
     private let defaults: UserDefaults
     private let calendar: Calendar
+    private let enabled: Bool
 
-    init(defaults: UserDefaults = .standard, calendar: Calendar = .current) {
+    init(
+        enabled: Bool = BuildFeatures.sponsorshipEnabled,
+        defaults: UserDefaults = .standard,
+        calendar: Calendar = .current
+    ) {
+        self.enabled = enabled
         self.defaults = defaults
         self.calendar = calendar
     }
 
     func registerLaunch(at date: Date = Date()) {
+        guard enabled else { return }
         guard defaults.object(forKey: Key.firstLaunch) as? Date == nil else { return }
         defaults.set(date, forKey: Key.firstLaunch)
     }
 
     func recordSuccessfulTranscription() {
+        guard enabled else { return }
         let count = max(0, defaults.integer(forKey: Key.successfulTranscriptions))
         defaults.set(min(20, count + (count < 20 ? 1 : 0)), forKey: Key.successfulTranscriptions)
     }
@@ -33,6 +39,7 @@ struct SupportPromptPolicy {
     }
 
     func nextPromptDate(relativeTo date: Date = Date()) -> Date? {
+        guard enabled else { return nil }
         guard !defaults.bool(forKey: Key.alreadySupporting) else { return nil }
         if let lastShown = defaults.object(forKey: Key.lastShown) as? Date {
             return calendar.date(byAdding: .month, value: 6, to: lastShown)
@@ -48,10 +55,12 @@ struct SupportPromptPolicy {
     }
 
     func markShown(at date: Date = Date()) {
+        guard enabled else { return }
         defaults.set(date, forKey: Key.lastShown)
     }
 
     func markAlreadySupporting() {
+        guard enabled else { return }
         defaults.set(true, forKey: Key.alreadySupporting)
     }
 }
