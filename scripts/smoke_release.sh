@@ -7,6 +7,7 @@ SIGNING_LEVEL="any"
 EXPECTED_VERSION=""
 EXPECTED_BUILD=""
 EXPECTED_ENTITLEMENTS="$ROOT/native/Tiro.entitlements"
+INSTALLED_MODEL_DIR=""
 
 usage() {
     cat <<'USAGE'
@@ -21,6 +22,7 @@ Options:
   --expected-build NUMBER    Assert CFBundleVersion
   --expected-entitlements PATH
                              Assert the app's exact entitlement policy
+  --model-dir PATH           Also transcribe generated speech with every model
   -h, --help                 Show this help
 USAGE
 }
@@ -32,7 +34,7 @@ fail() {
 
 while (( $# > 0 )); do
     case "$1" in
-        --app|--expected-version|--expected-build|--expected-entitlements)
+        --app|--expected-version|--expected-build|--expected-entitlements|--model-dir)
             (( $# >= 2 )) || fail "$1 requires a value"
             option="$1"
             value="$2"
@@ -42,6 +44,7 @@ while (( $# > 0 )); do
                 --expected-version) EXPECTED_VERSION="$value" ;;
                 --expected-build) EXPECTED_BUILD="$value" ;;
                 --expected-entitlements) EXPECTED_ENTITLEMENTS="${value:A}" ;;
+                --model-dir) INSTALLED_MODEL_DIR="${value:A}" ;;
             esac
             ;;
         --developer-id)
@@ -133,6 +136,9 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$TEMP_ROOT/data" "$TEMP_ROOT/models"
+MODEL_DIR="${INSTALLED_MODEL_DIR:-$TEMP_ROOT/models}"
+[[ -z "$INSTALLED_MODEL_DIR" || -d "$MODEL_DIR/hub" ]] \
+    || fail "model cache does not contain a hub directory: $MODEL_DIR"
 codesign -d --entitlements - --xml "$APP" \
     >"$TEMP_ROOT/entitlements.plist" 2>/dev/null
 plutil -lint "$TEMP_ROOT/entitlements.plist" >/dev/null \
@@ -145,8 +151,10 @@ cmp -s "$TEMP_ROOT/expected-entitlements.plist" "$TEMP_ROOT/actual-entitlements.
     || fail "signed app entitlements differ from the release policy"
 
 env \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
     TIRO_DATA_DIR="$TEMP_ROOT/data" \
-    TIRO_MODEL_DIR="$TEMP_ROOT/models" \
+    TIRO_MODEL_DIR="$MODEL_DIR" \
     "$WORKER" --self-test >"$TEMP_ROOT/ml-self-test.log" 2>&1 || {
         cat "$TEMP_ROOT/ml-self-test.log" >&2
         fail "packaged ML runtime self-test failed"
@@ -155,8 +163,10 @@ rg -q -F 'Tiro ML runtime self-test passed' "$TEMP_ROOT/ml-self-test.log" \
     || fail "packaged ML runtime self-test did not finish"
 
 env \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
     TIRO_DATA_DIR="$TEMP_ROOT/data" \
-    TIRO_MODEL_DIR="$TEMP_ROOT/models" \
+    TIRO_MODEL_DIR="$MODEL_DIR" \
     TIRO_WORKER_TOKEN="$TOKEN" \
     TIRO_PORT="$PORT" \
     "$WORKER" >"$TEMP_ROOT/worker.log" 2>&1 &
@@ -186,6 +196,39 @@ fi
     || fail "packaged worker reported an incompatible API version"
 [[ "$(plutil -extract ready raw "$TEMP_ROOT/status.json")" == "true" ]] \
     || fail "packaged worker did not report ready"
+
+if [[ -n "$INSTALLED_MODEL_DIR" ]]; then
+    say "Tiro package verification" -o "$TEMP_ROOT/speech.aiff"
+    afconvert -f WAVE -d LEI16@16000 -c 1 \
+        "$TEMP_ROOT/speech.aiff" "$TEMP_ROOT/speech.wav"
+    for model in compact parakeet-v2 qwen; do
+        case "$model" in
+            compact) expected_model="mlx-community/parakeet-tdt_ctc-110m" ;;
+            parakeet-v2) expected_model="mlx-community/parakeet-tdt-0.6b-v2" ;;
+            qwen) expected_model="mlx-community/Qwen3-ASR-0.6B-4bit" ;;
+        esac
+        curl -fsS -X POST \
+            -H "X-Tiro-Worker-Token: $TOKEN" \
+            -H "X-Parakeet-Model: $model" \
+            "http://127.0.0.1:$PORT/api/preload" \
+            >"$TEMP_ROOT/$model-preload.json"
+        [[ "$(plutil -extract loaded_model raw "$TEMP_ROOT/$model-preload.json")" == "$expected_model" ]] \
+            || fail "$model preloaded an unexpected model"
+
+        curl -fsS -X POST \
+            -H "X-Tiro-Worker-Token: $TOKEN" \
+            -H "X-Parakeet-Model: $model" \
+            -H "Content-Type: audio/wav" \
+            --data-binary "@$TEMP_ROOT/speech.wav" \
+            "http://127.0.0.1:$PORT/api/transcribe" \
+            >"$TEMP_ROOT/$model-transcription.json"
+        [[ "$(plutil -extract model raw "$TEMP_ROOT/$model-transcription.json")" == "$expected_model" ]] \
+            || fail "$model transcribed with an unexpected model"
+        text="$(plutil -extract text raw "$TEMP_ROOT/$model-transcription.json")"
+        [[ -n "$text" ]] || fail "$model returned an empty transcription"
+        print "Model smoke passed: $model — $text"
+    done
+fi
 
 curl -fsS -X POST \
     -H "X-Tiro-Worker-Token: $TOKEN" \

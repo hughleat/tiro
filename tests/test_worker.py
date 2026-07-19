@@ -2,6 +2,7 @@ import io
 import http.client
 import json
 import stat
+import sys
 import tempfile
 import threading
 import time
@@ -25,6 +26,7 @@ from tiro_worker import (
     storage,
     text as text_service,
 )
+from tiro_worker.parakeet_compat import mlx_mel_filter_as_librosa
 from scripts import worker_entry
 
 
@@ -1715,6 +1717,105 @@ class ModelExecutorTests(unittest.TestCase):
 
 
 class PreloadTests(unittest.TestCase):
+    def test_parakeet_compat_uses_mlx_slaney_filter_and_restores_modules(self):
+        sentinel = types.ModuleType("librosa")
+        mel_filters = Mock(return_value="filterbank")
+        mlx_audio = types.ModuleType("mlx_audio")
+        mlx_audio_dsp = types.ModuleType("mlx_audio.dsp")
+        mlx_audio_dsp.mel_filters = mel_filters
+
+        with patch.dict("sys.modules", {
+            "librosa": sentinel,
+            "mlx_audio": mlx_audio,
+            "mlx_audio.dsp": mlx_audio_dsp,
+        }):
+            with mlx_mel_filter_as_librosa():
+                result = sys.modules["librosa"].filters.mel(
+                    sr=16_000,
+                    n_fft=512,
+                    n_mels=80,
+                    fmin=0,
+                    fmax=8_000,
+                    norm="slaney",
+                )
+                self.assertEqual(result, "filterbank")
+            self.assertIs(sys.modules["librosa"], sentinel)
+            self.assertNotIn("librosa.filters", sys.modules)
+
+        mel_filters.assert_called_once_with(
+            sample_rate=16_000,
+            n_fft=512,
+            n_mels=80,
+            f_min=0,
+            f_max=8_000,
+            norm="slaney",
+            mel_scale="slaney",
+            precise=True,
+        )
+
+    def test_parakeet_compat_matches_librosa_filterbanks(self):
+        import subprocess
+
+        comparison = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                """
+import sys
+import librosa
+import numpy as np
+from tiro_worker.parakeet_compat import mlx_mel_filter_as_librosa
+
+for sample_rate, n_fft, n_mels in ((16_000, 512, 80), (16_000, 512, 128)):
+    expected = librosa.filters.mel(
+        sr=sample_rate,
+        n_fft=n_fft,
+        n_mels=n_mels,
+        fmin=0,
+        fmax=sample_rate / 2,
+        norm="slaney",
+    )
+    with mlx_mel_filter_as_librosa():
+        actual = sys.modules["librosa"].filters.mel(
+            sr=sample_rate,
+            n_fft=n_fft,
+            n_mels=n_mels,
+            fmin=0,
+            fmax=sample_rate / 2,
+            norm="slaney",
+        )
+    np.testing.assert_allclose(np.asarray(actual), expected, rtol=0, atol=2e-7)
+""",
+            ],
+            cwd=Path(__file__).parent.parent,
+            capture_output=True,
+            text=True,
+        )
+        if comparison.returncode and (
+            "No Metal device available" in comparison.stderr
+            or "IndexError: vector" in comparison.stderr
+        ):
+            self.skipTest("MLX Metal device is unavailable")
+        self.assertEqual(comparison.returncode, 0, comparison.stderr)
+
+    def test_parakeet_compat_rejects_unsupported_librosa_options(self):
+        mlx_audio = types.ModuleType("mlx_audio")
+        mlx_audio_dsp = types.ModuleType("mlx_audio.dsp")
+        mlx_audio_dsp.mel_filters = Mock()
+
+        with patch.dict("sys.modules", {
+            "mlx_audio": mlx_audio,
+            "mlx_audio.dsp": mlx_audio_dsp,
+        }):
+            with mlx_mel_filter_as_librosa():
+                with self.assertRaises(TypeError):
+                    sys.modules["librosa"].filters.mel(
+                        sr=16_000,
+                        n_fft=512,
+                        n_mels=80,
+                        htk=True,
+                    )
+
     def test_preload_loads_requested_model(self):
         selected = {"id": common.MODELS["compact"]["id"]}
         snapshot = Path("/cache/compact")
@@ -1923,6 +2024,8 @@ class ModelManagementTests(unittest.TestCase):
         qwen_package = types.ModuleType("mlx_audio")
         qwen_stt = types.ModuleType("mlx_audio.stt")
         qwen_stt.load = qwen_load
+        mlx_audio_dsp = types.ModuleType("mlx_audio.dsp")
+        mlx_audio_dsp.mel_filters = Mock()
         parakeet = types.ModuleType("parakeet_mlx")
         parakeet.from_pretrained = Mock(return_value=object())
         mlx = types.ModuleType("mlx")
@@ -1939,6 +2042,7 @@ class ModelManagementTests(unittest.TestCase):
             "mlx.core": mlx_core,
             "mlx_audio": qwen_package,
             "mlx_audio.stt": qwen_stt,
+            "mlx_audio.dsp": mlx_audio_dsp,
             "parakeet_mlx": parakeet,
         }):
             model_service._load_model("qwen", Path("/snapshots/qwen"))

@@ -31,6 +31,9 @@ rg -q -F 'hdiutil verify "$DMG_PARTIAL"' "$ROOT/scripts/build_native_app.sh"
 rg -q -F 'hdiutil attach -quiet -readonly -nobrowse' "$ROOT/scripts/build_native_app.sh"
 rg -q -F 'ln -s /Applications "$DMG_STAGING/Applications"' "$ROOT/scripts/build_native_app.sh"
 rg -q -F '"$ROOT/scripts/build_native_app.sh" dmg' "$ROOT/scripts/test_all.sh"
+for dependency in librosa numba llvmlite scipy sklearn; do
+    rg -q -F -- "--exclude-module $dependency" "$ROOT/scripts/build_native_app.sh"
+done
 rg -q -F -- '--app "$DMG_MOUNT_POINT/Tiro.app"' "$ROOT/scripts/build_native_app.sh"
 rg -q -F -- '--ad-hoc-only' "$ROOT/scripts/build_native_app.sh"
 rg -q -F "'^Signature=adhoc$'" "$ROOT/scripts/smoke_release.sh"

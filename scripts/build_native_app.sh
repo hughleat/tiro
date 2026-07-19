@@ -180,8 +180,44 @@ build_worker() {
         --hidden-import mlx.core \
         --hidden-import mlx._reprlib_fix \
         --hidden-import huggingface_hub \
+        --exclude-module librosa \
+        --exclude-module numba \
+        --exclude-module llvmlite \
+        --exclude-module scipy \
+        --exclude-module sklearn \
+        --exclude-module mlx_audio.tts \
+        --exclude-module mlx_audio.sts \
+        --exclude-module mlx_audio.codec \
+        --exclude-module mlx_audio.lid \
+        --exclude-module mlx_audio.vad \
         "$ROOT/scripts/worker_entry.py"
     cp -R "$work/dist/tiro-worker" "$APP/Contents/Resources/worker"
+    local internal="$APP/Contents/Resources/worker/_internal"
+    local -a stale_metadata=(
+        "$internal"/librosa-*.dist-info(N)
+        "$internal"/scipy-*.dist-info(N)
+        "$internal"/scikit_learn-*.dist-info(N)
+    )
+    rm -rf -- "${stale_metadata[@]}" \
+        "$internal/mlx_audio/tts" \
+        "$internal/mlx_audio/sts" \
+        "$internal/mlx_audio/codec" \
+        "$internal/mlx_audio/lid" \
+        "$internal/mlx_audio/vad"
+    local excluded
+    for excluded in librosa numba llvmlite scipy sklearn; do
+        [[ ! -e "$internal/$excluded" ]] \
+            || fail "excluded release dependency was bundled: $excluded"
+    done
+    excluded="$(find "$internal" -maxdepth 1 -type d \
+        \( -name 'librosa-*.dist-info' -o -name 'scipy-*.dist-info' \
+        -o -name 'scikit_learn-*.dist-info' \) -print -quit)"
+    [[ -z "$excluded" ]] \
+        || fail "excluded release dependency metadata was bundled: $excluded"
+    for excluded in tts sts codec lid vad; do
+        [[ ! -e "$internal/mlx_audio/$excluded" ]] \
+            || fail "excluded MLX Audio data was bundled: $excluded"
+    done
     "$DEVELOPMENT_PYTHON" "$ROOT/scripts/validate_macos_compatibility.py" \
         --target "$DEPLOYMENT_TARGET" \
         --architecture "$TARGET_ARCHITECTURE" \

@@ -76,6 +76,15 @@ For a credentialed signing rehearsal without notarization, pass `--skip-notariza
 ./scripts/build_native_app.sh dmg
 ```
 
+To require all three configured models to load and transcribe from an existing
+local cache while offline, run:
+
+```sh
+./scripts/smoke_release.sh \
+  --app dist/Tiro.app \
+  --model-dir "$HOME/Library/Application Support/Tiro/Models/huggingface"
+```
+
 Run release-script and login-item source assertions with `./scripts/test_release_engineering.sh`.
 
 ## Oldest-system acceptance

@@ -15,6 +15,7 @@ from http import HTTPStatus
 from pathlib import Path
 
 from . import common, storage, text as text_rules
+from .parakeet_compat import mlx_mel_filter_as_librosa
 from .common import (
     HTTPError,
     MAX_COMPARISON_MODELS,
@@ -305,9 +306,13 @@ def _load_model(model_key: str, source: str | Path):
 
             _model = load(load_source)
         else:
-            from parakeet_mlx import from_pretrained
+            with mlx_mel_filter_as_librosa():
+                from parakeet_mlx import from_pretrained
 
-            _model = from_pretrained(load_source, cache_dir=str(common.MODEL_HUB_CACHE))
+                _model = from_pretrained(
+                    load_source,
+                    cache_dir=str(common.MODEL_HUB_CACHE),
+                )
         _model_id = wanted_id
     return _model, selected
 

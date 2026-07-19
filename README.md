@@ -80,6 +80,22 @@ The release build uses PyInstaller `onedir` to embed the Python interpreter, `sc
 
 The build sync may download missing packages. The smoke check starts the packaged worker against temporary data, verifies API compatibility, and shuts it down. If the locked environment or runtime imports are unavailable, either command exits with an actionable error. Models themselves are not bundled; users explicitly download and remove them in Tiro's Models settings, and their files remain in Application Support.
 
+Parakeet needs only Librosa's mel-filter calculation, which Tiro supplies with
+MLX Audio's numerically equivalent implementation. Release builds therefore
+exclude Librosa and its otherwise unused Numba, LLVM, SciPy, and scikit-learn
+dependency chain. The 0.1.0 app is approximately 276 MB uncompressed and 110 MB
+as a DMG; most of the remaining size is MLX's required Metal shader library and
+the Transformers support used by Qwen.
+
+To require and exercise all three configured backends from an existing local
+model cache, with network access disabled, run:
+
+```sh
+./scripts/smoke_release.sh \
+  --app dist/Tiro.app \
+  --model-dir "$HOME/Library/Application Support/Tiro/Models/huggingface"
+```
+
 `WorkerProcess` owns worker startup and compatibility checks. It selects the embedded worker in release builds and `.venv/bin/python scripts/worker_entry.py` during development, while `WorkerAPI` owns authenticated HTTP requests and `WorkerTransport` translates HTTP failures. The worker token and all mutable files are created with private permissions.
 
 ### macOS support policy

@@ -26,14 +26,25 @@ def configure_paths() -> None:
 
 
 def run_self_test() -> None:
+    import importlib.util
+
     import mlx.core as mx
     import mlx_audio.stt.models.qwen3_asr  # noqa: F401
-    import parakeet_mlx  # noqa: F401
+
+    from tiro_worker.parakeet_compat import mlx_mel_filter_as_librosa
+
+    with mlx_mel_filter_as_librosa():
+        import parakeet_mlx  # noqa: F401
 
     total = mx.array([1, 2, 3]).sum()
     mx.eval(total)
     if total.item() != 6:
         raise RuntimeError("MLX returned an unexpected self-test result")
+    if getattr(sys, "frozen", False):
+        excluded = ("librosa", "numba", "llvmlite", "scipy", "sklearn")
+        present = [name for name in excluded if importlib.util.find_spec(name) is not None]
+        if present:
+            raise RuntimeError("Excluded release dependencies are present: " + ", ".join(present))
     print("Tiro ML runtime self-test passed")
 
 
