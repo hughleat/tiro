@@ -100,7 +100,7 @@ enum ErrorRecovery {
             switch recorderError {
             case .noInput:
                 return microphoneAuthorized ? .microphoneUnavailable : .microphonePermission
-            case .notRecording, .emptyRecording:
+            case .notRecording, .emptyRecording, .tooLong:
                 return .transcription
             }
         }

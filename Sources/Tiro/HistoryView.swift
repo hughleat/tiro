@@ -167,7 +167,10 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
         let date = Self.parseDate(entry.timestamp).map(Self.dateFormatter.string) ?? entry.timestamp
         let model = entry.model.split(separator: "/").last.map(String.init) ?? entry.model
         let duration = String(format: "%.1fs", entry.transcription_seconds)
-        return [date, model, duration].filter { !$0.isEmpty }.joined(separator: "  ·  ")
+        return [date, entry.source_filename, model, duration]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: "  ·  ")
     }
 
     @objc fileprivate func copyEntry(_ sender: NSButton) {

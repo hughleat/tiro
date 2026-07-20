@@ -64,7 +64,7 @@ final class ModelComparisonView: NSStackView {
 
     func setModels(_ models: [ManagedModel]) {
         let previouslySelected = selectedModelKeys
-        installedModels = models.filter(\.usable)
+        installedModels = models.filter { $0.usable && $0.dictationModel != nil }
         selectedModelKeys = previouslySelected.intersection(installedModels.map(\.key))
         if selectedModelKeys.count < 2 {
             selectedModelKeys.formUnion(installedModels.prefix(2).map(\.key))

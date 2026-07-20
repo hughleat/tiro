@@ -20,6 +20,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let modelManagementView: ModelManagementView
     private let modelComparisonView: ModelComparisonView
     private let permissionSettingsView = PermissionSettingsView()
+    private let commandLineToolView = CommandLineToolSettingsView()
     private let privacySettingsView: PrivacySettingsView
     private var navigationController: SettingsNavigationController?
 
@@ -108,6 +109,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         refreshHistory()
         permissionSettingsView.refresh()
         privacySettingsView.refresh()
+        commandLineToolView.refresh()
     }
 
     func showGeneralSettings() { showSettings(.general) }
@@ -186,10 +188,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private func makeGeneralView() -> NSView {
         let dictationLabel = sectionLabel("Dictation")
         let shortcutLabel = sectionLabel("Shortcut")
+        let commandLineLabel = sectionLabel("Command Line")
         let stack = NSStackView(views: [
             dictationLabel, dictationPreferencesView,
             shortcutLabel, shortcutRecorder,
             autoPasteButton, soundFeedbackButton, launchAtLoginButton,
+            commandLineLabel, commandLineToolView,
             NSView()
         ])
         stack.orientation = .vertical
@@ -197,8 +201,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.spacing = 10
         stack.setCustomSpacing(20, after: dictationPreferencesView)
         stack.setCustomSpacing(18, after: shortcutRecorder)
+        stack.setCustomSpacing(20, after: launchAtLoginButton)
         dictationPreferencesView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         shortcutRecorder.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        commandLineToolView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         return stack
     }
 

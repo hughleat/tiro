@@ -5,6 +5,15 @@ import Testing
 @Suite(.serialized)
 struct WhisperEngineTests {
     @Test
+    func removesWhisperControlAndTimestampTokens() {
+        #expect(
+            WhisperTextSanitizer.clean(
+                "<|startoftranscript|><|0. 00|> Hello world.<|2.52|><|endoftext|>"
+            ) == "Hello world."
+        )
+    }
+
+    @Test
     func curatedCatalogHasStableExplicitSpecs() {
         #expect(WhisperModel.allCases == [
             .tinyEnglish,
@@ -265,6 +274,7 @@ struct WhisperEngineTests {
         #expect(transcript.audioSeconds == 4)
         #expect(transcript.transcriptionSeconds == 0.1)
         #expect(transcript.timesFasterThanRealtime == 40)
+        #expect(transcript.segments == WhisperSessionStub.segments)
         #expect((await engine.status()).loaded)
     }
 
@@ -442,6 +452,23 @@ private actor WhisperRuntimeStub: WhisperCoreMLRuntime {
 }
 
 private actor WhisperSessionStub: WhisperCoreMLSession {
+    static let segments = [
+        TranscriptSegment(
+            text: "Hello from WhisperKit.",
+            startSeconds: 0.25,
+            endSeconds: 1.5,
+            words: [
+                TranscriptWord(text: "Hello", startSeconds: 0.25, endSeconds: 0.6),
+                TranscriptWord(text: "from", startSeconds: 0.7, endSeconds: 0.9),
+                TranscriptWord(
+                    text: "WhisperKit.",
+                    startSeconds: 1,
+                    endSeconds: 1.5
+                ),
+            ]
+        )
+    ]
+
     private(set) var lastOptions: WhisperDecodingOptions?
     private(set) var unloadCount = 0
 
@@ -455,7 +482,8 @@ private actor WhisperSessionStub: WhisperCoreMLSession {
             language: options.language ?? "en",
             audioSeconds: 4,
             transcriptionSeconds: 0.1,
-            timesFasterThanRealtime: 40
+            timesFasterThanRealtime: 40,
+            segments: Self.segments
         )
     }
 

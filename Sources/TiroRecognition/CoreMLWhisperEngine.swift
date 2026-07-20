@@ -130,6 +130,7 @@ public struct WhisperTranscript: Equatable, Sendable {
     public let audioSeconds: Double
     public let transcriptionSeconds: Double
     public let timesFasterThanRealtime: Double
+    public let segments: [TranscriptSegment]
 
     public init(
         text: String,
@@ -137,7 +138,8 @@ public struct WhisperTranscript: Equatable, Sendable {
         language: String?,
         audioSeconds: Double,
         transcriptionSeconds: Double,
-        timesFasterThanRealtime: Double
+        timesFasterThanRealtime: Double,
+        segments: [TranscriptSegment] = []
     ) {
         self.text = text
         self.model = model
@@ -145,6 +147,7 @@ public struct WhisperTranscript: Equatable, Sendable {
         self.audioSeconds = audioSeconds
         self.transcriptionSeconds = transcriptionSeconds
         self.timesFasterThanRealtime = timesFasterThanRealtime
+        self.segments = segments
     }
 }
 
@@ -201,6 +204,23 @@ struct WhisperRuntimeTranscript: Sendable {
     let audioSeconds: Double
     let transcriptionSeconds: Double
     let timesFasterThanRealtime: Double
+    let segments: [TranscriptSegment]
+
+    init(
+        text: String,
+        language: String?,
+        audioSeconds: Double,
+        transcriptionSeconds: Double,
+        timesFasterThanRealtime: Double,
+        segments: [TranscriptSegment] = []
+    ) {
+        self.text = text
+        self.language = language
+        self.audioSeconds = audioSeconds
+        self.transcriptionSeconds = transcriptionSeconds
+        self.timesFasterThanRealtime = timesFasterThanRealtime
+        self.segments = segments
+    }
 }
 
 protocol WhisperCoreMLSession: Sendable {
@@ -348,7 +368,8 @@ private actor WhisperKitSession: WhisperCoreMLSession {
             language: options.language,
             usePrefillPrompt: true,
             detectLanguage: options.language == nil,
-            withoutTimestamps: true
+            withoutTimestamps: false,
+            wordTimestamps: true
         )
         let start = Date()
         let results = try await whisperKit.transcribe(
@@ -361,28 +382,64 @@ private actor WhisperKitSession: WhisperCoreMLSession {
         }
 
         let text = results
-            .map(\.text)
+            .map { WhisperTextSanitizer.clean($0.text) }
+            .filter { !$0.isEmpty }
             .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
         let audioSeconds = results.reduce(0) {
             $0 + $1.timings.inputAudioSeconds
         }
         let language = results.lazy
             .map(\.language)
             .first(where: { !$0.isEmpty })
+        let segments: [TranscriptSegment] = results.flatMap(\.segments).compactMap { segment in
+            let text = WhisperTextSanitizer.clean(segment.text)
+            let words: [TranscriptWord] = (segment.words ?? []).compactMap {
+                let text = WhisperTextSanitizer.clean($0.word)
+                guard !text.isEmpty else { return nil }
+                return TranscriptWord(
+                    text: text,
+                    startSeconds: Double($0.start),
+                    endSeconds: Double($0.end)
+                )
+            }
+            guard !text.isEmpty || !words.isEmpty else { return nil }
+            return TranscriptSegment(
+                text: text,
+                startSeconds: Double(segment.start),
+                endSeconds: Double(segment.end),
+                words: words
+            )
+        }
 
         return WhisperRuntimeTranscript(
             text: text,
             language: language,
             audioSeconds: audioSeconds,
             transcriptionSeconds: elapsed,
-            timesFasterThanRealtime: elapsed > 0 ? audioSeconds / elapsed : 0
+            timesFasterThanRealtime: elapsed > 0 ? audioSeconds / elapsed : 0,
+            segments: segments
         )
     }
 
     func unload() async {
         await whisperKit?.unloadModels()
         whisperKit = nil
+    }
+}
+
+enum WhisperTextSanitizer {
+    private static let controlToken = try! NSRegularExpression(
+        pattern: #"<\|[^|]*\|>"#
+    )
+
+    static func clean(_ text: String) -> String {
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        let stripped = controlToken.stringByReplacingMatches(
+            in: text,
+            range: range,
+            withTemplate: " "
+        )
+        return stripped.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 }
 
@@ -643,7 +700,8 @@ public actor CoreMLWhisperEngine: RecognitionEngine {
                 language: result.language,
                 audioSeconds: result.audioSeconds,
                 transcriptionSeconds: result.transcriptionSeconds,
-                timesFasterThanRealtime: result.timesFasterThanRealtime
+                timesFasterThanRealtime: result.timesFasterThanRealtime,
+                segments: result.segments
             )
         } catch {
             lastError = error.localizedDescription
@@ -661,7 +719,8 @@ public actor CoreMLWhisperEngine: RecognitionEngine {
             model: model.recognitionModel,
             audioSeconds: transcript.audioSeconds,
             transcriptionSeconds: transcript.transcriptionSeconds,
-            timesFasterThanRealtime: transcript.timesFasterThanRealtime
+            timesFasterThanRealtime: transcript.timesFasterThanRealtime,
+            segments: transcript.segments
         )
     }
 

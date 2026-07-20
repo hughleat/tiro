@@ -370,6 +370,9 @@ struct ManagedModel: Hashable {
 
     init(
         key: String,
+        name: String? = nil,
+        detail: String? = nil,
+        provisioning: DictationModel.Provisioning? = nil,
         installedSizeBytes: Int64?,
         installed: Bool,
         usable: Bool? = nil,
@@ -381,9 +384,9 @@ struct ManagedModel: Hashable {
     ) {
         self.key = key
         let known = DictationModel.all.first(where: { $0.key == key })
-        name = known?.name ?? key
-        detail = known?.detail ?? "Transcription model"
-        provisioning = known?.provisioning ?? .downloadable(bytes: 0)
+        self.name = name ?? known?.name ?? key
+        self.detail = detail ?? known?.detail ?? "Transcription model"
+        self.provisioning = provisioning ?? known?.provisioning ?? .downloadable(bytes: 0)
         self.installedSizeBytes = installedSizeBytes
         self.installed = installed
         self.usable = usable ?? installed
@@ -429,7 +432,9 @@ struct HistoryEntry {
     let corrected_text: String?
     let origin_bundle_id: String?
     let origin_app_name: String?
+    let source_filename: String?
     let audio_available: Bool
+    let segments: [TranscriptSegment]
 
     var displayText: String { corrected_text ?? text }
 
@@ -445,8 +450,10 @@ struct HistoryEntry {
         correctedText: String?,
         originBundleID: String?,
         originAppName: String?,
+        sourceFilename: String?,
         audioAvailable: Bool,
-        audioFile: String?
+        audioFile: String?,
+        segments: [TranscriptSegment] = []
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -457,8 +464,10 @@ struct HistoryEntry {
         corrected_text = correctedText
         origin_bundle_id = originBundleID
         origin_app_name = originAppName
+        source_filename = sourceFilename
         audio_available = audioAvailable
         audio_file = audioFile
+        self.segments = segments
     }
 
 }
@@ -584,6 +593,7 @@ struct PrivacySettings: Equatable {
 }
 
 struct TranscriptionResponse {
+    let id: String
     let timestamp: String
     let model: String
     let audio_file: String?
@@ -591,4 +601,6 @@ struct TranscriptionResponse {
     let text: String
     let origin_bundle_id: String?
     let origin_app_name: String?
+    let source_filename: String?
+    let segments: [TranscriptSegment]
 }

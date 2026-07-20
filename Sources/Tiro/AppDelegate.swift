@@ -1,9 +1,17 @@
 import AppKit
 import AVFoundation
 import ApplicationServices
+import TiroIPC
+import TiroRecognition
+import UniformTypeIdentifiers
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private enum State { case idle, starting, recording, transcribing }
+    private struct CommandRecording {
+        let session: UUID
+        let model: DictationModel
+        let saveToHistory: Bool
+    }
 
     private let recorder = AudioRecorder()
     private let service = TiroService()
@@ -12,11 +20,13 @@ import ApplicationServices
     private let hotkeys = HotkeyManager()
     private let destinationTracker = DestinationTracker()
     private let pasteCoordinator = PasteCoordinator()
+    private let commandServer = TiroCommandSocketServer()
 #if TIRO_SPONSORSHIP_ENABLED
     private let supportPromptPolicy = SupportPromptPolicy()
     private lazy var supportPromptWindow = makeSupportPromptWindow()
 #endif
     private lazy var settingsWindow = makeSettingsWindow()
+    private lazy var fileTranscriptionWindow = makeFileTranscriptionWindow()
     private var onboardingWindow: OnboardingWindowController?
     private var statusItem: NSStatusItem!
     private var state: State = .idle
@@ -32,6 +42,9 @@ import ApplicationServices
     private var modelSelectionTask: Task<Void, Never>?
     private var transcriptionTask: Task<Void, Never>?
     private var transcriptionID: UUID?
+    private var commandRecording: CommandRecording?
+    private var commandTranscriptionTask: Task<TranscriptionResponse, Error>?
+    private var externalOperationID: UUID?
     private var permissionTimer: Timer?
 #if TIRO_SPONSORSHIP_ENABLED
     private var supportPromptTimer: Timer?
@@ -56,6 +69,7 @@ import ApplicationServices
         _ = try? VocabularyFile.load()
         NSApp.setActivationPolicy(.accessory)
         configureStatusItem()
+        startCommandServer()
         configurePermissionsAndStart()
         prepareInstalledModel()
         if !UserDefaults.standard.bool(forKey: "setupCompleted") {
@@ -76,8 +90,10 @@ import ApplicationServices
         modelStartupTask?.cancel()
         modelSelectionTask?.cancel()
         transcriptionTask?.cancel()
+        commandTranscriptionTask?.cancel()
         hotkeys.stop()
         PasteEventGate.shared.stop()
+        commandServer.stop()
     }
 
     private func configureStatusItem() {
@@ -89,6 +105,14 @@ import ApplicationServices
         menuToggleItem = NSMenuItem(title: "Start Recording", action: #selector(toggleRecording), keyEquivalent: "")
         menuToggleItem.target = self
         menu.addItem(menuToggleItem)
+
+        let transcribeFile = NSMenuItem(
+            title: "Transcribe Audio File...",
+            action: #selector(showFileTranscription),
+            keyEquivalent: "o"
+        )
+        transcribeFile.target = self
+        menu.addItem(transcribeFile)
 
         let modelMenu = NSMenu()
         for model in DictationModel.all {
@@ -153,6 +177,324 @@ import ApplicationServices
         statusItem.menu = menu
     }
 
+    private func startCommandServer() {
+        do {
+            try commandServer.start { [weak self] request, responder in
+                guard let self else {
+                    try await responder.sendFailure(
+                        code: "app_unavailable",
+                        message: "Tiro is shutting down."
+                    )
+                    return
+                }
+                await self.handleCommand(request, responder: responder)
+            }
+        } catch {
+            NSLog("Could not start Tiro command server: %@", error.localizedDescription)
+        }
+    }
+
+    private func handleCommand(
+        _ request: TiroCommandRequest,
+        responder: TiroCommandResponder
+    ) async {
+        do {
+            if request.command != .status,
+               request.command != .models,
+               !UserDefaults.standard.bool(forKey: "setupCompleted") {
+                try await responder.sendFailure(
+                    code: "setup_required",
+                    message: "Finish Tiro setup before using command-line transcription."
+                )
+                return
+            }
+            switch request.command {
+            case .status:
+                try await responder.sendSuccess(TiroCommandResult(
+                    kind: "status",
+                    state: commandState,
+                    selectedModel: DictationModel.selected.key
+                ))
+            case .models:
+                let models = await service.models()
+                try await responder.sendSuccess(TiroCommandResult(
+                    kind: "models",
+                    models: models.map {
+                        TiroCommandModel(
+                            key: $0.key,
+                            name: $0.name,
+                            installed: $0.installed,
+                            transcription: $0.dictationModel != nil
+                        )
+                    }
+                ))
+            case .transcribe:
+                try await handleTranscribeCommand(request, responder: responder)
+            case .recordStart:
+                try await handleRecordStartCommand(request, responder: responder)
+            case .recordStop:
+                try await handleRecordStopCommand(request, responder: responder)
+            case .recordCancel:
+                try await handleRecordCancelCommand(request, responder: responder)
+            }
+        } catch {
+            try? await responder.sendFailure(
+                code: "transcription_failed",
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    private func handleTranscribeCommand(
+        _ request: TiroCommandRequest,
+        responder: TiroCommandResponder
+    ) async throws {
+        guard state == .idle, commandRecording == nil, externalOperationID == nil else {
+            try await responder.sendFailure(
+                code: "busy",
+                message: "Tiro is already recording or transcribing."
+            )
+            return
+        }
+        let operationID = UUID()
+        externalOperationID = operationID
+        state = .transcribing
+        menuToggleItem.title = "Transcribing..."
+        defer {
+            if externalOperationID == operationID {
+                externalOperationID = nil
+                state = .idle
+                menuToggleItem.title = "Start Recording"
+            }
+        }
+        guard let arguments = request.arguments, let path = arguments.path else {
+            throw TiroError.message("The command did not include an audio file.")
+        }
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard FileManager.default.isReadableFile(atPath: url.path),
+              UTType(filenameExtension: url.pathExtension)?.conforms(to: .audio) == true else {
+            throw TiroError.message("The requested audio file is unavailable or unsupported.")
+        }
+        let model: DictationModel
+        if let key = arguments.model {
+            guard let requested = DictationModel.all.first(where: { $0.key == key }) else {
+                throw TiroError.message("No Tiro model has the key \(key).")
+            }
+            model = requested
+        } else {
+            model = DictationModel.selected
+        }
+
+        try await responder.sendEvent(name: "transcribing", detail: url.lastPathComponent)
+        let response = try await service.transcribe(
+            audioURL: url,
+            model: model,
+            sourceFilename: url.lastPathComponent,
+            archiveAudio: false,
+            identifySpeakers: arguments.diarize ?? false,
+            saveToHistory: arguments.saveHistory ?? true
+        )
+        if arguments.copy == true {
+            copyToClipboard(response.text)
+        }
+        settingsWindow.refreshHistory()
+        try await responder.sendSuccess(TiroCommandResult(
+            kind: "transcript",
+            text: response.text,
+            model: response.model,
+            historyID: (arguments.saveHistory ?? true) ? response.id : nil,
+            transcriptionSeconds: response.transcription_seconds,
+            segments: commandSegments(response.segments)
+        ))
+    }
+
+    private func handleRecordStartCommand(
+        _ request: TiroCommandRequest,
+        responder: TiroCommandResponder
+    ) async throws {
+        guard state == .idle, commandRecording == nil else {
+            try await responder.sendFailure(
+                code: "busy",
+                message: "Tiro is already recording or transcribing."
+            )
+            return
+        }
+        let arguments = request.arguments
+        let model: DictationModel
+        if let key = arguments?.model {
+            guard let requested = DictationModel.all.first(where: { $0.key == key }) else {
+                throw TiroError.message("No Tiro model has the key \(key).")
+            }
+            model = requested
+        } else {
+            model = DictationModel.selected
+        }
+        let recording = CommandRecording(
+            session: UUID(),
+            model: model,
+            saveToHistory: arguments?.saveHistory ?? true
+        )
+        commandRecording = recording
+        destinationSession = nil
+        originApplication = nil
+        shouldAutoPaste = false
+        state = .starting
+        menuToggleItem.title = "Recording from Command Line"
+        do {
+            try await service.preload(model: model)
+        } catch {
+            if commandRecording?.session == recording.session {
+                commandRecording = nil
+                finishCancelledTranscription()
+            }
+            throw error
+        }
+        guard commandRecording?.session == recording.session, state == .starting else {
+            throw CancellationError()
+        }
+        beginRecording(reportErrors: false)
+        guard state == .recording else {
+            commandRecording = nil
+            throw TiroError.message("Tiro could not start recording.")
+        }
+        do {
+            try await responder.sendSuccess(TiroCommandResult(
+                kind: "recording",
+                model: model.key,
+                state: "recording",
+                session: recording.session.uuidString.lowercased()
+            ))
+        } catch {
+            recorder.cancel()
+            commandRecording = nil
+            finishCancelledTranscription()
+            throw error
+        }
+    }
+
+    private func handleRecordStopCommand(
+        _ request: TiroCommandRequest,
+        responder: TiroCommandResponder
+    ) async throws {
+        guard let recording = matchingCommandRecording(request) else {
+            try await responder.sendFailure(
+                code: "recording_not_found",
+                message: "That command-line recording session is not active."
+            )
+            return
+        }
+        guard state == .recording else {
+            try await responder.sendFailure(
+                code: "busy",
+                message: "The recording is not ready to stop."
+            )
+            return
+        }
+
+        let audioURL = try recorder.stop()
+        state = .transcribing
+        menuToggleItem.title = "Transcribing..."
+        overlay.show(.transcribing)
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+        let task = Task { @MainActor [service] in
+            try await service.transcribe(
+                audioURL: audioURL,
+                model: recording.model,
+                archiveAudio: recording.saveToHistory,
+                saveToHistory: recording.saveToHistory
+            )
+        }
+        commandTranscriptionTask = task
+        do {
+            try await responder.sendEvent(name: "transcribing")
+            let response = try await task.value
+            guard commandRecording?.session == recording.session else {
+                throw CancellationError()
+            }
+            if request.arguments?.copy == true {
+                copyToClipboard(response.text)
+            }
+            commandRecording = nil
+            commandTranscriptionTask = nil
+            finishCancelledTranscription()
+            settingsWindow.refreshHistory()
+            try await responder.sendSuccess(TiroCommandResult(
+                kind: "transcript",
+                text: response.text,
+                model: response.model,
+                historyID: recording.saveToHistory ? response.id : nil,
+                transcriptionSeconds: response.transcription_seconds,
+                segments: commandSegments(response.segments)
+            ))
+        } catch {
+            task.cancel()
+            _ = await task.result
+            if commandRecording?.session == recording.session {
+                commandRecording = nil
+                commandTranscriptionTask = nil
+                finishCancelledTranscription()
+            }
+            throw error
+        }
+    }
+
+    private func handleRecordCancelCommand(
+        _ request: TiroCommandRequest,
+        responder: TiroCommandResponder
+    ) async throws {
+        guard matchingCommandRecording(request) != nil else {
+            try await responder.sendFailure(
+                code: "recording_not_found",
+                message: "That command-line recording session is not active."
+            )
+            return
+        }
+        if state == .transcribing {
+            let task = commandTranscriptionTask
+            task?.cancel()
+            commandTranscriptionTask = nil
+            commandRecording = nil
+            if let task { _ = await task.result }
+        } else {
+            recorder.cancel()
+            commandRecording = nil
+        }
+        finishCancelledTranscription()
+        try await responder.sendSuccess(TiroCommandResult(
+            kind: "cancelled",
+            state: "idle"
+        ))
+    }
+
+    private func matchingCommandRecording(_ request: TiroCommandRequest) -> CommandRecording? {
+        guard let recording = commandRecording,
+              let session = request.arguments?.session,
+              UUID(uuidString: session) == recording.session else {
+            return nil
+        }
+        return recording
+    }
+
+    private var commandState: String {
+        switch state {
+        case .idle: "idle"
+        case .starting: "starting"
+        case .recording: "recording"
+        case .transcribing: "transcribing"
+        }
+    }
+
+    private func commandSegments(_ segments: [TranscriptSegment]) -> [TiroCommandSegment] {
+        segments.map {
+            TiroCommandSegment(
+                text: $0.text,
+                startTime: $0.startSeconds,
+                endTime: $0.endSeconds,
+                speakerID: $0.speakerID
+            )
+        }
+    }
+
     private func makeSettingsWindow() -> SettingsWindowController {
         let controller = SettingsWindowController(service: service)
         controller.onModelChanged = { [weak self] model in
@@ -194,6 +536,30 @@ import ApplicationServices
         return controller
     }
 
+    private func makeFileTranscriptionWindow() -> FileTranscriptionWindowController {
+        let controller = FileTranscriptionWindowController(service: service)
+        controller.requestOperation = { [weak self] in
+            guard let self,
+                  self.state == .idle,
+                  self.commandRecording == nil,
+                  self.externalOperationID == nil else { return false }
+            self.externalOperationID = UUID()
+            self.state = .transcribing
+            self.menuToggleItem.title = "Transcribing File..."
+            return true
+        }
+        controller.onOperationEnded = { [weak self] in
+            guard let self, self.externalOperationID != nil else { return }
+            self.externalOperationID = nil
+            self.state = .idle
+            self.menuToggleItem.title = "Start Recording"
+        }
+        controller.onTranscriptionCompleted = { [weak self] in
+            self?.settingsWindow.refreshHistory()
+        }
+        return controller
+    }
+
 #if TIRO_SPONSORSHIP_ENABLED
     private func makeSupportPromptWindow() -> SupportPromptWindowController {
         let controller = SupportPromptWindowController()
@@ -215,8 +581,11 @@ import ApplicationServices
         hotkeys.onHoldCancel = { [weak self] in self?.cancelRecording() }
         hotkeys.onEscape = { [weak self] in self?.cancelRecording() }
         hotkeys.shouldHandleEscape = { [weak self] in
-            self?.state == .starting || self?.state == .recording
-                || self?.state == .transcribing
+            guard let self,
+                  self.commandRecording == nil,
+                  self.externalOperationID == nil else { return false }
+            return self.state == .starting || self.state == .recording
+                || self.state == .transcribing
         }
 
         installHotkeysWhenPermitted()
@@ -286,6 +655,7 @@ import ApplicationServices
     }
 
     @objc private func toggleRecording() {
+        guard commandRecording == nil else { return }
         switch state {
         case .idle: startRecording()
         case .starting: cancelRecording()
@@ -335,7 +705,7 @@ import ApplicationServices
         return true
     }
 
-    private func beginRecording() {
+    private func beginRecording(reportErrors: Bool = true) {
         guard state == .starting else { return }
         do {
             try recorder.start()
@@ -347,11 +717,19 @@ import ApplicationServices
                 self?.recorder.normalizedMicrophoneLevel ?? 0
             })
         } catch {
-            presentError(error)
+            if reportErrors {
+                presentError(error)
+            } else {
+                commandRecording = nil
+                state = .idle
+                menuToggleItem.title = "Start Recording"
+                NSLog("Could not start command-line recording: %@", error.localizedDescription)
+            }
         }
     }
 
     private func stopRecording() {
+        guard commandRecording == nil else { return }
         if state == .starting {
             cancelRecording()
             return
@@ -380,7 +758,7 @@ import ApplicationServices
                 }
                 do {
                     let response = try await service.transcribe(
-                        wavURL: wavURL,
+                        audioURL: wavURL,
                         model: model,
                         originBundleID: originBundleID,
                         originName: originName
@@ -404,6 +782,7 @@ import ApplicationServices
     }
 
     private func cancelRecording() {
+        guard commandRecording == nil, externalOperationID == nil else { return }
         if state == .transcribing {
             transcriptionTask?.cancel()
             transcriptionID = nil
@@ -420,6 +799,7 @@ import ApplicationServices
         }
         guard state == .recording else { return }
         recorder.cancel()
+        commandRecording = nil
         destinationSession = nil
         originApplication = nil
         if UserDefaults.standard.bool(forKey: "soundFeedback") { recordingSounds.playStop() }
@@ -485,6 +865,7 @@ import ApplicationServices
 
     private func presentError(_ error: Error) {
         if recorder.isRecording { recorder.cancel() }
+        commandRecording = nil
         destinationSession = nil
         originApplication = nil
         state = .idle
@@ -548,6 +929,29 @@ import ApplicationServices
 
     @objc private func showSettings() {
         settingsWindow.showWindow(nil)
+    }
+
+    @objc private func showFileTranscription() {
+        guard UserDefaults.standard.bool(forKey: "setupCompleted") else {
+            showSetup()
+            return
+        }
+        fileTranscriptionWindow.showWindow(nil)
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard UserDefaults.standard.bool(forKey: "setupCompleted") else {
+            showSetup()
+            presentError(TiroError.message(
+                "Finish Tiro setup, then open the audio file again."
+            ))
+            return
+        }
+        guard urls.count == 1, let url = urls.first else {
+            presentError(TiroError.message("Open one audio file at a time."))
+            return
+        }
+        fileTranscriptionWindow.transcribe(url)
     }
 
 #if TIRO_SPONSORSHIP_ENABLED

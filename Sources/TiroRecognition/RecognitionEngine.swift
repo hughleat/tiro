@@ -39,25 +39,87 @@ public enum ParakeetModel: String, CaseIterable, Codable, Sendable {
     }
 }
 
+public struct TranscriptWord: Codable, Equatable, Sendable {
+    public let text: String
+    public let startSeconds: Double
+    public let endSeconds: Double
+
+    public init(text: String, startSeconds: Double, endSeconds: Double) {
+        self.text = text
+        self.startSeconds = startSeconds
+        self.endSeconds = endSeconds
+    }
+}
+
+public struct TranscriptSegment: Codable, Equatable, Sendable {
+    public let text: String
+    public let startSeconds: Double
+    public let endSeconds: Double
+    public let speakerID: String?
+    public let words: [TranscriptWord]
+
+    public init(
+        text: String,
+        startSeconds: Double,
+        endSeconds: Double,
+        speakerID: String? = nil,
+        words: [TranscriptWord] = []
+    ) {
+        self.text = text
+        self.startSeconds = startSeconds
+        self.endSeconds = endSeconds
+        self.speakerID = speakerID
+        self.words = words
+    }
+}
+
 public struct RawTranscript: Codable, Equatable, Sendable {
     public let text: String
     public let model: RecognitionModel
     public let audioSeconds: Double
     public let transcriptionSeconds: Double
     public let timesFasterThanRealtime: Double
+    public let segments: [TranscriptSegment]
 
     public init(
         text: String,
         model: RecognitionModel,
         audioSeconds: Double,
         transcriptionSeconds: Double,
-        timesFasterThanRealtime: Double
+        timesFasterThanRealtime: Double,
+        segments: [TranscriptSegment] = []
     ) {
         self.text = text
         self.model = model
         self.audioSeconds = audioSeconds
         self.transcriptionSeconds = transcriptionSeconds
         self.timesFasterThanRealtime = timesFasterThanRealtime
+        self.segments = segments
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case text
+        case model
+        case audioSeconds
+        case transcriptionSeconds
+        case timesFasterThanRealtime
+        case segments
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        text = try container.decode(String.self, forKey: .text)
+        model = try container.decode(RecognitionModel.self, forKey: .model)
+        audioSeconds = try container.decode(Double.self, forKey: .audioSeconds)
+        transcriptionSeconds = try container.decode(Double.self, forKey: .transcriptionSeconds)
+        timesFasterThanRealtime = try container.decode(
+            Double.self,
+            forKey: .timesFasterThanRealtime
+        )
+        segments = try container.decodeIfPresent(
+            [TranscriptSegment].self,
+            forKey: .segments
+        ) ?? []
     }
 }
 

@@ -7,6 +7,8 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "Tiro", targets: ["Tiro"]),
+        .executable(name: "TiroCommand", targets: ["TiroCLI"]),
+        .library(name: "TiroIPC", targets: ["TiroIPC"]),
         .library(name: "TiroRecognition", targets: ["TiroRecognition"]),
     ],
     dependencies: [
@@ -30,8 +32,17 @@ let package = Package(
         ),
         .executableTarget(
             name: "Tiro",
-            dependencies: ["TiroRecognition"],
+            dependencies: ["TiroIPC", "TiroRecognition"],
             path: "Sources/Tiro"
+        ),
+        .target(
+            name: "TiroIPC",
+            path: "Sources/TiroIPC"
+        ),
+        .executableTarget(
+            name: "TiroCLI",
+            dependencies: ["TiroIPC"],
+            path: "Sources/TiroCLI"
         ),
         .testTarget(
             name: "TiroTests",
@@ -54,6 +65,8 @@ let package = Package(
                 "SetupReadinessTests.swift",
                 "SettingsConstructionTests.swift",
                 "SupportPromptPolicyTests.swift",
+                "TranscriptionJobGateTests.swift",
+                "TranscriptExportTests.swift",
             ]
         ),
         .testTarget(
@@ -63,6 +76,11 @@ let package = Package(
                 .product(name: "FluidAudio", package: "FluidAudio"),
             ],
             path: "tests/TiroRecognitionTests"
+        ),
+        .testTarget(
+            name: "TiroIPCTests",
+            dependencies: ["TiroIPC", "TiroCLI"],
+            path: "tests/TiroIPCTests"
         )
     ],
     swiftLanguageModes: [.v5]

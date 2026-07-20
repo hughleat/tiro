@@ -19,6 +19,11 @@ rg -q -F 'expected-entitlements.plist' "$ROOT/scripts/smoke_release.sh"
 rg -q -F -- '--expected-entitlements "$ENTITLEMENTS"' "$ROOT/scripts/build_native_app.sh"
 rg -q -F -- '--expected-sponsorship "$sponsorship_value"' "$ROOT/scripts/build_native_app.sh"
 rg -q -F 'TIRO_SPONSORSHIP_ENABLED' "$ROOT/scripts/build_native_app.sh"
+rg -q -F '.executable(name: "TiroCommand", targets: ["TiroCLI"])' "$ROOT/Package.swift"
+rg -q -F '.build/release/TiroCommand" "$APP/Contents/Helpers/tiro"' \
+    "$ROOT/scripts/build_native_app.sh"
+rg -q -F 'command-line helper was replaced by the GUI executable' \
+    "$ROOT/scripts/smoke_release.sh"
 rg -q -F -- '--print-build-features' "$ROOT/scripts/smoke_release.sh"
 rg -q -F 'executable and bundle sponsorship states do not match' "$ROOT/scripts/smoke_release.sh"
 rg -q -F 'sponsorship-disabled executable contains a Sponsors URL' "$ROOT/scripts/smoke_release.sh"

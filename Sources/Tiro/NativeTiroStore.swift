@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import TiroRecognition
 
 actor NativeTiroStore {
     private enum Limits {
@@ -9,6 +10,9 @@ actor NativeTiroStore {
         static let snippets = 200
         static let snippetContent = 2_000
         static let transcript = 100_000
+        static let transcriptSegments = 10_000
+        static let transcriptWords = 100_000
+        static let mediaSeconds = 86_400.0
         static let transcriptionSeconds = 3_600.0
     }
 
@@ -41,16 +45,23 @@ actor NativeTiroStore {
         }
         let originBundleID = try bounded(request.originBundleID, maximum: 255, label: "Bundle ID")
         let originAppName = try bounded(request.originAppName, maximum: 200, label: "App name")
-        let vocabulary = try loadVocabulary()
-        let profiles = try loadProfiles().profiles
-        let snippets = try loadSnippets()
-        let text = NativeTextFinalizer.finalize(
-            raw,
-            options: request.options,
-            vocabulary: vocabulary,
-            profiles: profiles,
-            snippets: snippets,
-            originBundleID: originBundleID
+        let sourceFilename = try bounded(
+            request.sourceFilename,
+            maximum: 255,
+            label: "Source filename"
+        )
+        let segments = try validatedSegments(request.segments)
+        let text = request.textIsFinalized
+            ? raw
+            : try finalizedTexts(
+                [raw],
+                options: request.options,
+                originBundleID: originBundleID
+            )[0]
+        let recognizedText = try bounded(
+            request.recognizedText?.trimmingCharacters(in: .whitespacesAndNewlines),
+            maximum: Limits.transcript,
+            label: "Recognized transcription"
         )
         let privacy = try privacySettings()
         var entry = NativeHistoryEntry(
@@ -62,14 +73,17 @@ actor NativeTiroStore {
             mode: request.options.mode,
             punctuation: request.options.punctuation,
             language: request.options.language,
-            rawText: text == raw ? nil : raw,
+            rawText: recognizedText.flatMap { $0 == text ? nil : $0 }
+                ?? (text == raw ? nil : raw),
             correctedText: nil,
             originBundleID: originBundleID,
             originAppName: originAppName,
+            sourceFilename: sourceFilename,
             audioFile: nil,
-            audioAvailable: nil
+            audioAvailable: nil,
+            segments: segments.isEmpty ? nil : segments
         )
-        guard privacy.storeHistory else { return entry }
+        guard privacy.storeHistory, request.saveToHistory else { return entry }
 
         var recordedURL: URL?
         do {
@@ -94,6 +108,66 @@ actor NativeTiroStore {
         }
         _ = try applyRetention(now: request.timestamp)
         return entry
+    }
+
+    func finalizedTexts(
+        _ rawTexts: [String],
+        options: NativeTranscriptionOptions,
+        originBundleID: String?
+    ) throws -> [String] {
+        let bundleID = try bounded(originBundleID, maximum: 255, label: "Bundle ID")
+        let vocabulary = try loadVocabulary()
+        let profiles = try loadProfiles().profiles
+        let snippets = try loadSnippets()
+        return try rawTexts.map { rawText in
+            let raw = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard raw.count <= Limits.transcript else {
+                throw NativeStoreError.invalidData("Transcription text is too long.")
+            }
+            return NativeTextFinalizer.finalize(
+                raw,
+                options: options,
+                vocabulary: vocabulary,
+                profiles: profiles,
+                snippets: snippets,
+                originBundleID: bundleID
+            )
+        }
+    }
+
+    private func validatedSegments(
+        _ segments: [TranscriptSegment]
+    ) throws -> [TranscriptSegment] {
+        guard segments.count <= Limits.transcriptSegments else {
+            throw NativeStoreError.invalidData("The transcription contains too many segments.")
+        }
+        var wordCount = 0
+        var textCount = 0
+        for segment in segments {
+            textCount += segment.text.count
+            wordCount += segment.words.count
+            guard textCount <= Limits.transcript,
+                  wordCount <= Limits.transcriptWords,
+                  segment.startSeconds.isFinite,
+                  segment.endSeconds.isFinite,
+                  segment.startSeconds >= 0,
+                  segment.endSeconds >= segment.startSeconds,
+                  segment.endSeconds <= Limits.mediaSeconds,
+                  (segment.speakerID?.count ?? 0) <= 128 else {
+                throw NativeStoreError.invalidData("The transcription timing data is invalid.")
+            }
+            for word in segment.words {
+                guard word.text.count <= 1_000,
+                      word.startSeconds.isFinite,
+                      word.endSeconds.isFinite,
+                      word.startSeconds >= segment.startSeconds,
+                      word.endSeconds >= word.startSeconds,
+                      word.endSeconds <= segment.endSeconds else {
+                    throw NativeStoreError.invalidData("The transcription word data is invalid.")
+                }
+            }
+        }
+        return segments
     }
 
     func privacySettings() throws -> NativePrivacySettings {
@@ -296,6 +370,7 @@ actor NativeTiroStore {
         var entries = try loadHistory()
         guard let index = entries.firstIndex(where: { $0.id == id }) else { return false }
         entries[index].correctedText = correctedText
+        entries[index].segments = nil
         try saveHistory(entries)
         return true
     }

@@ -2,12 +2,15 @@ import AVFoundation
 import Foundation
 
 final class AudioRecorder {
+    private static let maximumDuration: TimeInterval = 10 * 60
     private let engine = AVAudioEngine()
     private let lock = NSLock()
     private let levelLock = NSLock()
     private var samples: [Float] = []
     private var level: Float = 0
     private var inputSampleRate = 48_000.0
+    private var maximumSampleCount = 0
+    private var limitReached = false
     private(set) var isRecording = false
 
     var normalizedMicrophoneLevel: Float {
@@ -26,9 +29,11 @@ final class AudioRecorder {
 
         lock.lock()
         samples.removeAll(keepingCapacity: true)
+        limitReached = false
         lock.unlock()
         setLevel(0)
         inputSampleRate = format.sampleRate
+        maximumSampleCount = Int(format.sampleRate * Self.maximumDuration)
 
         input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
             guard let self, let channel = buffer.floatChannelData?[0] else { return }
@@ -36,7 +41,14 @@ final class AudioRecorder {
             guard frameCount > 0 else { return }
             self.publishLevel(from: channel, count: frameCount)
             self.lock.lock()
-            self.samples.append(contentsOf: UnsafeBufferPointer(start: channel, count: frameCount))
+            let remaining = max(0, self.maximumSampleCount - self.samples.count)
+            let accepted = min(frameCount, remaining)
+            if accepted > 0 {
+                self.samples.append(
+                    contentsOf: UnsafeBufferPointer(start: channel, count: accepted)
+                )
+            }
+            if accepted < frameCount { self.limitReached = true }
             self.lock.unlock()
         }
 
@@ -54,9 +66,12 @@ final class AudioRecorder {
 
         lock.lock()
         let captured = samples
+        let exceededLimit = limitReached
         samples.removeAll(keepingCapacity: true)
+        limitReached = false
         lock.unlock()
 
+        guard !exceededLimit else { throw RecorderError.tooLong }
         guard !captured.isEmpty else { throw RecorderError.emptyRecording }
         let output = Self.resample(captured, from: inputSampleRate, to: 16_000)
         try PrivateFilePermissions.ensureDirectory(at: AppPaths.transientRecordingsDirectory)
@@ -97,6 +112,7 @@ final class AudioRecorder {
         setLevel(0)
         lock.lock()
         samples.removeAll(keepingCapacity: true)
+        limitReached = false
         lock.unlock()
     }
 
@@ -167,12 +183,14 @@ enum RecorderError: LocalizedError {
     case noInput
     case notRecording
     case emptyRecording
+    case tooLong
 
     var errorDescription: String? {
         switch self {
         case .noInput: return "No microphone input is available."
         case .notRecording: return "Recording has not started."
         case .emptyRecording: return "The recording was empty."
+        case .tooLong: return "Recordings are limited to 10 minutes."
         }
     }
 }

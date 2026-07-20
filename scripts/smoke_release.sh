@@ -77,6 +77,10 @@ done
     || fail "expected entitlements not found: $EXPECTED_ENTITLEMENTS"
 INFO="$APP/Contents/Info.plist"
 [[ -f "$INFO" ]] || fail "Info.plist not found in app bundle"
+CLI="$APP/Contents/Helpers/tiro"
+[[ -f "$CLI" && -x "$CLI" ]] || fail "Tiro command-line helper is missing or not executable"
+cmp -s "$APP/Contents/MacOS/Tiro" "$CLI" \
+    && fail "command-line helper was replaced by the GUI executable"
 [[ -n "$(/usr/libexec/PlistBuddy -c 'Print :NSSpeechRecognitionUsageDescription' "$INFO")" ]] \
     || fail "Speech Recognition usage description is missing"
 [[ -f "$APP/Contents/Resources/Licenses/FluidAudio-Apache-2.0.txt" ]] \
@@ -111,6 +115,11 @@ esac
     || fail "expected sponsorship $EXPECTED_SPONSORSHIP, found $sponsorship_enabled"
 [[ "$executable_sponsorship" == "$sponsorship_enabled" ]] \
     || fail "executable and bundle sponsorship states do not match"
+expected_cli_version="Tiro $actual_version"
+[[ "$actual_build" == "$actual_version" ]] \
+    || expected_cli_version="$expected_cli_version ($actual_build)"
+[[ "$("$CLI" --version)" == "$expected_cli_version" ]] \
+    || fail "command-line helper version does not match the app"
 if [[ "$EXPECTED_SPONSORSHIP" == "false" ]]; then
     if strings "$APP/Contents/MacOS/Tiro" | rg -F 'github.com/sponsors' >/dev/null; then
         fail "sponsorship-disabled executable contains a Sponsors URL"

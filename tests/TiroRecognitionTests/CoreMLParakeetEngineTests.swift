@@ -1,4 +1,5 @@
 import Foundation
+import FluidAudio
 import Testing
 @testable import TiroRecognition
 
@@ -202,7 +203,58 @@ struct CoreMLParakeetEngineTests {
         #expect(transcript.audioSeconds == 4)
         #expect(transcript.transcriptionSeconds == 0.05)
         #expect(transcript.timesFasterThanRealtime == 80)
+        #expect(transcript.segments == SessionStub.segments)
         #expect(status.loaded)
+    }
+
+    @Test
+    func testFluidAudioResultMapsWordTimingsIntoOneSegment() throws {
+        let result = ASRResult(
+            text: "Hello world",
+            confidence: 0.9,
+            duration: 4,
+            processingTime: 0.05,
+            tokenTimings: [
+                TokenTiming(
+                    token: " Hello",
+                    tokenId: 1,
+                    startTime: 0.2,
+                    endTime: 0.5,
+                    confidence: 0.9
+                ),
+                TokenTiming(
+                    token: " world",
+                    tokenId: 2,
+                    startTime: 0.7,
+                    endTime: 1.1,
+                    confidence: 0.8
+                ),
+            ]
+        )
+
+        let transcript = RuntimeTranscript(fluidAudioResult: result)
+        let segment = try #require(transcript.segments.first)
+
+        #expect(transcript.segments.count == 1)
+        #expect(segment.text == "Hello world")
+        #expect(segment.startSeconds == 0.2)
+        #expect(segment.endSeconds == 1.1)
+        #expect(segment.words == [
+            TranscriptWord(text: "Hello", startSeconds: 0.2, endSeconds: 0.5),
+            TranscriptWord(text: "world", startSeconds: 0.7, endSeconds: 1.1),
+        ])
+    }
+
+    @Test
+    func testFluidAudioResultWithoutTimingsDoesNotInventSegments() {
+        let result = ASRResult(
+            text: "Untimed",
+            confidence: 0.9,
+            duration: 1,
+            processingTime: 0.1
+        )
+
+        #expect(RuntimeTranscript(fluidAudioResult: result).segments.isEmpty)
     }
 
     @Test
@@ -377,12 +429,26 @@ private actor RuntimeStub: CompactCoreMLRuntime {
 }
 
 private actor SessionStub: CompactCoreMLSession {
+    static let segments = [
+        TranscriptSegment(
+            text: "Hello from Core ML.",
+            startSeconds: 0.1,
+            endSeconds: 1.2,
+            words: [
+                TranscriptWord(text: "Hello", startSeconds: 0.1, endSeconds: 0.4),
+                TranscriptWord(text: "from", startSeconds: 0.5, endSeconds: 0.7),
+                TranscriptWord(text: "Core ML.", startSeconds: 0.8, endSeconds: 1.2),
+            ]
+        )
+    ]
+
     func transcribe(_ audioURL: URL) -> RuntimeTranscript {
         RuntimeTranscript(
             text: "Hello from Core ML.",
             audioSeconds: 4,
             transcriptionSeconds: 0.05,
-            timesFasterThanRealtime: 80
+            timesFasterThanRealtime: 80,
+            segments: Self.segments
         )
     }
 }

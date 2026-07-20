@@ -1,4 +1,5 @@
 import Foundation
+import TiroRecognition
 
 enum NativeStoreError: LocalizedError {
     case invalidData(String)
@@ -129,8 +130,10 @@ struct NativeHistoryEntry: Codable, Equatable, Identifiable, Sendable {
     var correctedText: String?
     var originBundleID: String?
     var originAppName: String?
+    var sourceFilename: String?
     var audioFile: String?
     var audioAvailable: Bool?
+    var segments: [TranscriptSegment]? = nil
 
     var displayText: String { correctedText ?? text }
 
@@ -147,18 +150,25 @@ struct NativeHistoryEntry: Codable, Equatable, Identifiable, Sendable {
         case correctedText = "corrected_text"
         case originBundleID = "origin_bundle_id"
         case originAppName = "origin_app_name"
+        case sourceFilename = "source_filename"
         case audioFile = "audio_file"
         case audioAvailable = "audio_available"
+        case segments
     }
 }
 
 struct NativeFinalizationRequest: Sendable {
     var rawText: String
+    var recognizedText: String? = nil
     var modelID: String
     var transcriptionSeconds: Double
     var audio: Data?
     var originBundleID: String?
     var originAppName: String?
+    var sourceFilename: String?
+    var saveToHistory = true
+    var textIsFinalized = false
+    var segments: [TranscriptSegment] = []
     var options = NativeTranscriptionOptions()
     var timestamp = Date()
     var id = UUID()

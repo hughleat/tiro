@@ -3,12 +3,17 @@ import TiroRecognition
 
 @MainActor
 final class TiroService {
+    private static let speakerDiarizationKey = "coreml-speaker-diarization"
+    private static let speakerDiarizationDownloadBytes: Int64 = 1_000_000_000
     private let store: NativeTiroStore?
     private let storeError: Error?
     private let appleSpeechEngine = AppleSpeechEngine()
     private let parakeetEngines: [String: CoreMLParakeetEngine]
     private let whisperEngines: [String: CoreMLWhisperEngine]
+    private let speakerDiarizationEngine: SpeakerDiarizationEngine
     private let availableModelCapacity: () -> Int64?
+    private let transcriptionGate = TranscriptionJobGate()
+    private var activeTranscriptionRequests = 0
     private var comparisonTasks: [String: Task<[ModelComparisonResult], Error>] = [:]
     private var mutatingModelKey: String?
     private var modelOperation: (key: String, operation: ManagedModelOperation)?
@@ -35,6 +40,9 @@ final class TiroService {
         }
 
         let root = AppPaths.coreMLModelsDirectory
+        speakerDiarizationEngine = SpeakerDiarizationEngine(
+            runtime: FluidAudioOnDemandDiarizationRuntime(modelsRootDirectory: root)
+        )
         self.availableModelCapacity = availableModelCapacity
         parakeetEngines = [
             DictationModel.coreMLCompactKey: CoreMLParakeetEngine(
@@ -75,50 +83,153 @@ final class TiroService {
         ]
         pendingCleanupKeys = Set(parakeetEngines.keys)
             .union(whisperEngines.keys)
+            .union([Self.speakerDiarizationKey])
     }
 
     func transcribe(
-        wavURL: URL,
+        audioURL: URL,
         model: DictationModel,
         originBundleID: String? = nil,
-        originName: String? = nil
+        originName: String? = nil,
+        sourceFilename: String? = nil,
+        archiveAudio: Bool = true,
+        identifySpeakers: Bool = false,
+        saveToHistory: Bool = true
     ) async throws -> TranscriptionResponse {
+        guard mutatingModelKey == nil, !cleanupInProgress else {
+            throw TiroError.message("Wait for the current model operation to finish.")
+        }
+        activeTranscriptionRequests += 1
+        defer { activeTranscriptionRequests -= 1 }
+        try await transcriptionGate.acquire()
+        do {
+            let response = try await performTranscription(
+                audioURL: audioURL,
+                model: model,
+                originBundleID: originBundleID,
+                originName: originName,
+                sourceFilename: sourceFilename,
+                archiveAudio: archiveAudio,
+                identifySpeakers: identifySpeakers,
+                saveToHistory: saveToHistory
+            )
+            await transcriptionGate.release()
+            return response
+        } catch {
+            await transcriptionGate.release()
+            throw error
+        }
+    }
+
+    private func performTranscription(
+        audioURL: URL,
+        model: DictationModel,
+        originBundleID: String?,
+        originName: String?,
+        sourceFilename: String?,
+        archiveAudio: Bool,
+        identifySpeakers: Bool,
+        saveToHistory: Bool
+    ) async throws -> TranscriptionResponse {
+        try Task.checkCancellation()
         let preferences = DictationPreferences.snapshot(for: model)
+        if identifySpeakers {
+            let status = try await speakerDiarizationEngine.status()
+            guard status.installed else {
+                throw TiroError.message(
+                    "Install Speaker Identification in Settings > Models before using it."
+                )
+            }
+        }
         try await unloadModels(except: model.key)
         let contextualStrings = model.key == DictationModel.appleSpeechKey
             ? try await contextualStrings(for: originBundleID)
             : []
         let raw = try await rawTranscript(
-            wavURL: wavURL,
+            audioURL: audioURL,
             model: model,
             preferences: preferences,
             contextualStrings: contextualStrings
         )
         try Task.checkCancellation()
-        let audio = try Data(contentsOf: wavURL)
+        let finalizationOptions = NativeTranscriptionOptions(
+            mode: NativeDictationMode(rawValue: preferences.mode.rawValue) ?? .standard,
+            punctuation: NativePunctuationMode(rawValue: preferences.punctuation.rawValue)
+                ?? .automatic,
+            language: preferences.language.title
+        )
+        let segments: [TranscriptSegment]
+        let rawText: String
+        if identifySpeakers {
+            guard !raw.segments.isEmpty else {
+                throw TiroError.message(
+                    "The selected model did not provide the timestamps needed to identify speakers."
+                )
+            }
+            let attributed: [TranscriptSegment]
+            do {
+                attributed = try await speakerDiarizationEngine.diarize(
+                    audioURL,
+                    transcriptSegments: raw.segments
+                )
+                try await speakerDiarizationEngine.unload()
+            } catch {
+                try? await speakerDiarizationEngine.unload()
+                throw error
+            }
+            segments = try await finalizedSegments(
+                attributed,
+                options: finalizationOptions,
+                originBundleID: originBundleID
+            )
+            rawText = Self.speakerAttributedText(segments)
+        } else if raw.segments.isEmpty {
+            segments = []
+            rawText = raw.text
+        } else {
+            segments = try await finalizedSegments(
+                raw.segments,
+                options: finalizationOptions,
+                originBundleID: originBundleID
+            )
+            rawText = segments.map(\.text)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+        }
+        try Task.checkCancellation()
+        let store = try requireStore()
+        let privacy = try await store.privacySettings()
+        let shouldLoadAudio = archiveAudio
+            && saveToHistory
+            && privacy.storeHistory
+            && privacy.storeRecordings
+        let audio = shouldLoadAudio ? try Data(contentsOf: audioURL) : nil
         try Task.checkCancellation()
         let entry = try await requireStore().finalize(NativeFinalizationRequest(
-            rawText: raw.text,
+            rawText: rawText,
+            recognizedText: raw.text,
             modelID: model.key,
             transcriptionSeconds: raw.transcriptionSeconds,
             audio: audio,
             originBundleID: originBundleID,
             originAppName: originName,
-            options: NativeTranscriptionOptions(
-                mode: NativeDictationMode(rawValue: preferences.mode.rawValue) ?? .standard,
-                punctuation: NativePunctuationMode(rawValue: preferences.punctuation.rawValue)
-                    ?? .automatic,
-                language: preferences.language.title
-            )
+            sourceFilename: sourceFilename,
+            saveToHistory: saveToHistory,
+            textIsFinalized: !segments.isEmpty,
+            segments: segments,
+            options: finalizationOptions
         ))
         return TranscriptionResponse(
+            id: entry.id,
             timestamp: entry.timestamp,
             model: entry.model,
             audio_file: entry.audioFile,
             transcription_seconds: entry.transcriptionSeconds,
             text: entry.text,
             origin_bundle_id: entry.originBundleID,
-            origin_app_name: entry.originAppName
+            origin_app_name: entry.originAppName,
+            source_filename: entry.sourceFilename,
+            segments: segments
         )
     }
 
@@ -234,15 +345,55 @@ final class TiroService {
                 state: Self.state(for: status)
             ))
         }
+        if let status = try? await speakerDiarizationEngine.status() {
+            let operation: ManagedModelOperation?
+            if modelOperation?.key == Self.speakerDiarizationKey {
+                switch modelOperation?.operation {
+                case .downloading:
+                    operation = .downloading(progress: status.downloadProgress)
+                case .cancelling:
+                    operation = .cancelling
+                case .deleting:
+                    operation = .deleting
+                case nil:
+                    operation = nil
+                }
+            } else {
+                operation = nil
+            }
+            result.append(ManagedModel(
+                key: Self.speakerDiarizationKey,
+                name: "Speaker Identification",
+                detail: "Labels speakers in imported audio and CLI transcripts",
+                provisioning: .downloadable(bytes: Self.speakerDiarizationDownloadBytes),
+                installedSizeBytes: status.installed ? status.sizeBytes : nil,
+                installed: status.installed,
+                operation: operation,
+                loaded: status.loaded,
+                operationError: modelOperationErrors[Self.speakerDiarizationKey]
+                    ?? modelCleanupErrors[Self.speakerDiarizationKey]
+                    ?? status.lastError,
+                downloadSpace: ModelDownloadSpace(
+                    downloadBytes: Self.speakerDiarizationDownloadBytes,
+                    availableBytes: availableBytes
+                ),
+                state: Self.state(for: status)
+            ))
+        }
         return result
     }
 
     @discardableResult
     func startDownload(key: String) -> Bool {
         do {
-            let model = try downloadableModel(key: key)
+            let downloadBytes: Int64
+            if key == Self.speakerDiarizationKey {
+                downloadBytes = Self.speakerDiarizationDownloadBytes
+            } else {
+                downloadBytes = try downloadableModel(key: key).downloadSizeBytes ?? 0
+            }
             let space = ModelDownloadSpace(
-                downloadBytes: model.downloadSizeBytes ?? 0,
+                downloadBytes: downloadBytes,
                 availableBytes: availableModelCapacity()
             )
             guard space.hasEnoughSpace else {
@@ -297,6 +448,8 @@ final class TiroService {
                 try await engine.download()
             } else if let engine = whisperEngines[key] {
                 try await engine.download()
+            } else if key == Self.speakerDiarizationKey {
+                try await speakerDiarizationEngine.download()
             } else {
                 throw TiroError.message(
                     "The requested transcription model is unavailable."
@@ -321,6 +474,8 @@ final class TiroService {
                 try await engine.delete()
             } else if let engine = whisperEngines[key] {
                 try await engine.delete()
+            } else if key == Self.speakerDiarizationKey {
+                try await speakerDiarizationEngine.delete()
             } else {
                 throw TiroError.message(
                     "The requested transcription model is unavailable."
@@ -348,7 +503,9 @@ final class TiroService {
     }
 
     private func beginModelMutation(key: String) throws {
-        guard mutatingModelKey == nil, !cleanupInProgress else {
+        guard mutatingModelKey == nil,
+              !cleanupInProgress,
+              activeTranscriptionRequests == 0 else {
             throw TiroError.message(
                 "Wait for the current model operation to finish."
             )
@@ -385,6 +542,8 @@ final class TiroService {
                     try await engine.cleanupAbandonedDownload()
                 } else if let engine = whisperEngines[key] {
                     try await engine.cleanupAbandonedDownload()
+                } else if key == Self.speakerDiarizationKey {
+                    try await speakerDiarizationEngine.cleanupAbandonedDownload()
                 }
                 modelCleanupErrors[key] = nil
                 pendingCleanupKeys.remove(key)
@@ -446,11 +605,22 @@ final class TiroService {
         modelKeys: [String],
         comparisonID: String
     ) async throws -> [ModelComparisonResult] {
+        guard mutatingModelKey == nil, !cleanupInProgress else {
+            throw TiroError.message("Wait for the current model operation to finish.")
+        }
+        activeTranscriptionRequests += 1
+        defer { activeTranscriptionRequests -= 1 }
         let store = try requireStore()
         let audio = try await store.audio(forHistoryID: historyID)
         let temporaryURL = AppPaths.transientRecordingsDirectory
             .appendingPathComponent("comparison-\(comparisonID).wav")
         try PrivateFilePermissions.write(audio, to: temporaryURL)
+        do {
+            try await transcriptionGate.acquire()
+        } catch {
+            try? FileManager.default.removeItem(at: temporaryURL)
+            throw error
+        }
 
         let task = Task<[ModelComparisonResult], Error> { @MainActor [weak self] in
             guard let self else { return [ModelComparisonResult]() }
@@ -468,7 +638,7 @@ final class TiroService {
                     : .auto
                 do {
                     let raw = try await rawTranscript(
-                        wavURL: temporaryURL,
+                        audioURL: temporaryURL,
                         model: model,
                         preferences: DictationPreferences(
                             mode: current.mode,
@@ -501,9 +671,11 @@ final class TiroService {
         do {
             let results = try await task.value
             comparisonTasks[comparisonID] = nil
+            await transcriptionGate.release()
             return results
         } catch {
             comparisonTasks[comparisonID] = nil
+            await transcriptionGate.release()
             throw error
         }
     }
@@ -662,14 +834,14 @@ final class TiroService {
     }
 
     private func rawTranscript(
-        wavURL: URL,
+        audioURL: URL,
         model: DictationModel,
         preferences: DictationPreferences,
         contextualStrings: [String]
     ) async throws -> RawTranscript {
         if model.key == DictationModel.appleSpeechKey {
             let result = try await appleSpeechEngine.transcribe(
-                wavURL,
+                audioURL,
                 options: AppleSpeechOptions(
                     localeIdentifier: preferences.language.appleLocaleIdentifier,
                     contextualStrings: contextualStrings
@@ -682,17 +854,18 @@ final class TiroService {
                 transcriptionSeconds: result.transcriptionSeconds,
                 timesFasterThanRealtime: result.transcriptionSeconds > 0
                     ? result.audioSeconds / result.transcriptionSeconds
-                    : 0
+                    : 0,
+                segments: []
             )
         }
         if let engine = parakeetEngines[model.key] {
             try await engine.preload()
-            return try await engine.transcribe(wavURL)
+            return try await engine.transcribe(audioURL)
         }
         if let engine = whisperEngines[model.key] {
             try await engine.preload()
             let result = try await engine.transcribe(
-                wavURL,
+                audioURL,
                 options: WhisperDecodingOptions(language: preferences.language.whisperCode)
             )
             return RawTranscript(
@@ -700,7 +873,8 @@ final class TiroService {
                 model: engine.model.recognitionModel,
                 audioSeconds: result.audioSeconds,
                 transcriptionSeconds: result.transcriptionSeconds,
-                timesFasterThanRealtime: result.timesFasterThanRealtime
+                timesFasterThanRealtime: result.timesFasterThanRealtime,
+                segments: result.segments
             )
         }
         throw TiroError.message("The selected transcription model is unavailable.")
@@ -755,8 +929,10 @@ final class TiroService {
             correctedText: entry.correctedText,
             originBundleID: entry.originBundleID,
             originAppName: entry.originAppName,
+            sourceFilename: entry.sourceFilename,
             audioAvailable: entry.audioAvailable ?? false,
-            audioFile: entry.audioFile
+            audioFile: entry.audioFile,
+            segments: entry.segments ?? []
         )
     }
 
@@ -764,6 +940,46 @@ final class TiroService {
         if status.activity != .idle { return status.activity.rawValue }
         if status.loaded { return "ready" }
         return status.installed ? "installed" : "not_installed"
+    }
+
+    private static func speakerAttributedText(_ segments: [TranscriptSegment]) -> String {
+        let speakerIDs = Array(Set(segments.compactMap(\.speakerID))).sorted()
+        let labels = Dictionary(uniqueKeysWithValues: speakerIDs.enumerated().map {
+            ($0.element, "Speaker \($0.offset + 1)")
+        })
+        return segments.map { segment in
+            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let speakerID = segment.speakerID, let label = labels[speakerID] else {
+                return text
+            }
+            return "\(label): \(text)"
+        }
+        .filter { !$0.isEmpty }
+        .joined(separator: "\n\n")
+    }
+
+    private func finalizedSegments(
+        _ segments: [TranscriptSegment],
+        options: NativeTranscriptionOptions,
+        originBundleID: String?
+    ) async throws -> [TranscriptSegment] {
+        let store = try requireStore()
+        try Task.checkCancellation()
+        let texts = try await store.finalizedTexts(
+            segments.map(\.text),
+            options: options,
+            originBundleID: originBundleID
+        )
+        try Task.checkCancellation()
+        return zip(segments, texts).map { segment, text in
+            TranscriptSegment(
+                text: text,
+                startSeconds: segment.startSeconds,
+                endSeconds: segment.endSeconds,
+                speakerID: segment.speakerID,
+                words: []
+            )
+        }
     }
 
     private static func mergeVocabulary(

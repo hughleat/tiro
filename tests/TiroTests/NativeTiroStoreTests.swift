@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import TiroRecognition
 @testable import Tiro
 
 @Suite(.serialized)
@@ -41,12 +42,19 @@ struct NativeTiroStoreTests {
                 audio: Data("wav".utf8),
                 originBundleID: "com.example.editor",
                 originAppName: "Editor",
+                segments: [TranscriptSegment(
+                    text: "Janne Best regards",
+                    startSeconds: 0,
+                    endSeconds: 1.2,
+                    speakerID: "speaker-0"
+                )],
                 id: UUID(uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")!
             ))
 
             #expect(entry.text == "Janne Best regards")
             #expect(entry.rawText == "yana my signature")
             #expect(entry.transcriptionSeconds == 0.124)
+            #expect(entry.segments?.first?.speakerID == "speaker-0")
             #expect(entry.audioFile?.hasPrefix("\(root.lastPathComponent)/audio/") == true)
             #expect(try await store.audio(forHistoryID: entry.id) == Data("wav".utf8))
 
@@ -70,6 +78,34 @@ struct NativeTiroStoreTests {
             ))
 
             #expect(entry.text == "hello")
+            #expect(!FileManager.default.fileExists(
+                atPath: root.appendingPathComponent("history.jsonl").path
+            ))
+            #expect((try FileManager.default.contentsOfDirectory(
+                at: root.appendingPathComponent("audio"),
+                includingPropertiesForKeys: nil
+            )).isEmpty)
+        }
+    }
+
+    @Test
+    func individualJobCanAvoidHistoryAndRetainSourceMetadataInItsResult() async throws {
+        try await withStore { store, root in
+            _ = try await store.updatePrivacySettings(NativePrivacySettings(
+                storeHistory: true,
+                storeRecordings: true,
+                retentionDays: 0
+            ))
+            let entry = try await store.finalize(NativeFinalizationRequest(
+                rawText: "meeting notes",
+                modelID: "model",
+                transcriptionSeconds: 0.2,
+                audio: Data("audio".utf8),
+                sourceFilename: "meeting.m4a",
+                saveToHistory: false
+            ))
+
+            #expect(entry.sourceFilename == "meeting.m4a")
             #expect(!FileManager.default.fileExists(
                 atPath: root.appendingPathComponent("history.jsonl").path
             ))

@@ -26,10 +26,39 @@ on-device recognition and language data.
 - Hold the shortcut for push-to-talk.
 - Press Escape to cancel.
 - Use the waveform menu-bar icon for recording, models, settings, and history.
+- Choose **Transcribe Audio File...** or drop an audio file into its window.
 
 Tiro includes automatic paste, searchable history, optional retained audio,
 global and per-app vocabulary, learned vocabulary suggestions, reusable
-snippets, spoken formatting, privacy controls, and model comparison.
+snippets, spoken formatting, privacy controls, model comparison, speaker
+identification, and text, Markdown, JSON, SRT, and VTT export.
+
+Speaker identification is optional and currently available for imported files
+whose transcription model supplies timestamps. Its additional local Core ML
+model is installed separately from **Settings > Models**.
+
+## Command Line
+
+Settings > General includes **Install Command-Line Tool...**, which links the
+small bundled helper at `/usr/local/bin/tiro`. The app remains responsible for
+recording, model loading, transcription, history, and the clipboard, so the
+command does not load a second copy of a model.
+
+```sh
+tiro transcribe meeting.m4a
+tiro transcribe interview.m4a --diarize
+tiro diarize interview.m4a --json
+tiro transcribe meeting.m4a --copy --json
+session="$(tiro record start)"
+tiro record stop "$session" --copy
+tiro status --json
+tiro models
+```
+
+Use `--no-history` on `transcribe`, `diarize`, or `record start` for one-off
+work. Plain output contains only the transcript. JSON transcription output also
+contains timestamped segments and, when diarisation is enabled, speaker IDs.
+Diagnostics use standard error output.
 
 ## Models
 

@@ -336,8 +336,10 @@ fi
 swift build "${swift_args[@]}"
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
 cp "$ROOT/.build/release/Tiro" "$APP/Contents/MacOS/Tiro"
+cp "$ROOT/.build/release/TiroCommand" "$APP/Contents/Helpers/tiro"
+chmod 755 "$APP/Contents/Helpers/tiro"
 cp "$ROOT/native/Info.plist" "$APP/Contents/Info.plist"
 mkdir -p "$APP/Contents/Resources/Licenses"
 cp "$ROOT/LICENSE" "$APP/Contents/Resources/Licenses/Tiro-MIT.txt"

@@ -48,6 +48,51 @@ struct RuntimeTranscript: Sendable {
     let audioSeconds: Double
     let transcriptionSeconds: Double
     let timesFasterThanRealtime: Double
+    let segments: [TranscriptSegment]
+
+    init(
+        text: String,
+        audioSeconds: Double,
+        transcriptionSeconds: Double,
+        timesFasterThanRealtime: Double,
+        segments: [TranscriptSegment] = []
+    ) {
+        self.text = text
+        self.audioSeconds = audioSeconds
+        self.transcriptionSeconds = transcriptionSeconds
+        self.timesFasterThanRealtime = timesFasterThanRealtime
+        self.segments = segments
+    }
+
+    init(fluidAudioResult result: ASRResult) {
+        let words = buildWordTimings(from: result.tokenTimings ?? []).map {
+            TranscriptWord(
+                text: $0.word,
+                startSeconds: $0.startTime,
+                endSeconds: $0.endTime
+            )
+        }
+        let segments = words.first.flatMap { first in
+            words.last.map { last in
+                [
+                    TranscriptSegment(
+                        text: result.text,
+                        startSeconds: first.startSeconds,
+                        endSeconds: last.endSeconds,
+                        words: words
+                    )
+                ]
+            }
+        } ?? []
+
+        self.init(
+            text: result.text,
+            audioSeconds: result.duration,
+            transcriptionSeconds: result.processingTime,
+            timesFasterThanRealtime: Double(result.rtfx),
+            segments: segments
+        )
+    }
 }
 
 protocol CompactCoreMLSession: Sendable {
@@ -171,7 +216,7 @@ private extension ParakeetModel {
     }
 }
 
-private enum FluidAudioBackendAccess {
+enum FluidAudioBackendAccess {
     private static let lock = AsyncLock()
 
     static func currentMode() async -> Bool {
@@ -237,12 +282,7 @@ private actor FluidAudioSession: CompactCoreMLSession {
             audioURL,
             decoderState: &decoderState
         )
-        return RuntimeTranscript(
-            text: result.text,
-            audioSeconds: result.duration,
-            transcriptionSeconds: result.processingTime,
-            timesFasterThanRealtime: Double(result.rtfx)
-        )
+        return RuntimeTranscript(fluidAudioResult: result)
     }
 }
 
@@ -474,7 +514,8 @@ public actor CoreMLParakeetEngine: RecognitionEngine {
                 model: model.recognitionModel,
                 audioSeconds: result.audioSeconds,
                 transcriptionSeconds: result.transcriptionSeconds,
-                timesFasterThanRealtime: result.timesFasterThanRealtime
+                timesFasterThanRealtime: result.timesFasterThanRealtime,
+                segments: result.segments
             )
         } catch {
             lastError = error.localizedDescription
