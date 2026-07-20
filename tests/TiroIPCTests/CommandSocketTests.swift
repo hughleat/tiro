@@ -107,14 +107,7 @@ private final class TestSocketServer: @unchecked Sendable {
     init(
         responses: @escaping @Sendable (TiroCommandRequest) -> [TiroCommandMessage]
     ) throws {
-        let identifier = UUID().uuidString.prefix(12)
-        let root = URL(
-            fileURLWithPath: "/tmp/tiro-ipc-\(identifier)",
-            isDirectory: true
-        )
-        let directory = root.appendingPathComponent("Tiro", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        url = directory.appendingPathComponent("command.sock")
+        url = try Self.makeSocketURL()
         descriptor = try Self.makeListener(url: url)
         task = Task.detached { [weak self] in
             guard let self else { return }
@@ -131,11 +124,7 @@ private final class TestSocketServer: @unchecked Sendable {
     }
 
     init(rawResponse: Data) throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("tiro-ipc-\(UUID().uuidString)", isDirectory: true)
-        let directory = root.appendingPathComponent("Tiro", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        url = directory.appendingPathComponent("command.sock")
+        url = try Self.makeSocketURL()
         descriptor = try Self.makeListener(url: url)
         task = Task.detached { [weak self] in
             self?.serve { _ in rawResponse }
@@ -149,7 +138,9 @@ private final class TestSocketServer: @unchecked Sendable {
     func close() {
         task?.cancel()
         Darwin.close(descriptor)
-        try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+        try? FileManager.default.removeItem(
+            at: url.deletingLastPathComponent().deletingLastPathComponent()
+        )
     }
 
     private func serve(response: (TiroCommandRequest) -> Data) {
@@ -211,5 +202,19 @@ private final class TestSocketServer: @unchecked Sendable {
             throw CocoaError(.fileWriteUnknown)
         }
         return descriptor
+    }
+
+    private static func makeSocketURL() throws -> URL {
+        let identifier = UUID().uuidString.prefix(12)
+        let root = URL(
+            fileURLWithPath: "/tmp/tiro-ipc-\(identifier)",
+            isDirectory: true
+        )
+        let directory = root.appendingPathComponent("Tiro", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        return directory.appendingPathComponent("command.sock")
     }
 }

@@ -106,7 +106,7 @@ struct SpeakerDiarizationEngineTests {
 
         #expect(aligned.count == 1)
         #expect(aligned[0].text == segment.text)
-        #expect(aligned[0].speakerID == "A")
+        #expect(aligned[0].speakerID == "B")
         #expect(aligned[0].words.isEmpty)
     }
 

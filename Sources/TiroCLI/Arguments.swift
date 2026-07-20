@@ -158,9 +158,8 @@ enum CLIArguments {
                         "The transcribe command accepts one file."
                     )
                 }
-                let supplied = URL(fileURLWithPath: argument)
-                path = (supplied.path.hasPrefix("/")
-                    ? supplied
+                path = (argument.hasPrefix("/")
+                    ? URL(fileURLWithPath: argument)
                     : currentDirectory.appendingPathComponent(argument))
                     .standardizedFileURL.path
             }

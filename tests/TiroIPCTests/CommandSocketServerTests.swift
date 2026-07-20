@@ -27,8 +27,11 @@ struct CommandSocketServerTests {
 
     @Test
     func serverNeverChangesPermissionsOfExistingDirectory() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("tiro-parent-\(UUID().uuidString)", isDirectory: true)
+        let identifier = UUID().uuidString.prefix(12)
+        let root = URL(
+            fileURLWithPath: "/tmp/tiro-parent-\(identifier)",
+            isDirectory: true
+        )
         let directory = root.appendingPathComponent("Tiro", isDirectory: true)
         try FileManager.default.createDirectory(
             at: directory,
