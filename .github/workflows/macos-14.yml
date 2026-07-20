@@ -35,3 +35,13 @@ jobs:
 
       - name: Run complete acceptance suite
         run: ./scripts/test_all.sh
+
+      - name: Retain tested DMG
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Tiro-macOS-arm64
+          path: |
+            dist/releases/*.dmg
+            dist/releases/*.dmg.sha256
+          if-no-files-found: error
+          retention-days: 7
