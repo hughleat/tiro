@@ -114,8 +114,14 @@ struct FluidAudioRuntime: CompactCoreMLRuntime {
         }
         try fileManager.moveItem(at: staging, to: candidate)
         try Task.checkCancellation()
-        guard !fileManager.fileExists(atPath: directory.path) else {
-            throw CoreMLParakeetError.installDestinationExists(directory)
+        if fileManager.fileExists(atPath: directory.path) {
+            guard AsrModels.modelsExist(
+                at: directory,
+                version: model.fluidAudioVersion
+            ) else {
+                throw CoreMLParakeetError.installDestinationExists(directory)
+            }
+            return
         }
         try fileManager.moveItem(at: candidate, to: directory)
     }
