@@ -373,7 +373,7 @@ private actor RuntimeStub: CompactCoreMLRuntime {
         if installationCheckDelay > 0 {
             try? await Task.sleep(for: .seconds(installationCheckDelay))
         }
-        installed
+        return installed
     }
 
     func download(
