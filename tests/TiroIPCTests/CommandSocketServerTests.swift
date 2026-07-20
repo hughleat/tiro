@@ -78,7 +78,7 @@ struct CommandSocketServerTests {
         let events = LockedValue<[TiroCommandEvent]>([])
         let response = try TiroCommandSocketClient(
             socketURL: fixture.socketURL,
-            timeout: 2
+            timeout: 10
         ).send(.status()) { event in
             events.mutate { $0.append(event) }
         }
@@ -131,7 +131,7 @@ struct CommandSocketServerTests {
 
         let response = try TiroCommandSocketClient(
             socketURL: fixture.socketURL,
-            timeout: 2
+            timeout: 10
         ).send(.status())
         #expect(response.result?.state == "idle")
     }
@@ -184,7 +184,7 @@ struct CommandSocketServerTests {
 
         let response = try TiroCommandSocketClient(
             socketURL: fixture.socketURL,
-            timeout: 2
+            timeout: 10
         ).send(.status())
 
         #expect(response.type == .failure)

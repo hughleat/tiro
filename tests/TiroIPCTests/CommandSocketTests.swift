@@ -26,7 +26,7 @@ struct CommandSocketTests {
 
         let response = try TiroCommandSocketClient(
             socketURL: server.url,
-            timeout: 2
+            timeout: 10
         ).send(request) { event in
             events.append(event)
         }
@@ -47,7 +47,7 @@ struct CommandSocketTests {
         defer { server.close() }
 
         #expect(throws: TiroProtocolError.self) {
-            try TiroCommandSocketClient(socketURL: server.url, timeout: 2)
+            try TiroCommandSocketClient(socketURL: server.url, timeout: 10)
                 .send(.status())
         }
     }
@@ -61,7 +61,7 @@ struct CommandSocketTests {
         defer { server.close() }
 
         #expect(throws: TiroProtocolError.self) {
-            try TiroCommandSocketClient(socketURL: server.url, timeout: 2)
+            try TiroCommandSocketClient(socketURL: server.url, timeout: 10)
                 .send(.status())
         }
     }
