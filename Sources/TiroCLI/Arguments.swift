@@ -19,6 +19,12 @@ enum CLIInvocation: Equatable {
         diarize: Bool,
         format: CLIOutputFormat
     )
+    case recordForeground(
+        model: String?,
+        copy: Bool,
+        saveHistory: Bool,
+        format: CLIOutputFormat
+    )
     case recordStart(model: String?, saveHistory: Bool, format: CLIOutputFormat)
     case recordStop(session: String, copy: Bool, format: CLIOutputFormat)
     case recordCancel(session: String, format: CLIOutputFormat)
@@ -26,7 +32,8 @@ enum CLIInvocation: Equatable {
     var format: CLIOutputFormat {
         switch self {
         case .status(let format), .models(let format), .transcribe(_, _, _, _, _, let format),
-             .recordStart(_, _, let format), .recordStop(_, _, let format),
+             .recordForeground(_, _, _, let format), .recordStart(_, _, let format),
+             .recordStop(_, _, let format),
              .recordCancel(_, let format):
             format
         case .help, .version:
@@ -50,6 +57,7 @@ enum CLIArguments {
     usage:
       tiro transcribe FILE [--model KEY] [--diarize] [--copy] [--no-history] [--json]
       tiro diarize FILE [--model KEY] [--copy] [--no-history] [--json]
+      tiro record [--model KEY] [--copy] [--no-history] [--json]
       tiro record start [--model KEY] [--no-history] [--json]
       tiro record stop SESSION [--copy] [--json]
       tiro record cancel SESSION [--json]
@@ -186,8 +194,8 @@ enum CLIArguments {
     }
 
     private static func parseRecord(_ arguments: [String]) throws -> CLIInvocation {
-        guard let action = arguments.first else {
-            throw CLIArgumentError.message("The record command requires start, stop, or cancel.")
+        guard let action = arguments.first, !action.hasPrefix("-") else {
+            return try parseForegroundRecord(arguments)
         }
         switch action {
         case "start":
@@ -223,6 +231,45 @@ enum CLIArguments {
         default:
             throw CLIArgumentError.message("Unknown record action: \(action)")
         }
+    }
+
+    private static func parseForegroundRecord(
+        _ arguments: [String]
+    ) throws -> CLIInvocation {
+        var model: String?
+        var copy = false
+        var saveHistory = true
+        var format = CLIOutputFormat.text
+        var index = 0
+
+        while index < arguments.count {
+            switch arguments[index] {
+            case "--copy": copy = true
+            case "--no-history": saveHistory = false
+            case "--json": format = .json
+            case "--model":
+                index += 1
+                guard index < arguments.count, !arguments[index].hasPrefix("-") else {
+                    throw CLIArgumentError.message("--model requires a model key.")
+                }
+                guard model == nil else {
+                    throw CLIArgumentError.message("--model may only be supplied once.")
+                }
+                model = arguments[index]
+            default:
+                throw CLIArgumentError.message(
+                    "Unknown record option: \(arguments[index])"
+                )
+            }
+            index += 1
+        }
+
+        return .recordForeground(
+            model: model,
+            copy: copy,
+            saveHistory: saveHistory,
+            format: format
+        )
     }
 
     private static func parseRecordingEnd(

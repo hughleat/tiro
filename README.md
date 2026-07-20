@@ -49,6 +49,7 @@ tiro transcribe meeting.m4a
 tiro transcribe interview.m4a --diarize
 tiro diarize interview.m4a --json
 tiro transcribe meeting.m4a --copy --json
+tiro record --copy
 session="$(tiro record start)"
 tiro record stop "$session" --copy
 tiro status --json
@@ -58,7 +59,9 @@ tiro models
 Use `--no-history` on `transcribe`, `diarize`, or `record start` for one-off
 work. Plain output contains only the transcript. JSON transcription output also
 contains timestamped segments and, when diarisation is enabled, speaker IDs.
-Diagnostics use standard error output.
+Interactive `tiro record` records until Control-D, then transcribes; Control-C
+cancels and discards it. Tiro also cancels the recording if the terminal
+process exits unexpectedly. Diagnostics use standard error output.
 
 ## Models
 

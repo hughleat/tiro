@@ -1,7 +1,7 @@
 import Foundation
 
 public enum TiroProtocolLimits {
-    public static let version = 1
+    public static let version = 2
     public static let maximumRequestBytes = 64 * 1_024
     public static let maximumMessageBytes = 1_024 * 1_024
     public static let maximumResponseBytes = 4 * 1_024 * 1_024
@@ -28,6 +28,7 @@ public struct TiroCommandArguments: Codable, Equatable, Sendable {
     public let saveHistory: Bool?
     public let diarize: Bool?
     public let session: String?
+    public let lease: Bool?
 
     public init(
         path: String? = nil,
@@ -35,7 +36,8 @@ public struct TiroCommandArguments: Codable, Equatable, Sendable {
         copy: Bool? = nil,
         saveHistory: Bool? = nil,
         diarize: Bool? = nil,
-        session: String? = nil
+        session: String? = nil,
+        lease: Bool? = nil
     ) {
         self.path = path
         self.model = model
@@ -43,6 +45,7 @@ public struct TiroCommandArguments: Codable, Equatable, Sendable {
         self.saveHistory = saveHistory
         self.diarize = diarize
         self.session = session
+        self.lease = lease
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -52,6 +55,7 @@ public struct TiroCommandArguments: Codable, Equatable, Sendable {
         case saveHistory = "save_history"
         case diarize
         case session
+        case lease
     }
 }
 
@@ -104,12 +108,17 @@ public struct TiroCommandRequest: Codable, Equatable, Sendable {
     public static func recordStart(
         model: String?,
         saveHistory: Bool,
+        lease: Bool = false,
         id: UUID = UUID()
     ) -> TiroCommandRequest {
         TiroCommandRequest(
             id: id,
             command: .recordStart,
-            arguments: TiroCommandArguments(model: model, saveHistory: saveHistory)
+            arguments: TiroCommandArguments(
+                model: model,
+                saveHistory: saveHistory,
+                lease: lease ? true : nil
+            )
         )
     }
 
@@ -151,7 +160,8 @@ public struct TiroCommandRequest: Codable, Equatable, Sendable {
                 )
             }
         case .transcribe:
-            guard let arguments, let path = arguments.path, !path.isEmpty else {
+            guard let arguments, let path = arguments.path, !path.isEmpty,
+                  arguments.lease == nil else {
                 throw TiroProtocolError.invalidRequest(
                     "The transcribe command requires a file path."
                 )
@@ -169,21 +179,24 @@ public struct TiroCommandRequest: Codable, Equatable, Sendable {
             guard let arguments,
                   arguments.path == nil,
                   arguments.session == nil,
-                  arguments.diarize == nil else {
+                  arguments.diarize == nil,
+                  arguments.copy == nil else {
                 throw TiroProtocolError.invalidRequest(
                     "The record start command has invalid arguments."
                 )
             }
             try Self.validateModel(arguments.model)
         case .recordStop:
-            guard arguments?.diarize == nil else {
+            guard arguments?.diarize == nil,
+                  arguments?.lease == nil else {
                 throw TiroProtocolError.invalidRequest(
                     "The record stop command has invalid arguments."
                 )
             }
             try Self.validateSession(arguments?.session)
         case .recordCancel:
-            guard arguments?.diarize == nil else {
+            guard arguments?.diarize == nil,
+                  arguments?.lease == nil else {
                 throw TiroProtocolError.invalidRequest(
                     "The record cancel command has invalid arguments."
                 )

@@ -341,33 +341,43 @@ import UniformTypeIdentifiers
         state = .starting
         menuToggleItem.title = "Recording from Command Line"
         do {
-            try await service.preload(model: model)
-        } catch {
-            if commandRecording?.session == recording.session {
-                commandRecording = nil
-                finishCancelledTranscription()
+            try await withTaskCancellationHandler {
+                try await service.preload(model: model)
+            } onCancel: { [weak self] in
+                Task { @MainActor in
+                    await self?.cancelCommandRecording(session: recording.session)
+                }
             }
-            throw error
-        }
-        guard commandRecording?.session == recording.session, state == .starting else {
-            throw CancellationError()
-        }
-        beginRecording(reportErrors: false)
-        guard state == .recording else {
-            commandRecording = nil
-            throw TiroError.message("Tiro could not start recording.")
-        }
-        do {
-            try await responder.sendSuccess(TiroCommandResult(
-                kind: "recording",
-                model: model.key,
-                state: "recording",
-                session: recording.session.uuidString.lowercased()
-            ))
+            try Task.checkCancellation()
+            guard commandRecording?.session == recording.session, state == .starting else {
+                throw CancellationError()
+            }
+            beginRecording(reportErrors: false)
+            guard state == .recording else {
+                throw TiroError.message("Tiro could not start recording.")
+            }
+
+            let session = recording.session.uuidString.lowercased()
+            if arguments?.lease == true {
+                try await responder.sendEvent(name: "recording", detail: session)
+                while commandRecording?.session == recording.session {
+                    try await Task.sleep(nanoseconds: 250_000_000)
+                }
+                try await responder.sendSuccess(TiroCommandResult(
+                    kind: "lease_released",
+                    state: "idle",
+                    session: session
+                ))
+            } else {
+                try await responder.sendSuccess(TiroCommandResult(
+                    kind: "recording",
+                    model: model.key,
+                    state: "recording",
+                    session: session
+                ))
+            }
         } catch {
-            recorder.cancel()
-            commandRecording = nil
-            finishCancelledTranscription()
+            await cancelCommandRecording(session: recording.session)
             throw error
         }
     }
@@ -449,6 +459,18 @@ import UniformTypeIdentifiers
             )
             return
         }
+        let session = commandRecording?.session
+        if let session {
+            await cancelCommandRecording(session: session)
+        }
+        try await responder.sendSuccess(TiroCommandResult(
+            kind: "cancelled",
+            state: "idle"
+        ))
+    }
+
+    private func cancelCommandRecording(session: UUID) async {
+        guard commandRecording?.session == session else { return }
         if state == .transcribing {
             let task = commandTranscriptionTask
             task?.cancel()
@@ -456,14 +478,12 @@ import UniformTypeIdentifiers
             commandRecording = nil
             if let task { _ = await task.result }
         } else {
-            recorder.cancel()
+            if recorder.isRecording {
+                recorder.cancel()
+            }
             commandRecording = nil
         }
         finishCancelledTranscription()
-        try await responder.sendSuccess(TiroCommandResult(
-            kind: "cancelled",
-            state: "idle"
-        ))
     }
 
     private func matchingCommandRecording(_ request: TiroCommandRequest) -> CommandRecording? {

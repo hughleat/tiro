@@ -19,7 +19,7 @@ struct CommandProtocolTests {
             JSONSerialization.jsonObject(with: JSONEncoder().encode(request))
                 as? [String: Any]
         )
-        #expect(object["v"] as? Int == 1)
+        #expect(object["v"] as? Int == 2)
         #expect(object["id"] as? String == id.uuidString.lowercased())
         #expect(object["command"] as? String == "transcribe")
         let arguments = try #require(object["arguments"] as? [String: Any])
@@ -86,8 +86,9 @@ struct CommandProtocolTests {
         let session = UUID()
         #expect(try TiroCommandRequest.recordStart(
             model: nil,
-            saveHistory: true
-        ).validated().command == .recordStart)
+            saveHistory: true,
+            lease: true
+        ).validated().arguments?.lease == true)
         #expect(try TiroCommandRequest.recordStop(
             session: session.uuidString,
             copy: true

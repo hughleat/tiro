@@ -55,8 +55,10 @@ let package = Package(
             ],
             sources: [
                 "BuildFeaturesTests.swift",
+                "CommandLineToolInstallerTests.swift",
                 "DictationModelCatalogTests.swift",
                 "ErrorRecoveryTests.swift",
+                "FileTranscriptionOperationOwnerTests.swift",
                 "ModelComparisonViewTests.swift",
                 "ModelDownloadStateTests.swift",
                 "ModelManagementViewTests.swift",

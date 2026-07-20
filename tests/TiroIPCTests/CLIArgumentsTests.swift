@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import TiroCLI
@@ -55,6 +56,14 @@ struct CLIArgumentsTests {
     func parsesRecordingLifecycle() throws {
         let session = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
         #expect(try CLIArguments.parse([
+            "record", "--model", "coreml-compact", "--copy", "--no-history", "--json"
+        ]) == .recordForeground(
+            model: "coreml-compact",
+            copy: true,
+            saveHistory: false,
+            format: .json
+        ))
+        #expect(try CLIArguments.parse([
             "record", "start", "--model", "coreml-compact", "--no-history"
         ]) == .recordStart(
             model: "coreml-compact",
@@ -67,6 +76,52 @@ struct CLIArgumentsTests {
         #expect(try CLIArguments.parse([
             "record", "cancel", session
         ]) == .recordCancel(session: session, format: .text))
+    }
+
+    @Test
+    func foregroundRecordingFinishesOnEndOfInputAndCancelsOnInterrupt() throws {
+        var descriptors: [Int32] = [0, 0]
+        #expect(pipe(&descriptors) == 0)
+        defer { close(descriptors[0]) }
+        var controlD: UInt8 = 0x04
+        #expect(write(descriptors[1], &controlD, 1) == 1)
+
+        let endOfInput = ForegroundRecordingInput(monitorInterrupts: false)
+        #expect(endOfInput.wait(inputDescriptor: descriptors[0]) == .finish)
+        close(descriptors[1])
+
+        let interrupted = ForegroundRecordingInput(monitorInterrupts: false)
+        interrupted.receiveInterrupt()
+        #expect(interrupted.wait(inputDescriptor: -1) == .cancel)
+    }
+
+    @Test
+    func foregroundLeasePublishesItsSessionAndCompletion() throws {
+        let session = UUID().uuidString.lowercased()
+        let lease = ForegroundRecordingLeaseState()
+        lease.receive(TiroCommandEvent(name: "recording", detail: session))
+
+        guard case .started(let receivedSession) = lease.snapshot else {
+            Issue.record("The foreground lease did not publish its recording session.")
+            return
+        }
+        #expect(receivedSession == session)
+
+        let request = TiroCommandRequest.recordStart(
+            model: nil,
+            saveHistory: true,
+            lease: true
+        )
+        lease.complete(.success(.success(
+            id: request.id,
+            result: TiroCommandResult(kind: "lease_released", state: "idle")
+        )))
+        #expect(lease.isComplete)
+        guard case .completed(let response) = lease.snapshot else {
+            Issue.record("The foreground lease did not publish its completion.")
+            return
+        }
+        #expect(response.result?.kind == "lease_released")
     }
 
     @Test
