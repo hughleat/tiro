@@ -95,7 +95,7 @@ struct CommandSocketServerTests {
         let handlerCancelled = LockedValue(false)
         try server.start { _, _ in
             handlerStarted.set(true)
-            await withTaskCancellationHandler {
+            try await withTaskCancellationHandler {
                 while !Task.isCancelled {
                     try await Task.sleep(nanoseconds: 25_000_000)
                 }
@@ -200,7 +200,7 @@ struct CommandSocketServerTests {
         let handlerStopped = LockedValue(false)
         try server.start { _, responder in
             handlerStarted.set(true)
-            await withTaskCancellationHandler {
+            try await withTaskCancellationHandler {
                 for index in 0..<1_000 {
                     try Task.checkCancellation()
                     try await responder.sendEvent(
