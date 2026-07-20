@@ -9,6 +9,7 @@ final class TiroService {
     private let parakeetEngines: [String: CoreMLParakeetEngine]
     private let whisperEngines: [String: CoreMLWhisperEngine]
     private var comparisonTasks: [String: Task<[ModelComparisonResult], Error>] = [:]
+    private var mutatingModelKey: String?
 
     init() {
         do {
@@ -126,7 +127,17 @@ final class TiroService {
     }
 
     func activate(model: DictationModel) async throws {
+        guard DictationModel.selected.key == model.key else { return }
         try await unloadModels(except: model.key)
+    }
+
+    func select(model: DictationModel) throws {
+        guard mutatingModelKey != model.key else {
+            throw TiroError.message(
+                "Wait for the \(model.name) operation to finish before selecting it."
+            )
+        }
+        DictationModel.select(model)
     }
 
     func models() async -> [ManagedModel] {
@@ -177,6 +188,8 @@ final class TiroService {
     }
 
     func downloadModel(key: String) async throws {
+        try beginModelMutation(key: key)
+        defer { finishModelMutation(key: key) }
         if key == DictationModel.appleSpeechKey {
             throw TiroError.message("Apple Speech is managed by macOS and needs no Tiro download.")
         } else if let engine = parakeetEngines[key] {
@@ -189,6 +202,13 @@ final class TiroService {
     }
 
     func deleteModel(key: String) async throws {
+        guard DictationModel.selected.key != key else {
+            throw TiroError.message(
+                "Select another transcription model before deleting this one."
+            )
+        }
+        try beginModelMutation(key: key)
+        defer { finishModelMutation(key: key) }
         if key == DictationModel.appleSpeechKey {
             throw TiroError.message("Apple Speech is managed by macOS and cannot be deleted by Tiro.")
         } else if let engine = parakeetEngines[key] {
@@ -197,6 +217,21 @@ final class TiroService {
             try await engine.delete()
         } else {
             throw TiroError.message("The requested transcription model is unavailable.")
+        }
+    }
+
+    private func beginModelMutation(key: String) throws {
+        guard mutatingModelKey == nil else {
+            throw TiroError.message(
+                "Wait for the current model operation to finish."
+            )
+        }
+        mutatingModelKey = key
+    }
+
+    private func finishModelMutation(key: String) {
+        if mutatingModelKey == key {
+            mutatingModelKey = nil
         }
     }
 

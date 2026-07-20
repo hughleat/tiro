@@ -29,6 +29,7 @@ import ApplicationServices
     private var installedModelKeys: Set<String> = []
     private var modelInventoryStatus = ModelInventoryStatus.loading
     private var modelStartupTask: Task<Void, Never>?
+    private var modelSelectionTask: Task<Void, Never>?
     private var transcriptionTask: Task<Void, Never>?
     private var transcriptionID: UUID?
     private var permissionTimer: Timer?
@@ -73,6 +74,7 @@ import ApplicationServices
         supportPromptTimer?.invalidate()
 #endif
         modelStartupTask?.cancel()
+        modelSelectionTask?.cancel()
         transcriptionTask?.cancel()
         hotkeys.stop()
         PasteEventGate.shared.stop()
@@ -648,17 +650,26 @@ import ApplicationServices
         guard let key = sender.representedObject as? String,
               installedModelKeys.contains(key),
               let model = DictationModel.all.first(where: { $0.key == key }) else { return }
-        DictationModel.select(model)
+        do {
+            try service.select(model: model)
+        } catch {
+            presentError(error)
+            return
+        }
         updateModelChecks()
         settingsWindow.refreshModel()
         modelStatusItem.title = "Model: Loads on First Dictation"
-        Task { [weak self] in
+        modelSelectionTask?.cancel()
+        modelSelectionTask = Task { [weak self] in
             guard let self else { return }
             do {
                 try await service.activate(model: model)
+                guard !Task.isCancelled else { return }
                 let models = await service.models()
+                guard !Task.isCancelled else { return }
                 applyModelInventory(models)
             } catch {
+                guard !Task.isCancelled else { return }
                 presentError(error)
             }
         }

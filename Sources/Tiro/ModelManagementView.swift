@@ -29,6 +29,7 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
     private var operations: [String: Operation] = [:]
     private var loadTask: Task<Void, Never>?
     private var mutationTask: Task<Void, Never>?
+    private var selectionTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
     private var pollGeneration = 0
     private var isApplyingSelection = false
@@ -44,6 +45,7 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
     deinit {
         loadTask?.cancel()
         mutationTask?.cancel()
+        selectionTask?.cancel()
         pollTask?.cancel()
     }
 
@@ -63,6 +65,8 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         loadTask = nil
         mutationTask?.cancel()
         mutationTask = nil
+        selectionTask?.cancel()
+        selectionTask = nil
         operations.removeAll()
         stopPolling()
         table.reloadData()
@@ -128,7 +132,7 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         ])
     }
 
-    private func apply(_ loaded: [ManagedModel]) {
+    func apply(_ loaded: [ManagedModel]) {
         let knownOrder = Dictionary(uniqueKeysWithValues: DictationModel.all.enumerated().map { ($0.element.key, $0.offset) })
         models = loaded.sorted {
             (knownOrder[$0.key] ?? Int.max, $0.name) < (knownOrder[$1.key] ?? Int.max, $1.name)
@@ -152,17 +156,30 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
             $0.usable && !$0.deleting && $0.dictationModel != nil
         }
         guard let row = selectedRow ?? fallbackRow else {
-            isApplyingSelection = true
-            table.deselectAll(nil)
-            isApplyingSelection = false
+            selectTableRow(nil)
             return
         }
-        isApplyingSelection = true
-        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        isApplyingSelection = false
+        selectTableRow(row)
         if selectedRow == nil, let model = models[row].dictationModel {
-            DictationModel.select(model)
-            onModelChanged?(model)
+            do {
+                try service.select(model: model)
+                onModelChanged?(model)
+            } catch {
+                window?.presentError(error)
+            }
+        }
+    }
+
+    private func selectTableRow(_ row: Int?) {
+        isApplyingSelection = true
+        defer { isApplyingSelection = false }
+        if let row {
+            table.selectRowIndexes(
+                IndexSet(integer: row),
+                byExtendingSelection: false
+            )
+        } else {
+            table.deselectAll(nil)
         }
     }
 
@@ -194,12 +211,16 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         let downloadStatus = model.progress.map {
             "Downloading \(Int(($0 * 100).rounded()))%"
         } ?? "Downloading..."
+        let mutationInProgress = !operations.isEmpty || models.contains {
+            $0.downloading || $0.deleting
+        }
         cell.configure(
             model: model,
             operation: model.downloading
                 ? downloadStatus
                 : operations[model.key]?.label
                     ?? (model.deleting ? "Deleting..." : nil),
+            mutationInProgress: mutationInProgress,
             isSelectedModel: DictationModel.selected.key == model.key,
             row: row,
             target: self
@@ -218,16 +239,30 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
             restoreSafeSelection()
             return
         }
-        DictationModel.select(model)
+        guard DictationModel.selected.key != model.key else {
+            table.reloadData()
+            selectTableRow(row)
+            return
+        }
+        do {
+            try service.select(model: model)
+        } catch {
+            restoreSafeSelection()
+            window?.presentError(error)
+            return
+        }
         table.reloadData()
-        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        selectTableRow(row)
         onModelChanged?(model)
-        Task { [weak self] in
+        selectionTask?.cancel()
+        selectionTask = Task { [weak self] in
             guard let self else { return }
             do {
                 try await service.activate(model: model)
+                guard !Task.isCancelled else { return }
                 apply(await service.models())
             } catch {
+                guard !Task.isCancelled else { return }
                 window?.presentError(error)
             }
         }
@@ -272,7 +307,9 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
     }
 
     private func beginMutation(_ operation: Operation, model: ManagedModel) {
-        guard operations[model.key] == nil, !model.downloading, !model.deleting else { return }
+        guard operations.isEmpty,
+              !models.contains(where: { $0.downloading || $0.deleting }),
+              !model.downloading, !model.deleting else { return }
         operations[model.key] = operation
         table.reloadData()
         startPolling()
@@ -388,6 +425,7 @@ private final class ModelRowView: NSTableCellView {
     func configure(
         model: ManagedModel,
         operation: String?,
+        mutationInProgress: Bool,
         isSelectedModel: Bool,
         row: Int,
         target: ModelManagementView
@@ -433,6 +471,7 @@ private final class ModelRowView: NSTableCellView {
         actionButton.isHidden = model.isSystemManaged && model.installed
         let deletionBlocked = isDelete && (isSelectedModel || model.loaded)
         actionButton.isEnabled = operation == nil
+            && !mutationInProgress
             && !model.downloading
             && !model.deleting
             && !deletionBlocked
