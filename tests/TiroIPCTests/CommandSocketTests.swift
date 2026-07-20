@@ -107,8 +107,11 @@ private final class TestSocketServer: @unchecked Sendable {
     init(
         responses: @escaping @Sendable (TiroCommandRequest) -> [TiroCommandMessage]
     ) throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("tiro-ipc-\(UUID().uuidString)", isDirectory: true)
+        let identifier = UUID().uuidString.prefix(12)
+        let root = URL(
+            fileURLWithPath: "/tmp/tiro-ipc-\(identifier)",
+            isDirectory: true
+        )
         let directory = root.appendingPathComponent("Tiro", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         url = directory.appendingPathComponent("command.sock")
@@ -185,6 +188,7 @@ private final class TestSocketServer: @unchecked Sendable {
     }
 
     private static func makeListener(url: URL) throws -> Int32 {
+        try TiroCommandSocketPath.validate(url)
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
         var address = sockaddr_un()
