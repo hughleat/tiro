@@ -8,10 +8,24 @@ final class TiroService {
     private let appleSpeechEngine = AppleSpeechEngine()
     private let parakeetEngines: [String: CoreMLParakeetEngine]
     private let whisperEngines: [String: CoreMLWhisperEngine]
+    private let availableModelCapacity: () -> Int64?
     private var comparisonTasks: [String: Task<[ModelComparisonResult], Error>] = [:]
     private var mutatingModelKey: String?
+    private var modelOperation: (key: String, operation: ManagedModelOperation)?
+    private var modelOperationTask: Task<Void, Never>?
+    private var modelOperationErrors: [String: String] = [:]
+    private var modelCleanupErrors: [String: String] = [:]
+    private var pendingCleanupKeys: Set<String> = []
+    private var cleanupInProgress = false
+    private var cleanupRetryAfter: Date?
+    private var cleanupRetryTask: Task<Void, Never>?
+    private var automaticCleanupRetryUsed = false
 
-    init() {
+    init(
+        availableModelCapacity: @escaping () -> Int64? = {
+            ModelStorageCapacity.available(at: AppPaths.coreMLModelsDirectory)
+        }
+    ) {
         do {
             store = try NativeTiroStore(rootURL: AppPaths.dataDirectory)
             storeError = nil
@@ -21,6 +35,7 @@ final class TiroService {
         }
 
         let root = AppPaths.coreMLModelsDirectory
+        self.availableModelCapacity = availableModelCapacity
         parakeetEngines = [
             DictationModel.coreMLCompactKey: CoreMLParakeetEngine(
                 model: .compact,
@@ -58,6 +73,8 @@ final class TiroService {
             "coreml-whisper-large-v3": CoreMLWhisperEngine(model: .largeV3, modelsRootDirectory: root),
             "coreml-whisper-turbo": CoreMLWhisperEngine(model: .turbo, modelsRootDirectory: root),
         ]
+        pendingCleanupKeys = Set(parakeetEngines.keys)
+            .union(whisperEngines.keys)
     }
 
     func transcribe(
@@ -141,6 +158,8 @@ final class TiroService {
     }
 
     func models() async -> [ManagedModel] {
+        await cleanupAbandonedDownloadsIfNeeded()
+        let availableBytes = availableModelCapacity()
         var result: [ManagedModel] = []
         for model in DictationModel.all {
             if model.key == DictationModel.appleSpeechKey {
@@ -153,11 +172,10 @@ final class TiroService {
                     installedSizeBytes: nil,
                     installed: availability.permissionGranted,
                     usable: availability.usable,
-                    downloading: false,
-                    deleting: false,
+                    operation: nil,
                     loaded: availability.usable,
-                    downloadError: nil,
-                    progress: nil,
+                    operationError: nil,
+                    downloadSpace: nil,
                     state: availability.state.rawValue
                 ))
                 continue
@@ -171,57 +189,166 @@ final class TiroService {
                 status = nil
             }
             guard let status else { continue }
+            let activeOperation: ManagedModelOperation?
+            if modelOperation?.key == model.key {
+                switch modelOperation?.operation {
+                case .downloading:
+                    activeOperation = .downloading(
+                        progress: status.downloadProgress
+                    )
+                case .cancelling:
+                    activeOperation = .cancelling
+                case .deleting:
+                    activeOperation = .deleting
+                case nil:
+                    activeOperation = nil
+                }
+            } else {
+                switch status.activity {
+                case .downloading:
+                    activeOperation = .downloading(
+                        progress: status.downloadProgress
+                    )
+                case .deleting:
+                    activeOperation = .deleting
+                default:
+                    activeOperation = nil
+                }
+            }
+            let downloadSpace = model.downloadSizeBytes.map {
+                ModelDownloadSpace(
+                    downloadBytes: $0,
+                    availableBytes: availableBytes
+                )
+            }
             result.append(ManagedModel(
                 key: model.key,
                 installedSizeBytes: status.installed ? status.sizeBytes : nil,
                 installed: status.installed,
                 usable: status.installed,
-                downloading: status.activity == .downloading,
-                deleting: status.activity == .deleting,
+                operation: activeOperation,
                 loaded: status.loaded,
-                downloadError: status.lastError,
-                progress: status.downloadProgress,
+                operationError: modelOperationErrors[model.key]
+                    ?? modelCleanupErrors[model.key],
+                downloadSpace: downloadSpace,
                 state: Self.state(for: status)
             ))
         }
         return result
     }
 
-    func downloadModel(key: String) async throws {
-        try beginModelMutation(key: key)
-        defer { finishModelMutation(key: key) }
-        if key == DictationModel.appleSpeechKey {
-            throw TiroError.message("Apple Speech is managed by macOS and needs no Tiro download.")
-        } else if let engine = parakeetEngines[key] {
-            try await engine.download()
-        } else if let engine = whisperEngines[key] {
-            try await engine.download()
-        } else {
-            throw TiroError.message("The requested transcription model is unavailable.")
+    @discardableResult
+    func startDownload(key: String) -> Bool {
+        do {
+            let model = try downloadableModel(key: key)
+            let space = ModelDownloadSpace(
+                downloadBytes: model.downloadSizeBytes ?? 0,
+                availableBytes: availableModelCapacity()
+            )
+            guard space.hasEnoughSpace else {
+                modelOperationErrors[key] = nil
+                return false
+            }
+            try beginModelMutation(key: key)
+            modelOperationErrors[key] = nil
+            modelOperation = (key, .downloading(progress: nil))
+            modelOperationTask = Task { [weak self] in
+                await self?.runDownload(key: key)
+            }
+            return true
+        } catch {
+            modelOperationErrors[key] = error.localizedDescription
+            return false
         }
     }
 
-    func deleteModel(key: String) async throws {
-        guard DictationModel.selected.key != key else {
+    func startDelete(key: String) {
+        do {
+            guard DictationModel.selected.key != key else {
+                throw TiroError.message(
+                    "Select another transcription model before deleting this one."
+                )
+            }
+            try beginModelMutation(key: key)
+            modelOperationErrors[key] = nil
+            modelOperation = (key, .deleting)
+            modelOperationTask = Task { [weak self] in
+                await self?.runDelete(key: key)
+            }
+        } catch {
+            modelOperationErrors[key] = error.localizedDescription
+        }
+    }
+
+    func cancelModelOperation(key: String) {
+        guard modelOperation?.key == key,
+              modelOperation?.operation.isDownloading == true else { return }
+        modelOperation = (key, .cancelling)
+        modelOperationTask?.cancel()
+    }
+
+    func modelOperationError(for key: String) -> String? {
+        modelOperationErrors[key]
+    }
+
+    private func runDownload(key: String) async {
+        do {
+            if let engine = parakeetEngines[key] {
+                try await engine.download()
+            } else if let engine = whisperEngines[key] {
+                try await engine.download()
+            } else {
+                throw TiroError.message(
+                    "The requested transcription model is unavailable."
+                )
+            }
+            modelOperationErrors[key] = nil
+            modelCleanupErrors[key] = nil
+            pendingCleanupKeys.remove(key)
+        } catch is CancellationError {
+            modelOperationErrors[key] = nil
+            scheduleCleanup(for: key)
+        } catch {
+            modelOperationErrors[key] = error.localizedDescription
+            scheduleCleanup(for: key)
+        }
+        finishModelMutation(key: key)
+    }
+
+    private func runDelete(key: String) async {
+        do {
+            if let engine = parakeetEngines[key] {
+                try await engine.delete()
+            } else if let engine = whisperEngines[key] {
+                try await engine.delete()
+            } else {
+                throw TiroError.message(
+                    "The requested transcription model is unavailable."
+                )
+            }
+            modelOperationErrors[key] = nil
+            modelCleanupErrors[key] = nil
+            pendingCleanupKeys.remove(key)
+        } catch {
+            modelOperationErrors[key] = error.localizedDescription
+            scheduleCleanup(for: key)
+        }
+        finishModelMutation(key: key)
+    }
+
+    private func downloadableModel(key: String) throws -> DictationModel {
+        guard key != DictationModel.appleSpeechKey,
+              let model = DictationModel.all.first(where: { $0.key == key }),
+              model.downloadSizeBytes != nil else {
             throw TiroError.message(
-                "Select another transcription model before deleting this one."
+                "The requested transcription model is unavailable."
             )
         }
-        try beginModelMutation(key: key)
-        defer { finishModelMutation(key: key) }
-        if key == DictationModel.appleSpeechKey {
-            throw TiroError.message("Apple Speech is managed by macOS and cannot be deleted by Tiro.")
-        } else if let engine = parakeetEngines[key] {
-            try await engine.delete()
-        } else if let engine = whisperEngines[key] {
-            try await engine.delete()
-        } else {
-            throw TiroError.message("The requested transcription model is unavailable.")
-        }
+        return model
     }
 
     private func beginModelMutation(key: String) throws {
-        guard mutatingModelKey == nil else {
+        guard mutatingModelKey == nil, !cleanupInProgress else {
             throw TiroError.message(
                 "Wait for the current model operation to finish."
             )
@@ -232,6 +359,66 @@ final class TiroService {
     private func finishModelMutation(key: String) {
         if mutatingModelKey == key {
             mutatingModelKey = nil
+            modelOperation = nil
+            modelOperationTask = nil
+        }
+    }
+
+    private func cleanupAbandonedDownloadsIfNeeded() async {
+        guard !cleanupInProgress,
+              !pendingCleanupKeys.isEmpty,
+              cleanupRetryAfter.map({ $0 <= Date() }) ?? true else { return }
+        guard mutatingModelKey == nil else {
+            cleanupRetryAfter = Date().addingTimeInterval(5)
+            cleanupRetryTask?.cancel()
+            cleanupRetryTask = nil
+            automaticCleanupRetryUsed = false
+            scheduleAutomaticCleanupRetry(delay: 5)
+            return
+        }
+        cleanupInProgress = true
+        defer { cleanupInProgress = false }
+
+        for key in Array(pendingCleanupKeys) {
+            do {
+                if let engine = parakeetEngines[key] {
+                    try await engine.cleanupAbandonedDownload()
+                } else if let engine = whisperEngines[key] {
+                    try await engine.cleanupAbandonedDownload()
+                }
+                modelCleanupErrors[key] = nil
+                pendingCleanupKeys.remove(key)
+            } catch {
+                modelCleanupErrors[key] =
+                    "Could not clean up an interrupted download: \(error.localizedDescription)"
+            }
+        }
+        cleanupRetryAfter = pendingCleanupKeys.isEmpty
+            ? nil
+            : Date().addingTimeInterval(30)
+        if pendingCleanupKeys.isEmpty {
+            cleanupRetryTask?.cancel()
+            cleanupRetryTask = nil
+        } else {
+            scheduleAutomaticCleanupRetry()
+        }
+    }
+
+    private func scheduleCleanup(for key: String) {
+        pendingCleanupKeys.insert(key)
+        cleanupRetryAfter = nil
+        automaticCleanupRetryUsed = false
+    }
+
+    private func scheduleAutomaticCleanupRetry(delay: TimeInterval = 30) {
+        guard !automaticCleanupRetryUsed, cleanupRetryTask == nil else { return }
+        automaticCleanupRetryUsed = true
+        cleanupRetryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled else { return }
+            cleanupRetryTask = nil
+            cleanupRetryAfter = nil
+            await cleanupAbandonedDownloadsIfNeeded()
         }
     }
 

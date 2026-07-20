@@ -25,8 +25,8 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     private var microphoneStatus = AVCaptureDevice.authorizationStatus(for: .audio)
     private var models: [ManagedModel] = []
     private var refreshTask: Task<Void, Never>?
-    private var downloadTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
+    private var downloadRequested = false
 
     init(service: TiroService, shortcutName: String) {
         self.service = service
@@ -50,7 +50,6 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
 
     deinit {
         refreshTask?.cancel()
-        downloadTask?.cancel()
         pollTask?.cancel()
     }
 
@@ -182,11 +181,13 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
 
     private func apply(_ models: [ManagedModel]) {
         self.models = models
-        if let compact = models.first(where: { $0.key == DictationModel.coreMLCompactKey }),
-           compact.downloading {
+        let compact = models.first { $0.key == DictationModel.coreMLCompactKey }
+        if let compact, compact.downloading {
             downloadProgress.isIndeterminate = compact.progress == nil
             downloadProgress.doubleValue = (compact.progress ?? 0) * 100
             downloadProgress.startAnimation(nil)
+        } else {
+            downloadProgress.stopAnimation(nil)
         }
         let installed = Set(models.lazy.filter { $0.usable && !$0.deleting }.map(\.key))
         readiness = SetupReadiness(
@@ -196,9 +197,16 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         )
         onModelsChanged?(models)
         render()
-        if models.contains(where: { $0.downloading }) {
+        if downloadRequested, compact?.installed == true {
+            downloadRequested = false
+            if let model = compact?.dictationModel {
+                try? service.select(model: model)
+            }
+            onDownloadCompleted?()
+        }
+        if models.contains(where: { $0.operation != nil }) {
             if pollTask == nil { startPolling() }
-        } else if downloadTask == nil {
+        } else {
             stopPolling()
         }
     }
@@ -221,13 +229,41 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
             actionTitle: readiness.accessibilityAllowed ? nil : "Open Settings"
         )
 
-        if readiness.hasInstalledModel {
-            let installedName = models.first(where: { readiness.installedModelKeys.contains($0.key) })?.name
-                ?? "Installed"
+        let compact = models.first { $0.key == DictationModel.coreMLCompactKey }
+        let activeModel = models.first { $0.operation != nil }
+        if case .downloading(let fraction) = compact?.operation {
+            let status = fraction.map {
+                "Downloading Parakeet Compact · \(Int(($0 * 100).rounded()))%"
+            } ?? "Starting Parakeet Compact download..."
+            modelRow.set(status: status, ready: false, actionTitle: "Cancel")
+            modelRow.button.action = #selector(cancelCompactDownload)
+        } else if case .cancelling = compact?.operation {
+            modelRow.set(status: "Cancelling download...", ready: false, actionTitle: nil)
+        } else if let activeModel {
+            modelRow.set(
+                status: "Managing \(activeModel.name)...",
+                ready: readiness.hasInstalledModel,
+                actionTitle: nil
+            )
+        } else if compact?.installed == false,
+                  let space = compact?.downloadSpace,
+                  !space.hasEnoughSpace,
+                  let available = space.availableBytes {
+            modelRow.set(
+                status: "Needs \(fileSize(space.requiredBytes)) free; "
+                    + "\(fileSize(available)) is available",
+                ready: false,
+                actionTitle: nil
+            )
+        } else if compact?.installed == false,
+                  let error = compact?.operationError {
+            modelRow.set(status: error, ready: false, actionTitle: "Retry")
+            modelRow.button.action = #selector(downloadCompactModel)
+        } else if readiness.hasInstalledModel {
+            let installedName = models.first(where: {
+                readiness.installedModelKeys.contains($0.key)
+            })?.name ?? "Installed"
             modelRow.set(status: installedName, ready: true, actionTitle: nil)
-        } else if models.first(where: { $0.key == "coreml-compact" })?.downloading == true
-                    || downloadTask != nil {
-            modelRow.set(status: "Downloading Parakeet Compact...", ready: false, actionTitle: nil)
         } else {
             modelRow.set(status: "Parakeet Compact, 220 MB", ready: false, actionTitle: "Download")
             modelRow.button.action = #selector(downloadCompactModel)
@@ -262,32 +298,22 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func downloadCompactModel() {
-        guard downloadTask == nil else { return }
         messageLabel.isHidden = true
-        downloadProgress.startAnimation(nil)
-        downloadTask = Task { [weak self] in
+        downloadRequested = service.startDownload(
+            key: DictationModel.coreMLCompactKey
+        )
+        refreshTask?.cancel()
+        refreshTask = Task { [weak self] in
             guard let self else { return }
-            do {
-                try await service.downloadModel(key: "coreml-compact")
-                guard !Task.isCancelled else { return }
-                DictationModel.select(.coreMLCompact)
-                let models = await service.models()
-                downloadTask = nil
-                stopPolling()
-                downloadProgress.stopAnimation(nil)
-                apply(models)
-                onDownloadCompleted?()
-            } catch {
-                guard !Task.isCancelled else { return }
-                downloadTask = nil
-                stopPolling()
-                downloadProgress.stopAnimation(nil)
-                showError(error.localizedDescription)
-                render()
-            }
+            apply(await service.models())
         }
-        render()
         startPolling()
+    }
+
+    @objc private func cancelCompactDownload() {
+        downloadRequested = false
+        service.cancelModelOperation(key: DictationModel.coreMLCompactKey)
+        refreshModels()
     }
 
     private func startPolling() {
@@ -309,6 +335,10 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     private func showError(_ message: String) {
         messageLabel.stringValue = message
         messageLabel.isHidden = false
+    }
+
+    private func fileSize(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
     @objc private func finishSetup() {

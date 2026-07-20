@@ -6,29 +6,16 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
     var onModelChanged: ((DictationModel) -> Void)?
     var onModelsChanged: (([ManagedModel]) -> Void)?
 
-    private enum Operation: Equatable {
-        case downloading
-        case deleting
-
-        var label: String {
-            switch self {
-            case .downloading: return "Downloading..."
-            case .deleting: return "Deleting..."
-            }
-        }
-    }
-
     private let service: TiroService
     private let table = NSTableView()
+    private let storageLabel = NSTextField(labelWithString: "")
     private let stateLabel = NSTextField(labelWithString: "")
     private let stateProgress = NSProgressIndicator()
     private let stateButton = NSButton()
     private enum StateAction { case retry }
     private var stateAction: StateAction?
     private var models: [ManagedModel] = []
-    private var operations: [String: Operation] = [:]
     private var loadTask: Task<Void, Never>?
-    private var mutationTask: Task<Void, Never>?
     private var selectionTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
     private var pollGeneration = 0
@@ -44,7 +31,6 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
 
     deinit {
         loadTask?.cancel()
-        mutationTask?.cancel()
         selectionTask?.cancel()
         pollTask?.cancel()
     }
@@ -63,19 +49,15 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
     func cancelWork() {
         loadTask?.cancel()
         loadTask = nil
-        mutationTask?.cancel()
-        mutationTask = nil
         selectionTask?.cancel()
         selectionTask = nil
-        operations.removeAll()
         stopPolling()
-        table.reloadData()
     }
 
     private func buildContent() {
         orientation = .vertical
         alignment = .leading
-        spacing = 8
+        spacing = 7
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("model"))
         column.resizingMask = .autoresizingMask
@@ -83,7 +65,7 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         table.headerView = nil
         table.dataSource = self
         table.delegate = self
-        table.rowHeight = 58
+        table.rowHeight = 68
         table.intercellSpacing = NSSize(width: 0, height: 1)
         table.allowsEmptySelection = true
         table.allowsMultipleSelection = false
@@ -100,8 +82,6 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         stateLabel.textColor = .secondaryLabelColor
         stateLabel.maximumNumberOfLines = 3
         stateLabel.lineBreakMode = .byWordWrapping
-        stateLabel.translatesAutoresizingMaskIntoConstraints = false
-
         stateProgress.style = .spinning
         stateProgress.controlSize = .small
         stateProgress.isDisplayedWhenStopped = false
@@ -128,21 +108,37 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
             stateStack.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 24),
             stateStack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -24),
             stateStack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            stateStack.centerYAnchor.constraint(equalTo: container.centerYAnchor)
+            stateStack.centerYAnchor.constraint(equalTo: container.centerYAnchor),
         ])
+
+        storageLabel.font = .systemFont(ofSize: 11)
+        storageLabel.textColor = .secondaryLabelColor
+        storageLabel.alignment = .right
+        addArrangedSubview(storageLabel)
+        storageLabel.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
     }
 
     func apply(_ loaded: [ManagedModel]) {
-        let knownOrder = Dictionary(uniqueKeysWithValues: DictationModel.all.enumerated().map { ($0.element.key, $0.offset) })
+        let order = Dictionary(uniqueKeysWithValues: DictationModel.all.enumerated().map {
+            ($0.element.key, $0.offset)
+        })
         models = loaded.sorted {
-            (knownOrder[$0.key] ?? Int.max, $0.name) < (knownOrder[$1.key] ?? Int.max, $1.name)
+            (order[$0.key] ?? Int.max, $0.name) < (order[$1.key] ?? Int.max, $1.name)
+        }
+        if let available = models.lazy.compactMap({ $0.downloadSpace?.availableBytes }).first {
+            storageLabel.stringValue = "\(Self.fileSize(available)) available for models"
+            storageLabel.isHidden = false
+        } else {
+            storageLabel.isHidden = true
         }
         table.reloadData()
-        showState(models.isEmpty ? "No models are available." : nil,
-                  action: models.isEmpty ? .retry : nil)
+        showState(
+            models.isEmpty ? "No models are available." : nil,
+            action: models.isEmpty ? .retry : nil
+        )
         onModelsChanged?(models)
         restoreSafeSelection()
-        if models.contains(where: { $0.downloading || $0.deleting }) { startPolling() }
+        models.contains(where: { $0.operation != nil }) ? startPolling() : stopPolling()
     }
 
     private func restoreSafeSelection() {
@@ -174,16 +170,17 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         isApplyingSelection = true
         defer { isApplyingSelection = false }
         if let row {
-            table.selectRowIndexes(
-                IndexSet(integer: row),
-                byExtendingSelection: false
-            )
+            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         } else {
             table.deselectAll(nil)
         }
     }
 
-    private func showState(_ message: String?, loading: Bool = false, action: StateAction? = nil) {
+    private func showState(
+        _ message: String?,
+        loading: Bool = false,
+        action: StateAction? = nil
+    ) {
         stateLabel.stringValue = message ?? ""
         stateLabel.isHidden = message == nil
         table.isHidden = message != nil
@@ -194,34 +191,24 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
     }
 
     @objc private func performStateAction() {
-        switch stateAction {
-        case .retry: refresh()
-        case nil: break
-        }
+        if stateAction == .retry { refresh() }
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { models.count }
 
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+    func tableView(
+        _ tableView: NSTableView,
+        viewFor tableColumn: NSTableColumn?,
+        row: Int
+    ) -> NSView? {
         guard models.indices.contains(row) else { return nil }
         let identifier = NSUserInterfaceItemIdentifier("ModelRow")
         let cell = (tableView.makeView(withIdentifier: identifier, owner: self) as? ModelRowView)
             ?? ModelRowView(identifier: identifier)
-        let model = models[row]
-        let downloadStatus = model.progress.map {
-            "Downloading \(Int(($0 * 100).rounded()))%"
-        } ?? "Downloading..."
-        let mutationInProgress = !operations.isEmpty || models.contains {
-            $0.downloading || $0.deleting
-        }
         cell.configure(
-            model: model,
-            operation: model.downloading
-                ? downloadStatus
-                : operations[model.key]?.label
-                    ?? (model.deleting ? "Deleting..." : nil),
-            mutationInProgress: mutationInProgress,
-            isSelectedModel: DictationModel.selected.key == model.key,
+            model: models[row],
+            mutationInProgress: models.contains { $0.operation != nil },
+            isSelectedModel: DictationModel.selected.key == models[row].key,
             row: row,
             target: self
         )
@@ -233,8 +220,7 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         let row = table.selectedRow
         guard models.indices.contains(row),
               models[row].usable || (models[row].isSystemManaged && models[row].installed),
-              operations[models[row].key] == nil,
-              !models[row].downloading, !models[row].deleting,
+              models[row].operation == nil,
               let model = models[row].dictationModel else {
             restoreSafeSelection()
             return
@@ -270,7 +256,14 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
 
     @objc fileprivate func download(_ sender: NSButton) {
         guard models.indices.contains(sender.tag) else { return }
-        beginMutation(.downloading, model: models[sender.tag])
+        service.startDownload(key: models[sender.tag].key)
+        refreshAfterCommand()
+    }
+
+    @objc fileprivate func cancelDownload(_ sender: NSButton) {
+        guard models.indices.contains(sender.tag) else { return }
+        service.cancelModelOperation(key: models[sender.tag].key)
+        refreshAfterCommand()
     }
 
     @objc fileprivate func deleteModel(_ sender: NSButton) {
@@ -280,16 +273,21 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
 
         let alert = NSAlert()
         alert.messageText = "Delete \(model.name)?"
-        alert.informativeText = "The downloaded model files will be removed. You can download them again later."
+        alert.informativeText =
+            "The downloaded model files will be removed. You can download them again later."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard response == .alertFirstButtonReturn else { return }
-            self?.beginMutation(.deleting, model: model)
+            self?.service.startDelete(key: model.key)
+            self?.refreshAfterCommand()
         }
-        if let window { alert.beginSheetModal(for: window, completionHandler: completion) }
-        else { completion(alert.runModal()) }
+        if let window {
+            alert.beginSheetModal(for: window, completionHandler: completion)
+        } else {
+            completion(alert.runModal())
+        }
     }
 
     @objc fileprivate func allowSystemModel(_ sender: NSButton) {
@@ -306,32 +304,11 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         }
     }
 
-    private func beginMutation(_ operation: Operation, model: ManagedModel) {
-        guard operations.isEmpty,
-              !models.contains(where: { $0.downloading || $0.deleting }),
-              !model.downloading, !model.deleting else { return }
-        operations[model.key] = operation
-        table.reloadData()
-        startPolling()
-        mutationTask = Task { [weak self] in
+    private func refreshAfterCommand() {
+        loadTask?.cancel()
+        loadTask = Task { [weak self] in
             guard let self else { return }
-            do {
-                switch operation {
-                case .downloading: try await service.downloadModel(key: model.key)
-                case .deleting: try await service.deleteModel(key: model.key)
-                }
-                guard !Task.isCancelled else { return }
-                operations[model.key] = nil
-                let loaded = await service.models()
-                apply(loaded)
-                stopPollingIfIdle()
-            } catch {
-                guard !Task.isCancelled else { return }
-                operations[model.key] = nil
-                stopPollingIfIdle()
-                table.reloadData()
-                window?.presentError(error)
-            }
+            apply(await service.models())
         }
     }
 
@@ -341,19 +318,14 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         let generation = pollGeneration
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 750_000_000)
-                guard let self, !Task.isCancelled,
-                      !operations.isEmpty || models.contains(where: { $0.downloading || $0.deleting }) else { break }
-                apply(await service.models())
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                guard let self, !Task.isCancelled else { break }
+                let snapshot = await service.models()
+                apply(snapshot)
+                if !snapshot.contains(where: { $0.operation != nil }) { break }
             }
             self?.finishPolling(generation: generation)
         }
-    }
-
-    private func stopPollingIfIdle() {
-        guard operations.isEmpty,
-              !models.contains(where: { $0.downloading || $0.deleting }) else { return }
-        stopPolling()
     }
 
     private func stopPolling() {
@@ -365,6 +337,10 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
     private func finishPolling(generation: Int) {
         guard generation == pollGeneration else { return }
         pollTask = nil
+    }
+
+    fileprivate static func fileSize(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 }
 
@@ -393,18 +369,21 @@ private final class ModelRowView: NSTableCellView {
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.alignment = .right
 
-        progress.style = .spinning
+        progress.style = .bar
+        progress.minValue = 0
+        progress.maxValue = 1
         progress.controlSize = .small
         progress.isDisplayedWhenStopped = false
+        progress.setAccessibilityLabel("Model operation progress")
 
         let labels = NSStackView(views: [nameLabel, detailLabel])
         labels.orientation = .vertical
         labels.alignment = .leading
-        labels.spacing = 2
+        labels.spacing = 3
         let trailing = NSStackView(views: [statusLabel, progress, actionButton])
         trailing.orientation = .horizontal
         trailing.alignment = .centerY
-        trailing.spacing = 7
+        trailing.spacing = 8
         labels.translatesAutoresizingMaskIntoConstraints = false
         trailing.translatesAutoresizingMaskIntoConstraints = false
         addSubview(labels)
@@ -415,8 +394,9 @@ private final class ModelRowView: NSTableCellView {
             labels.trailingAnchor.constraint(lessThanOrEqualTo: trailing.leadingAnchor, constant: -10),
             trailing.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             trailing.centerYAnchor.constraint(equalTo: centerYAnchor),
+            progress.widthAnchor.constraint(equalToConstant: 88),
             actionButton.widthAnchor.constraint(equalToConstant: 28),
-            actionButton.heightAnchor.constraint(equalToConstant: 28)
+            actionButton.heightAnchor.constraint(equalToConstant: 28),
         ])
         nameLabel.widthAnchor.constraint(equalTo: labels.widthAnchor).isActive = true
         detailLabel.widthAnchor.constraint(equalTo: labels.widthAnchor).isActive = true
@@ -424,38 +404,146 @@ private final class ModelRowView: NSTableCellView {
 
     func configure(
         model: ManagedModel,
-        operation: String?,
         mutationInProgress: Bool,
         isSelectedModel: Bool,
         row: Int,
         target: ModelManagementView
     ) {
+        let insufficientSpace = !model.installed
+            && model.downloadSpace?.hasEnoughSpace == false
+        let showsOperationError = model.operationError != nil && !insufficientSpace
         nameLabel.stringValue = model.name
-        detailLabel.stringValue = [model.detail, model.sizeDescription].filter { !$0.isEmpty }.joined(separator: " · ")
-        let serverState = model.state?.replacingOccurrences(of: "_", with: " ").capitalized
-        let selectionState = isSelectedModel
-            ? (model.usable ? "Selected" : "Selected · Unavailable")
+        nameLabel.textColor = .labelColor
+        detailLabel.stringValue = detail(for: model)
+        detailLabel.textColor = showsOperationError ? .systemRed : .secondaryLabelColor
+        detailLabel.toolTip = showsOperationError || insufficientSpace
+            ? detailLabel.stringValue
             : nil
-        statusLabel.stringValue = operation
-            ?? selectionState
-            ?? (model.downloadError == nil ? serverState : "Model error")
-            ?? (model.installed ? "Installed" : "Not installed")
-        statusLabel.textColor = model.usable ? .secondaryLabelColor : .tertiaryLabelColor
+        statusLabel.stringValue = status(for: model, selected: isSelectedModel)
+        statusLabel.textColor = showsOperationError
+            ? .systemRed
+            : (model.usable ? .secondaryLabelColor : .tertiaryLabelColor)
 
-        if operation != nil {
+        configureProgress(for: model)
+        configureAction(
+            for: model,
+            mutationInProgress: mutationInProgress,
+            selected: isSelectedModel,
+            row: row,
+            target: target
+        )
+
+        let selectionStatus = isSelectedModel
+            ? "Selected model"
+            : (model.isSystemManaged
+                ? "Provided by macOS"
+                : (model.installed ? "Installed" : "Not installed"))
+        setAccessibilityLabel(model.name)
+        setAccessibilityValue(
+            "\(selectionStatus), \(detailLabel.stringValue), \(statusLabel.stringValue)"
+        )
+        setAccessibilitySelected(isSelectedModel)
+    }
+
+    private func detail(for model: ManagedModel) -> String {
+        if !model.installed, let space = model.downloadSpace, !space.hasEnoughSpace,
+           let available = space.availableBytes {
+            return "Needs \(ModelManagementView.fileSize(space.requiredBytes)) free · "
+                + "\(ModelManagementView.fileSize(available)) available"
+        }
+        if let error = model.operationError { return error }
+        return [model.detail, model.sizeDescription]
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
+    }
+
+    private func status(for model: ManagedModel, selected: Bool) -> String {
+        switch model.operation {
+        case .downloading(let fraction):
+            guard let fraction else { return "Starting download..." }
+            let percent = Int((fraction * 100).rounded())
+            let downloaded = ModelManagementView.fileSize(
+                Int64(Double(model.downloadSizeBytes ?? 0) * fraction)
+            )
+            return "\(percent)% · \(downloaded) of \(model.sizeDescription)"
+        case .cancelling:
+            return "Cancelling..."
+        case .deleting:
+            return "Deleting..."
+        case nil:
+            if !model.installed, model.downloadSpace?.hasEnoughSpace == false {
+                return "Not enough space"
+            }
+            if model.operationError != nil { return "Operation failed" }
+            if selected { return model.usable ? "Selected" : "Selected · Unavailable" }
+            let state = model.state?.replacingOccurrences(of: "_", with: " ").capitalized
+            return state ?? (model.installed ? "Installed" : "Not installed")
+        }
+    }
+
+    private func configureProgress(for model: ManagedModel) {
+        switch model.operation {
+        case .downloading(let fraction):
+            progress.isHidden = false
+            progress.isIndeterminate = fraction == nil
+            progress.doubleValue = fraction ?? 0
             progress.startAnimation(nil)
-        } else {
+            progress.setAccessibilityValue(fraction.map {
+                "\(Int(($0 * 100).rounded())) percent"
+            } ?? "Starting")
+        case .cancelling, .deleting:
+            progress.isHidden = false
+            progress.isIndeterminate = true
+            progress.startAnimation(nil)
+            progress.setAccessibilityValue(
+                model.operation?.isDeleting == true ? "Deleting" : "Cancelling"
+            )
+        case nil:
             progress.stopAnimation(nil)
+            progress.isHidden = true
+            progress.setAccessibilityValue(nil)
+        }
+    }
+
+    private func configureAction(
+        for model: ManagedModel,
+        mutationInProgress: Bool,
+        selected: Bool,
+        row: Int,
+        target: ModelManagementView
+    ) {
+        let isDelete = model.installed && !model.isSystemManaged
+        let isActiveDownload = model.operation?.isDownloading == true
+        let insufficientSpace = !model.installed
+            && model.downloadSpace?.hasEnoughSpace == false
+        let label: String
+        let symbol: String
+        let action: Selector
+
+        if isActiveDownload {
+            label = "Cancel \(model.name) download"
+            symbol = "xmark.circle"
+            action = #selector(ModelManagementView.cancelDownload(_:))
+        } else if model.isSystemManaged {
+            label = "Allow \(model.name)"
+            symbol = "lock.open"
+            action = #selector(ModelManagementView.allowSystemModel(_:))
+        } else if isDelete {
+            label = "Delete \(model.name)"
+            symbol = "trash"
+            action = #selector(ModelManagementView.deleteModel(_:))
+        } else {
+            label = model.operationError == nil || insufficientSpace
+                ? "Download \(model.name)"
+                : "Retry \(model.name) download"
+            symbol = model.operationError == nil || insufficientSpace
+                ? "arrow.down.circle"
+                : "arrow.clockwise"
+            action = #selector(ModelManagementView.download(_:))
         }
 
-        let isDelete = model.installed && !model.isSystemManaged
-        let label = model.isSystemManaged
-            ? "Allow \(model.name)"
-            : (isDelete ? "Delete \(model.name)" : "Download \(model.name)")
         actionButton.image = NSImage(
-            systemSymbolName: model.isSystemManaged
-                ? "lock.open"
-                : (isDelete ? "trash" : "arrow.down.circle"),
+            systemSymbolName: symbol,
             accessibilityDescription: label
         )
         actionButton.imagePosition = .imageOnly
@@ -463,36 +551,28 @@ private final class ModelRowView: NSTableCellView {
         actionButton.isBordered = false
         actionButton.tag = row
         actionButton.target = target
-        actionButton.action = model.isSystemManaged
-            ? #selector(ModelManagementView.allowSystemModel(_:))
-            : (isDelete
-                ? #selector(ModelManagementView.deleteModel(_:))
-                : #selector(ModelManagementView.download(_:)))
-        actionButton.isHidden = model.isSystemManaged && model.installed
-        let deletionBlocked = isDelete && (isSelectedModel || model.loaded)
-        actionButton.isEnabled = operation == nil
-            && !mutationInProgress
-            && !model.downloading
-            && !model.deleting
-            && !deletionBlocked
-        if model.loaded && !isSelectedModel {
-            actionButton.toolTip = "The loaded model cannot be deleted until another model is used"
-        } else if isDelete && isSelectedModel {
-            actionButton.toolTip = "Select another installed model before deleting"
+        actionButton.action = action
+        actionButton.isHidden = (model.isSystemManaged && model.installed)
+            || model.operation?.isDeleting == true
+        let deletionBlocked = isDelete && (selected || model.loaded)
+        if case .downloading = model.operation {
+            actionButton.isEnabled = true
         } else {
-            actionButton.toolTip = model.downloadError ?? label
+            actionButton.isEnabled = model.operation == nil
+                && !mutationInProgress
+                && !deletionBlocked
+                && !insufficientSpace
+        }
+        if model.loaded && !selected {
+            actionButton.toolTip =
+                "The loaded model cannot be deleted until another model is used"
+        } else if isDelete && selected {
+            actionButton.toolTip = "Select another installed model before deleting"
+        } else if insufficientSpace {
+            actionButton.toolTip = detail(for: model)
+        } else {
+            actionButton.toolTip = label
         }
         actionButton.setAccessibilityLabel(label)
-        let selectionStatus: String
-        if isSelectedModel {
-            selectionStatus = "Selected model"
-        } else if model.isSystemManaged {
-            selectionStatus = "Provided by macOS"
-        } else {
-            selectionStatus = model.installed ? "Installed" : "Not installed"
-        }
-        setAccessibilityLabel(model.name)
-        setAccessibilityValue("\(selectionStatus), \(detailLabel.stringValue), \(statusLabel.stringValue)")
-        setAccessibilitySelected(isSelectedModel)
     }
 }

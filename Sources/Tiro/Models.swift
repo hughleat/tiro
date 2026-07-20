@@ -330,14 +330,20 @@ struct ManagedModel: Hashable {
     let installedSizeBytes: Int64?
     let installed: Bool
     let usable: Bool
-    let downloading: Bool
-    let deleting: Bool
+    let operation: ManagedModelOperation?
     let loaded: Bool
-    let downloadError: String?
-    let progress: Double?
+    let operationError: String?
+    let downloadSpace: ModelDownloadSpace?
     let state: String?
 
     var isSystemManaged: Bool { provisioning == .systemManaged }
+    var downloading: Bool { operation?.isDownloading == true }
+    var deleting: Bool { operation?.isDeleting == true }
+
+    var progress: Double? {
+        guard case .downloading(let progress) = operation else { return nil }
+        return progress
+    }
 
     var downloadSizeBytes: Int64? {
         guard case .downloadable(let bytes) = provisioning else { return nil }
@@ -367,11 +373,10 @@ struct ManagedModel: Hashable {
         installedSizeBytes: Int64?,
         installed: Bool,
         usable: Bool? = nil,
-        downloading: Bool,
-        deleting: Bool,
+        operation: ManagedModelOperation?,
         loaded: Bool,
-        downloadError: String?,
-        progress: Double?,
+        operationError: String?,
+        downloadSpace: ModelDownloadSpace?,
         state: String?
     ) {
         self.key = key
@@ -382,11 +387,10 @@ struct ManagedModel: Hashable {
         self.installedSizeBytes = installedSizeBytes
         self.installed = installed
         self.usable = usable ?? installed
-        self.downloading = downloading
-        self.deleting = deleting
+        self.operation = operation
         self.loaded = loaded
-        self.downloadError = downloadError
-        self.progress = progress
+        self.operationError = operationError
+        self.downloadSpace = downloadSpace
         self.state = state
     }
 

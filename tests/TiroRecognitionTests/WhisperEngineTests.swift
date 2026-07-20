@@ -177,6 +177,65 @@ struct WhisperEngineTests {
     }
 
     @Test
+    func cancellationRemovesPartialModelWithoutRecordingFailure() async {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let engine = CoreMLWhisperEngine(
+            model: .tiny,
+            modelsRootDirectory: root,
+            runtime: WhisperRuntimeStub(downloadThrowsCancellation: true)
+        )
+
+        do {
+            try await engine.download()
+            Issue.record("Expected cancellation")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        let status = await engine.status()
+        #expect(!FileManager.default.fileExists(atPath: engine.modelDirectory.path))
+        #expect(status.lastError == nil)
+    }
+
+    @Test
+    func cleanupRemovesInterruptedArtifactsAndKeepsSiblings() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let engine = CoreMLWhisperEngine(
+            model: .tiny,
+            modelsRootDirectory: root,
+            runtime: WhisperRuntimeStub()
+        )
+        let staging = root.appendingPathComponent(
+            ".whisperkit-download-openai_whisper-tiny-interrupted"
+        )
+        let otherModelStaging = root.appendingPathComponent(
+            ".whisperkit-download-openai_whisper-base-interrupted"
+        )
+        let sibling = root.appendingPathComponent("keep-me")
+        try FileManager.default.createDirectory(
+            at: engine.modelDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: otherModelStaging,
+            withIntermediateDirectories: true
+        )
+        try Data().write(to: sibling)
+
+        try await engine.cleanupAbandonedDownload()
+
+        #expect(!FileManager.default.fileExists(atPath: engine.modelDirectory.path))
+        #expect(!FileManager.default.fileExists(atPath: staging.path))
+        #expect(FileManager.default.fileExists(atPath: otherModelStaging.path))
+        #expect(FileManager.default.fileExists(atPath: sibling.path))
+    }
+
+    @Test
     func loadAndTranscribeUseOwnedSessionAndDecodingOptions() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -318,6 +377,7 @@ struct WhisperEngineTests {
 private actor WhisperRuntimeStub: WhisperCoreMLRuntime {
     private var installed: Bool
     private let downloadCreatesInstallation: Bool
+    private let downloadThrowsCancellation: Bool
     private let session: WhisperSessionStub
     private let sessionDelay: TimeInterval
     private(set) var downloadCount = 0
@@ -326,11 +386,13 @@ private actor WhisperRuntimeStub: WhisperCoreMLRuntime {
     init(
         installed: Bool = false,
         downloadCreatesInstallation: Bool = false,
+        downloadThrowsCancellation: Bool = false,
         session: WhisperSessionStub = WhisperSessionStub(),
         sessionDelay: TimeInterval = 0
     ) {
         self.installed = installed
         self.downloadCreatesInstallation = downloadCreatesInstallation
+        self.downloadThrowsCancellation = downloadThrowsCancellation
         self.session = session
         self.sessionDelay = sessionDelay
     }
@@ -346,6 +408,14 @@ private actor WhisperRuntimeStub: WhisperCoreMLRuntime {
     ) throws {
         downloadCount += 1
         progress(-0.5)
+        if downloadThrowsCancellation {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            try Data().write(to: directory.appendingPathComponent("partial"))
+            throw CancellationError()
+        }
         progress(0.5)
         progress(1.5)
         guard downloadCreatesInstallation else { return }

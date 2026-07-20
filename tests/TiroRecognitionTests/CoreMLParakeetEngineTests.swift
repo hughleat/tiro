@@ -84,6 +84,131 @@ struct CoreMLParakeetEngineTests {
     }
 
     @Test
+    func testCancellationRemovesPartialModelWithoutRecordingFailure() async {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtime = RuntimeStub(downloadThrowsCancellation: true)
+        let engine = CoreMLParakeetEngine(
+            modelsRootDirectory: root,
+            runtime: runtime
+        )
+
+        do {
+            try await engine.download()
+            Issue.record("Expected cancellation")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        let status = await engine.status()
+        #expect(!FileManager.default.fileExists(atPath: engine.modelDirectory.path))
+        #expect(status.lastError == nil)
+    }
+
+    @Test
+    func testCleanupRemovesInterruptedArtifactsAndKeepsSiblings() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let engine = CoreMLParakeetEngine(
+            model: .compact,
+            modelsRootDirectory: root,
+            runtime: RuntimeStub()
+        )
+        let staging = root.appendingPathComponent(
+            ".parakeet-tdt-ctc-110m-download-interrupted"
+        )
+        let sibling = root.appendingPathComponent("keep-me")
+        try FileManager.default.createDirectory(
+            at: engine.modelDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try Data().write(to: sibling)
+
+        try await engine.cleanupAbandonedDownload()
+
+        #expect(!FileManager.default.fileExists(atPath: engine.modelDirectory.path))
+        #expect(!FileManager.default.fileExists(atPath: staging.path))
+        #expect(FileManager.default.fileExists(atPath: sibling.path))
+    }
+
+    @Test
+    func testCleanupPreventsSameModelDownloadFromStarting() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtime = RuntimeStub(installationCheckDelay: 0.1)
+        let engine = CoreMLParakeetEngine(
+            modelsRootDirectory: root,
+            runtime: runtime
+        )
+        try FileManager.default.createDirectory(
+            at: engine.modelDirectory,
+            withIntermediateDirectories: true
+        )
+        let cleanup = Task { try await engine.cleanupAbandonedDownload() }
+        while (await engine.status()).activity != .cleaning {
+            await Task.yield()
+        }
+
+        do {
+            try await engine.download()
+            Issue.record("Expected cleanup to exclude download")
+        } catch CoreMLParakeetError.activityInProgress(.cleaning) {
+            // Expected.
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        try await cleanup.value
+    }
+
+    @Test
+    func testCleanupRejectsSymlinkedModelRoot() async throws {
+        let container = temporaryDirectory()
+        let realRoot = container.appendingPathComponent("real", isDirectory: true)
+        let linkedRoot = container.appendingPathComponent("linked", isDirectory: true)
+        try FileManager.default.createDirectory(at: realRoot, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: linkedRoot,
+            withDestinationURL: realRoot
+        )
+        let staging = realRoot.appendingPathComponent(
+            ".parakeet-tdt-ctc-110m-download-keep"
+        )
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: container) }
+        let engine = CoreMLParakeetEngine(
+            modelsRootDirectory: linkedRoot,
+            runtime: RuntimeStub()
+        )
+
+        do {
+            try await engine.cleanupAbandonedDownload()
+            Issue.record("Expected unsafe model directory error")
+        } catch CoreMLParakeetError.unsafeModelDirectory {
+            // Expected.
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(FileManager.default.fileExists(atPath: staging.path))
+    }
+
+    @Test
+    func testModelDirectoryLeaseExcludesAnotherLocalOwner() throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let first = try #require(ModelDirectoryLease.acquire(at: root))
+        #expect(ModelDirectoryLease.acquire(at: root) == nil)
+        first.release()
+
+        let next = try #require(ModelDirectoryLease.acquire(at: root))
+        next.release()
+    }
+
+    @Test
     func testPreloadAndTranscribeUseOwnedSession() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -224,21 +349,30 @@ struct CoreMLParakeetEngineTests {
 private actor RuntimeStub: CompactCoreMLRuntime {
     private var installed: Bool
     private let downloadCreatesInstallation: Bool
+    private let downloadThrowsCancellation: Bool
     private let sessionDelay: TimeInterval
+    private let installationCheckDelay: TimeInterval
     private(set) var downloadCount = 0
     private(set) var makeSessionCount = 0
 
     init(
         installed: Bool = false,
         downloadCreatesInstallation: Bool = false,
-        sessionDelay: TimeInterval = 0
+        downloadThrowsCancellation: Bool = false,
+        sessionDelay: TimeInterval = 0,
+        installationCheckDelay: TimeInterval = 0
     ) {
         self.installed = installed
         self.downloadCreatesInstallation = downloadCreatesInstallation
+        self.downloadThrowsCancellation = downloadThrowsCancellation
         self.sessionDelay = sessionDelay
+        self.installationCheckDelay = installationCheckDelay
     }
 
-    func isInstalled(at directory: URL) -> Bool {
+    func isInstalled(at directory: URL) async -> Bool {
+        if installationCheckDelay > 0 {
+            try? await Task.sleep(for: .seconds(installationCheckDelay))
+        }
         installed
     }
 
@@ -248,6 +382,14 @@ private actor RuntimeStub: CompactCoreMLRuntime {
     ) throws {
         downloadCount += 1
         progress(0.25)
+        if downloadThrowsCancellation {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            try Data().write(to: directory.appendingPathComponent("partial"))
+            throw CancellationError()
+        }
         progress(0.75)
         guard downloadCreatesInstallation else { return }
         try FileManager.default.createDirectory(

@@ -13,19 +13,13 @@ struct ModelManagementViewTests {
         }
         DictationModel.select(.coreMLCompact)
 
-        do {
-            try await TiroService().deleteModel(
-                key: DictationModel.coreMLCompactKey
-            )
-            Issue.record("Expected selected-model deletion to be rejected")
-        } catch TiroError.message(let message) {
-            #expect(
-                message
-                    == "Select another transcription model before deleting this one."
-            )
-        } catch {
-            Issue.record("Unexpected error: \(error)")
-        }
+        let service = TiroService()
+        service.startDelete(key: DictationModel.coreMLCompactKey)
+
+        #expect(
+            service.modelOperationError(for: DictationModel.coreMLCompactKey)
+                == "Select another transcription model before deleting this one."
+        )
     }
 
     @Test @MainActor
@@ -135,11 +129,10 @@ struct ModelManagementViewTests {
             installedSizeBytes: 1,
             installed: true,
             usable: usable,
-            downloading: false,
-            deleting: deleting,
+            operation: deleting ? .deleting : nil,
             loaded: false,
-            downloadError: nil,
-            progress: nil,
+            operationError: nil,
+            downloadSpace: nil,
             state: "ready"
         )
     }

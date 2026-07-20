@@ -152,6 +152,9 @@ public enum CoreMLWhisperError: LocalizedError {
     case modelNotInstalled(URL)
     case modelNotLoaded
     case downloadIncomplete(URL)
+    case installDestinationExists(URL)
+    case downloadCleanupFailed(String)
+    case modelStorageInUse
     case emptyTranscription
     case unsafeModelDirectory(URL)
     case unsafeDownloadLocation(URL)
@@ -165,6 +168,12 @@ public enum CoreMLWhisperError: LocalizedError {
             "Load the Whisper model before transcribing."
         case .downloadIncomplete:
             "The Whisper model download did not finish."
+        case .installDestinationExists(let directory):
+            "A model folder already exists at \(directory.path)."
+        case .downloadCleanupFailed(let reason):
+            "The incomplete model could not be removed: \(reason)"
+        case .modelStorageInUse:
+            "Another Tiro process is currently using the model library."
         case .emptyTranscription:
             "WhisperKit returned no transcription result."
         case .unsafeModelDirectory(let directory):
@@ -232,7 +241,10 @@ struct WhisperKitRuntime: WhisperCoreMLRuntime {
         let root = directory.deletingLastPathComponent()
         let identifier = UUID().uuidString
         let stagingRoot = root
-            .appendingPathComponent(".whisperkit-download-\(identifier)", isDirectory: true)
+            .appendingPathComponent(
+                ".whisperkit-download-\(model.directoryName)-\(identifier)",
+                isDirectory: true
+            )
         let candidate = root
             .appendingPathComponent(".\(model.directoryName)-installing-\(identifier)", isDirectory: true)
 
@@ -250,6 +262,7 @@ struct WhisperKitRuntime: WhisperCoreMLRuntime {
         ) { update in
             progress(update.fractionCompleted)
         }
+        try Task.checkCancellation()
 
         guard Self.isDescendant(downloaded, of: stagingRoot) else {
             throw CoreMLWhisperError.unsafeDownloadLocation(downloaded)
@@ -259,8 +272,9 @@ struct WhisperKitRuntime: WhisperCoreMLRuntime {
         }
 
         try fileManager.moveItem(at: downloaded, to: candidate)
-        if fileManager.fileExists(atPath: directory.path) {
-            try fileManager.removeItem(at: directory)
+        try Task.checkCancellation()
+        guard !fileManager.fileExists(atPath: directory.path) else {
+            throw CoreMLWhisperError.installDestinationExists(directory)
         }
         try fileManager.moveItem(at: candidate, to: directory)
     }
@@ -444,6 +458,13 @@ public actor CoreMLWhisperEngine: RecognitionEngine {
             activity = .idle
             progressState.value = nil
         }
+        guard isConfiguredModelDirectorySafe else {
+            throw CoreMLWhisperError.unsafeModelDirectory(modelDirectory)
+        }
+        guard let lease = ModelDirectoryLease.acquire(at: modelsRootDirectory) else {
+            throw CoreMLWhisperError.modelStorageInUse
+        }
+        defer { lease.release() }
 
         if await runtime.isInstalled(model: spec, at: modelDirectory) {
             progress(1)
@@ -453,6 +474,8 @@ public actor CoreMLWhisperEngine: RecognitionEngine {
         lastError = nil
         progressState.value = 0
         do {
+            try await removeIncompleteModelDirectory()
+            try cleanupDownloadArtifacts()
             try await runtime.download(
                 model: spec,
                 to: modelDirectory
@@ -467,10 +490,41 @@ public actor CoreMLWhisperEngine: RecognitionEngine {
             progressState.value = 1
             cachedSizeBytes = Self.directorySize(at: modelDirectory)
             progress(1)
+        } catch is CancellationError {
+            lastError = nil
+            do {
+                try await cleanupFailedDownload()
+            } catch {
+                lastError = error.localizedDescription
+                throw error
+            }
+            throw CancellationError()
         } catch {
-            lastError = error.localizedDescription
-            throw error
+            let originalError = error
+            do {
+                try await cleanupFailedDownload()
+            } catch {
+                let cleanupError = error
+                lastError = cleanupError.localizedDescription
+                throw cleanupError
+            }
+            lastError = originalError.localizedDescription
+            throw originalError
         }
+    }
+
+    public func cleanupAbandonedDownload() async throws {
+        try begin(.cleaning)
+        defer { activity = .idle }
+        guard isConfiguredModelDirectorySafe else {
+            throw CoreMLWhisperError.unsafeModelDirectory(modelDirectory)
+        }
+        guard let lease = ModelDirectoryLease.acquire(at: modelsRootDirectory) else {
+            throw CoreMLWhisperError.modelStorageInUse
+        }
+        defer { lease.release() }
+        try await removeIncompleteModelDirectory()
+        try cleanupDownloadArtifacts()
     }
 
     public func load() async throws {
@@ -546,6 +600,10 @@ public actor CoreMLWhisperEngine: RecognitionEngine {
 
         try begin(.deleting)
         defer { activity = .idle }
+        guard let lease = ModelDirectoryLease.acquire(at: modelsRootDirectory) else {
+            throw CoreMLWhisperError.modelStorageInUse
+        }
+        defer { lease.release() }
         lastError = nil
         let loadedSession = session
         session = nil
@@ -556,6 +614,7 @@ public actor CoreMLWhisperEngine: RecognitionEngine {
             if FileManager.default.fileExists(atPath: modelDirectory.path) {
                 try FileManager.default.removeItem(at: modelDirectory)
             }
+            try cleanupDownloadArtifacts()
         } catch {
             lastError = error.localizedDescription
             throw error
@@ -617,6 +676,45 @@ public actor CoreMLWhisperEngine: RecognitionEngine {
         modelDirectory.lastPathComponent == spec.directoryName
             && modelDirectory.deletingLastPathComponent().standardizedFileURL
                 == modelsRootDirectory
+            && modelsRootDirectory.resolvingSymlinksInPath() == modelsRootDirectory
+    }
+
+    private func cleanupFailedDownload() async throws {
+        do {
+            try await removeIncompleteModelDirectory()
+            try cleanupDownloadArtifacts()
+        } catch {
+            throw CoreMLWhisperError.downloadCleanupFailed(
+                error.localizedDescription
+            )
+        }
+    }
+
+    private func removeIncompleteModelDirectory() async throws {
+        guard isConfiguredModelDirectorySafe,
+              FileManager.default.fileExists(atPath: modelDirectory.path) else { return }
+        guard !(await runtime.isInstalled(model: spec, at: modelDirectory)) else { return }
+        try FileManager.default.removeItem(at: modelDirectory)
+        cachedSizeBytes = nil
+    }
+
+    private func cleanupDownloadArtifacts() throws {
+        guard isConfiguredModelDirectorySafe else {
+            throw CoreMLWhisperError.unsafeModelDirectory(modelDirectory)
+        }
+        let fileManager = FileManager.default
+        let downloadPrefix = ".whisperkit-download-\(spec.directoryName)-"
+        let installingPrefix = ".\(spec.directoryName)-installing-"
+        guard fileManager.fileExists(atPath: modelsRootDirectory.path) else { return }
+        let children = try fileManager.contentsOfDirectory(
+            at: modelsRootDirectory,
+            includingPropertiesForKeys: nil
+        )
+        for child in children where
+            child.lastPathComponent.hasPrefix(downloadPrefix)
+                || child.lastPathComponent.hasPrefix(installingPrefix) {
+            try fileManager.removeItem(at: child)
+        }
     }
 
     private nonisolated static func directorySize(at directory: URL) -> Int64 {

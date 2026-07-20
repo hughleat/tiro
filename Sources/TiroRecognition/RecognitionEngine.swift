@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public enum RecognitionModel: String, Codable, Sendable {
@@ -62,6 +63,7 @@ public struct RawTranscript: Codable, Equatable, Sendable {
 
 public enum CoreMLModelActivity: String, Codable, Sendable {
     case idle
+    case cleaning
     case downloading
     case loading
     case transcribing
@@ -99,4 +101,62 @@ public struct CoreMLModelStatus: Equatable, Sendable {
 public protocol RecognitionEngine: Sendable {
     func preload() async throws
     func transcribe(_ audioURL: URL) async throws -> RawTranscript
+}
+
+final class ModelDirectoryLease: @unchecked Sendable {
+    private static let processLock = NSLock()
+    private static var activeRoots: Set<String> = []
+
+    private var descriptor: Int32
+    private let rootPath: String
+
+    private init(descriptor: Int32, rootPath: String) {
+        self.descriptor = descriptor
+        self.rootPath = rootPath
+    }
+
+    static func acquire(at root: URL) -> ModelDirectoryLease? {
+        let rootPath = root.standardizedFileURL.path
+        let reserved = processLock.withLock {
+            activeRoots.insert(rootPath).inserted
+        }
+        guard reserved else { return nil }
+
+        let fileManager = FileManager.default
+        do {
+            try fileManager.createDirectory(
+                at: root,
+                withIntermediateDirectories: true
+            )
+        } catch {
+            processLock.withLock { _ = activeRoots.remove(rootPath) }
+            return nil
+        }
+        let lockURL = root.appendingPathComponent(".tiro-operation.lock")
+        let descriptor = open(lockURL.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else {
+            processLock.withLock { _ = activeRoots.remove(rootPath) }
+            return nil
+        }
+        guard Darwin.lockf(descriptor, F_TLOCK, 0) == 0 else {
+            close(descriptor)
+            processLock.withLock { _ = activeRoots.remove(rootPath) }
+            return nil
+        }
+        return ModelDirectoryLease(descriptor: descriptor, rootPath: rootPath)
+    }
+
+    func release() {
+        guard descriptor >= 0 else { return }
+        Darwin.lockf(descriptor, F_ULOCK, 0)
+        close(descriptor)
+        descriptor = -1
+        Self.processLock.withLock {
+            _ = Self.activeRoots.remove(rootPath)
+        }
+    }
+
+    deinit {
+        release()
+    }
 }
