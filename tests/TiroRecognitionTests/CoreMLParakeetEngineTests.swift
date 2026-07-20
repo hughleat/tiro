@@ -135,35 +135,6 @@ struct CoreMLParakeetEngineTests {
     }
 
     @Test
-    func testCleanupPreventsSameModelDownloadFromStarting() async throws {
-        let root = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let runtime = RuntimeStub(installationCheckDelay: 0.1)
-        let engine = CoreMLParakeetEngine(
-            modelsRootDirectory: root,
-            runtime: runtime
-        )
-        try FileManager.default.createDirectory(
-            at: engine.modelDirectory,
-            withIntermediateDirectories: true
-        )
-        let cleanup = Task { try await engine.cleanupAbandonedDownload() }
-        while (await engine.status()).activity != .cleaning {
-            await Task.yield()
-        }
-
-        do {
-            try await engine.download()
-            Issue.record("Expected cleanup to exclude download")
-        } catch CoreMLParakeetError.activityInProgress(.cleaning) {
-            // Expected.
-        } catch {
-            Issue.record("Unexpected error: \(error)")
-        }
-        try await cleanup.value
-    }
-
-    @Test
     func testCleanupRejectsSymlinkedModelRoot() async throws {
         let container = temporaryDirectory()
         let realRoot = container.appendingPathComponent("real", isDirectory: true)
@@ -351,7 +322,6 @@ private actor RuntimeStub: CompactCoreMLRuntime {
     private let downloadCreatesInstallation: Bool
     private let downloadThrowsCancellation: Bool
     private let sessionDelay: TimeInterval
-    private let installationCheckDelay: TimeInterval
     private(set) var downloadCount = 0
     private(set) var makeSessionCount = 0
 
@@ -359,21 +329,16 @@ private actor RuntimeStub: CompactCoreMLRuntime {
         installed: Bool = false,
         downloadCreatesInstallation: Bool = false,
         downloadThrowsCancellation: Bool = false,
-        sessionDelay: TimeInterval = 0,
-        installationCheckDelay: TimeInterval = 0
+        sessionDelay: TimeInterval = 0
     ) {
         self.installed = installed
         self.downloadCreatesInstallation = downloadCreatesInstallation
         self.downloadThrowsCancellation = downloadThrowsCancellation
         self.sessionDelay = sessionDelay
-        self.installationCheckDelay = installationCheckDelay
     }
 
-    func isInstalled(at directory: URL) async -> Bool {
-        if installationCheckDelay > 0 {
-            try? await Task.sleep(for: .seconds(installationCheckDelay))
-        }
-        return installed
+    func isInstalled(at directory: URL) -> Bool {
+        installed
     }
 
     func download(

@@ -676,7 +676,7 @@ public actor CoreMLWhisperEngine: RecognitionEngine {
         modelDirectory.lastPathComponent == spec.directoryName
             && modelDirectory.deletingLastPathComponent().standardizedFileURL
                 == modelsRootDirectory
-            && modelsRootDirectory.resolvingSymlinksInPath() == modelsRootDirectory
+            && modelDirectoryRootIsSafe(modelsRootDirectory)
     }
 
     private func cleanupFailedDownload() async throws {

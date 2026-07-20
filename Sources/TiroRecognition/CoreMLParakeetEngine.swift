@@ -487,7 +487,7 @@ public actor CoreMLParakeetEngine: RecognitionEngine {
         modelDirectory.lastPathComponent == model.directoryName
             && modelDirectory.deletingLastPathComponent().standardizedFileURL
                 == modelsRootDirectory
-            && modelsRootDirectory.resolvingSymlinksInPath() == modelsRootDirectory
+            && modelDirectoryRootIsSafe(modelsRootDirectory)
     }
 
     private func cleanupFailedDownload() async throws {

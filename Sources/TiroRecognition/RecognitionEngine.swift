@@ -160,3 +160,12 @@ final class ModelDirectoryLease: @unchecked Sendable {
         release()
     }
 }
+
+func modelDirectoryRootIsSafe(_ root: URL) -> Bool {
+    let lexical = root.standardizedFileURL.path
+    var resolved = root.resolvingSymlinksInPath().standardizedFileURL.path
+    if resolved.hasPrefix("/private/var/") || resolved.hasPrefix("/private/tmp/") {
+        resolved.removeFirst("/private".count)
+    }
+    return lexical == resolved
+}
