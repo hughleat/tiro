@@ -7,7 +7,7 @@
 <p align="center"><strong>Private, fast speech-to-text for Apple Silicon Macs.</strong></p>
 
 <p align="center">
-  <strong><a href="https://github.com/hughleat/tiro/releases/download/v0.1.0-beta.3/Tiro-0.1.0-beta.3-3-macOS-arm64.dmg">Download Tiro Public Beta (.dmg, 6.1 MB)</a></strong>
+  <strong><a href="https://github.com/hughleat/tiro/releases/download/v0.1.0-beta.4/Tiro-0.1.0-beta.4-4-macOS-arm64.dmg">Download Tiro Public Beta (.dmg, 6.1 MB)</a></strong>
   · <a href="#install">Install</a>
   · <a href="#command-line">Command line</a>
   · <a href="https://github.com/hughleat/tiro/issues/new/choose">Feedback</a>
@@ -37,12 +37,12 @@ free, open source, and built natively for macOS.
 
 Tiro requires an Apple Silicon Mac (M1 or newer) running macOS 14 Sonoma or
 later. Download the current
-[Tiro public beta DMG](https://github.com/hughleat/tiro/releases/download/v0.1.0-beta.3/Tiro-0.1.0-beta.3-3-macOS-arm64.dmg),
+[Tiro public beta DMG](https://github.com/hughleat/tiro/releases/download/v0.1.0-beta.4/Tiro-0.1.0-beta.4-4-macOS-arm64.dmg),
 open it, and drag Tiro to Applications. The app is 6.1 MB; its optional models
 are downloaded separately. Parakeet Compact, the smallest Tiro-managed model,
 is 228 MB. Apple Speech requires no Tiro-managed model download.
 
-[View the release and checksum](https://github.com/hughleat/tiro/releases/tag/v0.1.0-beta.3)
+[View the release and checksum](https://github.com/hughleat/tiro/releases/tag/v0.1.0-beta.4)
 or browse [all releases](https://github.com/hughleat/tiro/releases).
 
 Tiro's free community builds are ad-hoc signed rather than Apple-notarized, so
