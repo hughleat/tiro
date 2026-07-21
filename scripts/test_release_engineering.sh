@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="${0:A:h:h}"
 MACOS_14_WORKFLOW="$ROOT/.github/workflows/macos-14.yml"
+RELEASE_WORKFLOW="$ROOT/.github/workflows/release.yml"
 
 zsh -n \
     "$ROOT/scripts/build_native_app.sh" \
@@ -10,6 +11,7 @@ zsh -n \
     "$ROOT/scripts/test_coreml_production.sh" \
     "$ROOT/scripts/test_sponsorship_builds.sh" \
     "$ROOT/scripts/smoke_release.sh"
+bash -n "$ROOT/scripts/release_metadata.sh"
 rg -q -F 'native release unexpectedly contains Python source' "$ROOT/scripts/smoke_release.sh"
 rg -q -F 'native release unexpectedly contains MLX' "$ROOT/scripts/smoke_release.sh"
 rg -q -F 'release unexpectedly contains model weights' "$ROOT/scripts/smoke_release.sh"
@@ -58,12 +60,60 @@ rg -q -F 'runs-on: macos-14' "$MACOS_14_WORKFLOW"
 rg -q -F 'actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0' "$MACOS_14_WORKFLOW"
 rg -q -F 'persist-credentials: false' "$MACOS_14_WORKFLOW"
 rg -q -F 'DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer' "$MACOS_14_WORKFLOW"
-rg -q -F 'run: brew install ripgrep' "$MACOS_14_WORKFLOW"
+rg -q -F 'run: brew install actionlint ripgrep' "$MACOS_14_WORKFLOW"
 rg -q -F "run: swift --version | grep -q 'Swift version 6\\.'" "$MACOS_14_WORKFLOW"
 rg -q -F 'run: ./scripts/test_all.sh' "$MACOS_14_WORKFLOW"
 if rg -q 'setup-uv|uv sync|python install' "$MACOS_14_WORKFLOW"; then
     print -u2 "native acceptance workflow still installs Python"
     exit 1
+fi
+
+rg -q -F 'permissions:' "$RELEASE_WORKFLOW"
+rg -q -F 'contents: write' "$RELEASE_WORKFLOW"
+rg -q -F 'runs-on: macos-14' "$RELEASE_WORKFLOW"
+rg -q -F 'actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0' "$RELEASE_WORKFLOW"
+rg -q -F 'persist-credentials: false' "$RELEASE_WORKFLOW"
+rg -q -F 'run: ./scripts/test_all.sh' "$RELEASE_WORKFLOW"
+rg -q -F 'gh release create "${create_args[@]}"' "$RELEASE_WORKFLOW"
+rg -q -F -- '--verify-tag' "$RELEASE_WORKFLOW"
+rg -q -F -- '--prerelease' "$RELEASE_WORKFLOW"
+rg -q -F 'CFBundleShortVersionString' "$ROOT/scripts/release_metadata.sh"
+rg -q -F 'release_metadata.sh "$GITHUB_REF_NAME" "$GITHUB_RUN_NUMBER"' "$RELEASE_WORKFLOW"
+rg -q -F 'gh release upload "$GITHUB_REF_NAME"' "$RELEASE_WORKFLOW"
+rg -q -F -- '--clobber' "$RELEASE_WORKFLOW"
+rg -q -F 'gh release edit "$GITHUB_REF_NAME"' "$RELEASE_WORKFLOW"
+rg -q -F 'TIRO_RELEASE_BUILD_NUMBER' "$ROOT/scripts/test_all.sh"
+
+product_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/native/Info.plist")"
+product_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$ROOT/native/Info.plist")"
+beta_metadata="$("$ROOT/scripts/release_metadata.sh" "v$product_version-beta.1" 77)"
+print -r -- "$beta_metadata" | rg -q "^version=$product_version$"
+print -r -- "$beta_metadata" | rg -q '^build_number=77$'
+print -r -- "$beta_metadata" | rg -q "^asset_version=$product_version-beta.1$"
+print -r -- "$beta_metadata" | rg -q "^release_name=Tiro $product_version beta 1$"
+print -r -- "$beta_metadata" | rg -q '^prerelease=true$'
+stable_metadata="$("$ROOT/scripts/release_metadata.sh" "v$product_version")"
+print -r -- "$stable_metadata" | rg -q "^build_number=$product_build$"
+print -r -- "$stable_metadata" | rg -q "^release_name=Tiro $product_version$"
+print -r -- "$stable_metadata" | rg -q '^prerelease=false$'
+if "$ROOT/scripts/release_metadata.sh" "$product_version" >/dev/null 2>&1; then
+    print -u2 "release metadata accepted a tag without the v prefix"
+    exit 1
+fi
+if "$ROOT/scripts/release_metadata.sh" "v$product_version" invalid >/dev/null 2>&1; then
+    print -u2 "release metadata accepted an invalid build number"
+    exit 1
+fi
+if "$ROOT/scripts/release_metadata.sh" v9.9.9 >/dev/null 2>&1; then
+    print -u2 "release metadata accepted a tag that does not match Info.plist"
+    exit 1
+fi
+
+if command -v actionlint >/dev/null; then
+    actionlint "$MACOS_14_WORKFLOW" "$RELEASE_WORKFLOW"
+else
+    ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path) }' \
+        "$MACOS_14_WORKFLOW" "$RELEASE_WORKFLOW"
 fi
 
 help="$($ROOT/scripts/build_native_app.sh --help)"

@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish community DMG
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer
+
+    steps:
+      - name: Check out Tiro
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install release tools
+        run: brew install actionlint ripgrep
+
+      - name: Verify Swift 6 toolchain
+        run: swift --version | grep -q 'Swift version 6\.'
+
+      - name: Validate release tag
+        id: metadata
+        run: ./scripts/release_metadata.sh "$GITHUB_REF_NAME" "$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Run complete acceptance suite
+        env:
+          TIRO_RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
+          TIRO_RELEASE_BUILD_NUMBER: ${{ steps.metadata.outputs.build_number }}
+        run: ./scripts/test_all.sh
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NAME: ${{ steps.metadata.outputs.release_name }}
+          PRERELEASE: ${{ steps.metadata.outputs.prerelease }}
+          ASSET_VERSION: ${{ steps.metadata.outputs.asset_version }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+          BUILD_NUMBER: ${{ steps.metadata.outputs.build_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          dmg="dist/releases/Tiro-$VERSION-$BUILD_NUMBER-macOS-arm64.dmg"
+          checksum="$dmg.sha256"
+          test -f "$dmg"
+          test -f "$checksum"
+
+          published_dmg="dist/releases/Tiro-$ASSET_VERSION-$BUILD_NUMBER-macOS-arm64.dmg"
+          published_checksum="$published_dmg.sha256"
+          mv "$dmg" "$published_dmg"
+          (
+            cd "$(dirname "$published_dmg")"
+            shasum -a 256 "$(basename "$published_dmg")" > "$(basename "$published_checksum")"
+          )
+
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" \
+              --verify-tag \
+              --title "$RELEASE_NAME" \
+              --prerelease="$PRERELEASE"
+          else
+            create_args=(
+              "$GITHUB_REF_NAME"
+              --verify-tag
+              --generate-notes
+              --title "$RELEASE_NAME"
+            )
+            if [[ "$PRERELEASE" == "true" ]]; then
+              create_args+=(--prerelease)
+            fi
+            gh release create "${create_args[@]}"
+          fi
+          gh release upload "$GITHUB_REF_NAME" \
+            "$published_dmg" "$published_checksum" --clobber

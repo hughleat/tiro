@@ -1,24 +1,54 @@
 # Tiro
 
-Tiro is a free, open-source, local dictation app for Apple Silicon Macs. It
-records from the menu bar, transcribes on the Mac, copies the result, and can
-paste it into the active application.
+<p align="center"><strong>Private, fast speech-to-text for Apple Silicon Macs.</strong></p>
+
+<p align="center">
+  <a href="https://github.com/hughleat/tiro/releases">Download Tiro</a>
+  · <a href="#install">Install</a>
+  · <a href="#command-line">Command line</a>
+  · <a href="LICENSE">MIT License</a>
+</p>
+
+Tiro records from the menu bar, transcribes entirely on your Mac, copies the
+result, and can paste it directly into the application you were using. It is
+free, open source, and built natively for macOS.
+
+<p align="center">
+  <img src="docs/images/tiro-file-transcription.png" width="560" alt="Tiro transcribing an audio file locally on a Mac">
+</p>
+
+## Why Tiro
+
+- **Local by default.** Recordings and transcripts are not sent to a transcription service.
+- **Natural controls.** Tap Right Command to start and stop, hold it for push-to-talk, or press Escape to cancel.
+- **Automatic delivery.** Tiro copies every result and can paste it into the active application.
+- **Your choice of model.** Use Parakeet, Whisper, or Apple's on-device speech recognizer.
+- **Useful beyond dictation.** Transcribe dropped audio files, identify speakers, export subtitles, or use the command line.
 
 ## Install
 
 Tiro supports macOS 14 Sonoma or later. Download the latest DMG from
-[GitHub Releases](https://github.com/hughleat/tiro/releases/latest), open it,
-and drag Tiro to Applications.
+[GitHub Releases](https://github.com/hughleat/tiro/releases), open it, and drag
+Tiro to Applications.
 
-Community builds are ad-hoc signed and are not Apple-notarized. On first
-launch, try to open Tiro, then approve it under **System Settings > Privacy &
-Security > Open Anyway**. Grant Microphone access for recording and
-Accessibility access for the global shortcut and automatic paste. Speech
-Recognition access is needed only when Apple Speech is selected.
+Community builds are ad-hoc signed rather than Apple-notarized. The first time
+you open each downloaded version, macOS will block it:
+
+1. Try to open Tiro from Applications.
+2. Open **System Settings > Privacy & Security**.
+3. Choose **Open Anyway**, then confirm **Open**.
+
+During setup, grant Microphone access for recording and Accessibility access
+for the global shortcut and automatic paste. Speech Recognition access is
+needed only when Apple Speech is selected.
 
 Models are never bundled with the app. Tiro downloads only models selected by
 the user, and all transcription remains local. Apple Speech uses macOS-managed
 on-device recognition and language data.
+
+<p align="center">
+  <img src="docs/images/tiro-setup.png" width="602" alt="Tiro's private, local first-run setup">
+</p>
 
 ## Controls
 
@@ -28,10 +58,9 @@ on-device recognition and language data.
 - Use the waveform menu-bar icon for recording, models, settings, and history.
 - Choose **Transcribe Audio File...** or drop an audio file into its window.
 
-Tiro includes automatic paste, searchable history, optional retained audio,
-global and per-app vocabulary, learned vocabulary suggestions, reusable
-snippets, spoken formatting, privacy controls, model comparison, speaker
-identification, and text, Markdown, JSON, SRT, and VTT export.
+Tiro also includes searchable history, optional retained audio, global and
+per-app vocabulary, learned vocabulary suggestions, reusable snippets, spoken
+formatting, privacy controls, and side-by-side model comparison.
 
 Speaker identification is optional and currently available for imported files
 whose transcription model supplies timestamps. Its additional local Core ML
@@ -66,16 +95,19 @@ process exits unexpectedly. Diagnostics use standard error output.
 ## Models
 
 Tiro offers Apple Speech and native Core ML models through FluidAudio and
-WhisperKit:
+WhisperKit. A few useful starting points:
 
-- Apple Speech: Apple's on-device recognizer, with no Tiro-managed download.
-- Parakeet Compact: small, fast, and English-only.
-- Parakeet 0.6B v2: recommended for high-accuracy English transcription.
-- Parakeet 0.6B v3: larger multilingual model with automatic detection.
-- Whisper Tiny, Base, and Small English: English-specialized versions.
-- Whisper Tiny, Base, and Small: progressively more accurate multilingual models.
-- Distil Whisper Large V3: fast, high-accuracy multilingual transcription.
-- Whisper Large V3 and Large V3 Turbo: high-accuracy multilingual models.
+| Need | Suggested model |
+| --- | --- |
+| Recommended English accuracy | Parakeet 0.6B v2 |
+| Fast, compact English dictation | Parakeet Compact |
+| High-accuracy multilingual transcription | Whisper Large V3 |
+| Faster multilingual transcription | Whisper Large V3 Turbo |
+| No Tiro-managed model download | Apple Speech |
+
+Tiny, Base, Small, Distil Whisper Large V3, and multilingual Parakeet v3 are
+also available. The comparison view can run the same recording through several
+installed models.
 
 English-only Parakeet models keep the language fixed to English. Parakeet v3
 detects its supported languages automatically. Whisper supports automatic
@@ -125,6 +157,10 @@ Create the free GitHub release artifact with:
 
 Models are downloaded by the app and are not part of the app or DMG. See
 [`docs/RELEASING.md`](docs/RELEASING.md) for signed and notarized builds.
+
+Pushing a version tag such as `v0.1.0-beta.1` runs the complete acceptance
+suite and publishes the verified community DMG and SHA-256 checksum as a
+GitHub prerelease.
 
 ## Optional sponsorship UI
 

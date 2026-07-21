@@ -2,6 +2,17 @@
 set -euo pipefail
 
 ROOT="${0:A:h:h}"
+dmg_args=()
+if [[ -n "${TIRO_RELEASE_VERSION:-}" || -n "${TIRO_RELEASE_BUILD_NUMBER:-}" ]]; then
+    [[ -n "${TIRO_RELEASE_VERSION:-}" && -n "${TIRO_RELEASE_BUILD_NUMBER:-}" ]] || {
+        print -u2 "TIRO_RELEASE_VERSION and TIRO_RELEASE_BUILD_NUMBER must be set together"
+        exit 1
+    }
+    dmg_args=(
+        --version "$TIRO_RELEASE_VERSION"
+        --build-number "$TIRO_RELEASE_BUILD_NUMBER"
+    )
+fi
 
 cd "$ROOT"
 "$ROOT/scripts/test_swift.sh"
@@ -14,6 +25,6 @@ cd "$ROOT"
 "$ROOT/scripts/test_coreml_production.sh"
 "$ROOT/scripts/test_sponsorship_builds.sh"
 "$ROOT/scripts/build_native_app.sh" development
-"$ROOT/scripts/build_native_app.sh" dmg
+"$ROOT/scripts/build_native_app.sh" dmg "${dmg_args[@]}"
 
 print "All Tiro checks passed"

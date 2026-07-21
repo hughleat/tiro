@@ -37,6 +37,24 @@ and absence of bundled models.
 Because the community build has no Developer ID signature or notarization,
 macOS requires **Open Anyway** approval for each downloaded update.
 
+## GitHub Releases
+
+Push a version tag after the tagged commit has passed the main acceptance
+workflow:
+
+```sh
+git tag v1.2.0-beta.1
+git push origin v1.2.0-beta.1
+```
+
+Release tags must use `vMAJOR.MINOR.PATCH` or
+`vMAJOR.MINOR.PATCH-beta.NUMBER`. The numeric version must match
+`CFBundleShortVersionString` in `native/Info.plist`. The workflow uses its
+unique GitHub run number as `CFBundleVersion`, and the complete tag appears in
+the downloaded filename. It reruns the complete acceptance suite before
+publishing the DMG and checksum. Beta tags create prereleases, and publication
+can be rerun safely after an interrupted asset upload.
+
 ## Notarized Distribution
 
 Store notarization credentials in the Keychain:

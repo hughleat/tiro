@@ -28,7 +28,7 @@ jobs:
           persist-credentials: false
 
       - name: Install release tools
-        run: brew install ripgrep
+        run: brew install actionlint ripgrep
 
       - name: Verify Swift 6 toolchain
         run: swift --version | grep -q 'Swift version 6\.'
