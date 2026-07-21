@@ -14,7 +14,8 @@ result, and can paste it directly into the application you were using. It is
 free, open source, and built natively for macOS.
 
 <p align="center">
-  <img src="docs/images/tiro-file-transcription.png" width="560" alt="Tiro transcribing an audio file locally on a Mac">
+  <img src="docs/images/tiro-dictation.png" width="820" alt="Tiro recording into a TextEdit document">
+  <br><sub>Record from any application, then copy or paste the local transcript automatically.</sub>
 </p>
 
 ## Why Tiro
@@ -62,6 +63,21 @@ Tiro also includes searchable history, optional retained audio, global and
 per-app vocabulary, learned vocabulary suggestions, reusable snippets, spoken
 formatting, privacy controls, and side-by-side model comparison.
 
+<p align="center">
+  <img src="docs/images/tiro-file-transcription.png" width="560" alt="Tiro transcribing an audio file locally on a Mac">
+  <br><sub>Transcribe existing audio and optionally identify speakers.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/tiro-vocabulary.png" width="720" alt="Tiro's structured vocabulary replacement editor">
+  <br><sub>Teach Tiro names, product terms, and other custom spellings.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/tiro-history.png" width="620" alt="Tiro's searchable local transcription history">
+  <br><sub>Search, copy, correct, replay, or remove locally stored transcriptions.</sub>
+</p>
+
 Speaker identification is optional and currently available for imported files
 whose transcription model supplies timestamps. Its additional local Core ML
 model is installed separately from **Settings > Models**.
@@ -104,6 +120,11 @@ WhisperKit. A few useful starting points:
 | High-accuracy multilingual transcription | Whisper Large V3 |
 | Faster multilingual transcription | Whisper Large V3 Turbo |
 | No Tiro-managed model download | Apple Speech |
+
+<p align="center">
+  <img src="docs/images/tiro-models.png" width="720" alt="Tiro's local transcription model library">
+  <br><sub>Install only the local models you want and switch between them at any time.</sub>
+</p>
 
 Tiny, Base, Small, Distil Whisper Large V3, and multilingual Parakeet v3 are
 also available. The comparison view can run the same recording through several
