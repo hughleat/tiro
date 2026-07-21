@@ -14,7 +14,7 @@ result, and can paste it directly into the application you were using. It is
 free, open source, and built natively for macOS.
 
 <p align="center">
-  <img src="docs/images/tiro-dictation.png?v=2" width="820" alt="Tiro recording into a TextEdit document">
+  <img src="docs/images/tiro-dictation-compact.png" width="820" alt="Tiro recording into a TextEdit document">
   <br><sub>Record from any application, then copy or paste the local transcript automatically.</sub>
 </p>
 
