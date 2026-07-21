@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for helping improve Tiro. Please do not attach private recordings or transcripts. About > Copy Diagnostics produces a report that excludes them.
+        Thanks for helping improve Tiro. Please do not attach private recordings or transcripts. About > Copy Diagnostics produces a report that excludes them. Report security vulnerabilities privately through the repository's Security page rather than in a public issue.
   - type: textarea
     id: problem
     attributes:

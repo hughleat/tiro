@@ -1,7 +1,9 @@
 # Beta testing Tiro
 
-Use a normal macOS user account and keep any test speech non-sensitive. Record
-the Tiro release tag, macOS version, selected model, and result for each check.
+Use a normal macOS user account. Use non-sensitive test speech because
+screenshots, diagnostics, or test notes may later be shared in a public issue.
+Record the Tiro release tag, macOS version, selected model, and result for each
+check.
 
 ## Fresh install
 

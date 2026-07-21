@@ -7,12 +7,14 @@
 <p align="center"><strong>Private, fast speech-to-text for Apple Silicon Macs.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/hughleat/tiro/releases">Download Tiro</a>
+  <strong><a href="https://github.com/hughleat/tiro/releases/download/v0.1.0-beta.3/Tiro-0.1.0-beta.3-3-macOS-arm64.dmg">Download Tiro Public Beta (.dmg, 6.1 MB)</a></strong>
   · <a href="#install">Install</a>
   · <a href="#command-line">Command line</a>
   · <a href="https://github.com/hughleat/tiro/issues/new/choose">Feedback</a>
   · <a href="LICENSE">MIT License</a>
 </p>
+
+<p align="center"><sub>M1 or newer · macOS 14 Sonoma or later · 228 MB smallest model download · no account</sub></p>
 
 Tiro records from the menu bar, transcribes entirely on your Mac, copies the
 result, and can paste it directly into the application you were using. It is
@@ -25,7 +27,7 @@ free, open source, and built natively for macOS.
 
 ## Why Tiro
 
-- **Local by default.** Recordings and transcripts are not sent to a transcription service.
+- **Always local.** Audio and transcripts never leave your Mac for transcription.
 - **Natural controls.** Tap Right Command to start and stop, hold it for push-to-talk, or press Escape to cancel.
 - **Automatic delivery.** Tiro copies every result and can paste it into the active application.
 - **Your choice of model.** Use Parakeet, Whisper, or Apple's on-device speech recognizer.
@@ -33,12 +35,20 @@ free, open source, and built natively for macOS.
 
 ## Install
 
-Tiro supports macOS 14 Sonoma or later. Download the latest DMG from
-[GitHub Releases](https://github.com/hughleat/tiro/releases), open it, and drag
-Tiro to Applications.
+Tiro requires an Apple Silicon Mac (M1 or newer) running macOS 14 Sonoma or
+later. Download the current
+[Tiro public beta DMG](https://github.com/hughleat/tiro/releases/download/v0.1.0-beta.3/Tiro-0.1.0-beta.3-3-macOS-arm64.dmg),
+open it, and drag Tiro to Applications. The app is 6.1 MB; its optional models
+are downloaded separately. Parakeet Compact, the smallest Tiro-managed model,
+is 228 MB. Apple Speech requires no Tiro-managed model download.
 
-Community builds are ad-hoc signed rather than Apple-notarized. The first time
-you open each downloaded version, macOS will block it:
+[View the release and checksum](https://github.com/hughleat/tiro/releases/tag/v0.1.0-beta.3)
+or browse [all releases](https://github.com/hughleat/tiro/releases).
+
+Tiro's free community builds are ad-hoc signed rather than Apple-notarized, so
+macOS shows its standard unidentified-developer warning. This is expected and
+does not mean macOS found malware. Tiro is open source, and each release
+includes a SHA-256 checksum. Approve each downloaded version once:
 
 1. Try to open Tiro from Applications.
 2. Open **System Settings > Privacy & Security**.
@@ -48,10 +58,11 @@ During setup, grant Microphone access for recording and Accessibility access
 for the global shortcut and automatic paste. Speech Recognition access is
 needed only when Apple Speech is selected.
 
-Tiro checks for updates only when **Settings > About > Check for Updates** is
-clicked. That page can also copy a privacy-safe diagnostics report for bug
-reports; it excludes transcripts, audio, clipboard contents, vocabulary, file
-paths, and application names.
+Transcription is always local. Tiro sends no telemetry and requires no account.
+While running, Tiro uses the internet only when you request a model download or
+click **Settings > About > Check for Updates**. That page can also copy a
+privacy-safe diagnostics report for bug reports; it excludes transcripts,
+audio, clipboard contents, vocabulary, file paths, and application names.
 
 Models are never bundled with the app. Tiro downloads only models selected by
 the user, and all transcription remains local. Apple Speech uses macOS-managed

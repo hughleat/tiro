@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Download Tiro
-    url: https://github.com/hughleat/tiro/releases
-    about: Get the latest published community build.
+    url: https://github.com/hughleat/tiro/releases/tag/v0.1.0-beta.3
+    about: Get the current public beta DMG and its checksum.
+  - name: Report a security vulnerability
+    url: https://github.com/hughleat/tiro/security/advisories/new
+    about: Privately report a security issue to the maintainers.
