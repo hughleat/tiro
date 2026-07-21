@@ -960,6 +960,14 @@ import UniformTypeIdentifiers
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
+        if urls.count == 1, let url = urls.first, url.scheme == "tiro" {
+            guard let section = SettingsSection(deepLink: url) else {
+                presentError(TiroError.message("Tiro could not open that link."))
+                return
+            }
+            settingsWindow.showSettings(section)
+            return
+        }
         guard UserDefaults.standard.bool(forKey: "setupCompleted") else {
             showSetup()
             presentError(TiroError.message(

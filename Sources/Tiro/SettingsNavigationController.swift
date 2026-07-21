@@ -1,6 +1,6 @@
 import AppKit
 
-enum SettingsSection: String {
+enum SettingsSection: String, CaseIterable {
     case general
     case models
     case permissions
@@ -8,6 +8,14 @@ enum SettingsSection: String {
     case vocabulary
     case history
     case about
+
+    init?(deepLink url: URL) {
+        guard url.scheme == "tiro", url.host == "settings" else { return nil }
+        let components = url.path.split(separator: "/")
+        guard components.count <= 1 else { return nil }
+        let name = components.first.map(String.init) ?? Self.general.rawValue
+        self.init(rawValue: name)
+    }
 }
 
 @MainActor

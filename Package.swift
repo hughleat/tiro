@@ -66,6 +66,7 @@ let package = Package(
                 "NativeTiroStoreTests.swift",
                 "SetupReadinessTests.swift",
                 "SettingsConstructionTests.swift",
+                "SettingsDeepLinkTests.swift",
                 "SupportPromptPolicyTests.swift",
                 "TranscriptionJobGateTests.swift",
                 "TranscriptExportTests.swift",

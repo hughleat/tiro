@@ -180,7 +180,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         contentViewController = navigation
     }
 
-    private func showSettings(_ section: SettingsSection) {
+    func showSettings(_ section: SettingsSection) {
         showWindow(nil)
         navigationController?.show(section)
     }
