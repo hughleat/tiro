@@ -49,13 +49,13 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
             ? currentKey
             : DictationModel.coreMLCompactKey
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 600, height: 650),
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 540),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Set Up Tiro"
-        window.minSize = NSSize(width: 600, height: 650)
+        window.minSize = NSSize(width: 600, height: 540)
         window.center()
         window.isReleasedWhenClosed = false
         super.init(window: window)
