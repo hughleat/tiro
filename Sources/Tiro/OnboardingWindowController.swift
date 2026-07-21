@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import Speech
 
 @MainActor
 final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
@@ -13,32 +14,48 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     private let shortcutName: String
     private let microphoneRow = SetupStatusRow(title: "Microphone")
     private let accessibilityRow = SetupStatusRow(title: "Accessibility")
-    private let modelRow = SetupStatusRow(title: "Transcription model")
+    private let modelRow = SetupStatusRow(title: "Model status")
+    private let modelPicker = NSPopUpButton()
     private let downloadProgress = NSProgressIndicator()
+    private let practiceField = NSTextField()
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
-    private let finishButton = NSButton(title: "Finish Setup", target: nil, action: nil)
+    private let finishButton = NSButton(title: "Start Using Tiro", target: nil, action: nil)
+    private var selectedModelKey: String
     private var readiness = SetupReadiness(
         microphoneAllowed: false,
         accessibilityAllowed: false,
-        installedModelKeys: []
+        selectedModelKey: DictationModel.coreMLCompactKey,
+        usableModelKeys: []
     )
     private var microphoneStatus = AVCaptureDevice.authorizationStatus(for: .audio)
     private var models: [ManagedModel] = []
     private var refreshTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
-    private var downloadRequested = false
+    private var downloadRequestedKey: String?
+    private var wasReady = false
+
+    private static let starterModelKeys = [
+        DictationModel.coreMLCompactKey,
+        "coreml-parakeet-v2",
+        "coreml-parakeet-v3",
+        DictationModel.appleSpeechKey,
+    ]
 
     init(service: TiroService, shortcutName: String) {
         self.service = service
         self.shortcutName = shortcutName
+        let currentKey = DictationModel.selected.key
+        selectedModelKey = Self.starterModelKeys.contains(currentKey)
+            ? currentKey
+            : DictationModel.coreMLCompactKey
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 540, height: 500),
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 650),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Set Up Tiro"
-        window.minSize = NSSize(width: 540, height: 500)
+        window.minSize = NSSize(width: 600, height: 650)
         window.center()
         window.isReleasedWhenClosed = false
         super.init(window: window)
@@ -72,9 +89,15 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         readiness = SetupReadiness(
             microphoneAllowed: microphone == .authorized,
             accessibilityAllowed: accessibilityAllowed,
-            installedModelKeys: readiness.installedModelKeys
+            selectedModelKey: selectedModelKey,
+            usableModelKeys: readiness.usableModelKeys
         )
         render()
+    }
+
+    var isPracticeFieldFocused: Bool {
+        guard let editor = practiceField.currentEditor() else { return false }
+        return window?.firstResponder === editor
     }
 
     private func buildContent() {
@@ -92,13 +115,30 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         accessibilityRow.button.target = self
         accessibilityRow.button.action = #selector(handleAccessibility)
         modelRow.button.target = self
-        modelRow.button.action = #selector(downloadCompactModel)
+
+        modelPicker.target = self
+        modelPicker.action = #selector(modelSelectionChanged)
+        modelPicker.setAccessibilityLabel("Starter transcription model")
+        for model in starterModels {
+            modelPicker.addItem(withTitle: starterTitle(for: model))
+            modelPicker.lastItem?.representedObject = model.key
+        }
+        selectPickerItem(for: selectedModelKey)
 
         downloadProgress.style = .bar
         downloadProgress.minValue = 0
         downloadProgress.maxValue = 100
         downloadProgress.isDisplayedWhenStopped = false
         downloadProgress.controlSize = .small
+        downloadProgress.setAccessibilityLabel("Model download progress")
+
+        let modelTitle = NSTextField(labelWithString: "Transcription model")
+        modelTitle.font = .systemFont(ofSize: 13, weight: .medium)
+        modelTitle.widthAnchor.constraint(equalToConstant: 158).isActive = true
+        let modelSelectionRow = NSStackView(views: [modelTitle, modelPicker])
+        modelSelectionRow.orientation = .horizontal
+        modelSelectionRow.alignment = .centerY
+        modelSelectionRow.spacing = 10
 
         let shortcutTitle = NSTextField(labelWithString: "Shortcut")
         shortcutTitle.font = .systemFont(ofSize: 13, weight: .medium)
@@ -109,6 +149,24 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         shortcutRow.orientation = .horizontal
         shortcutRow.alignment = .centerY
         shortcutRow.spacing = 12
+
+        let practiceTitle = NSTextField(labelWithString: "Try a dictation")
+        practiceTitle.font = .systemFont(ofSize: 13, weight: .medium)
+        practiceField.placeholderString = "Select this field, then use \(shortcutName)"
+        practiceField.font = .systemFont(ofSize: 14)
+        practiceField.isEnabled = false
+        practiceField.setAccessibilityLabel("First dictation practice field")
+        practiceField.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        let practiceHint = NSTextField(wrappingLabelWithString:
+            "Tap \(shortcutName) to start and stop. Hold it for push-to-talk. "
+                + "Escape cancels. Tiro stays in the menu bar."
+        )
+        practiceHint.textColor = .secondaryLabelColor
+        practiceHint.font = .systemFont(ofSize: 12)
+        let practiceStack = NSStackView(views: [practiceTitle, practiceField, practiceHint])
+        practiceStack.orientation = .vertical
+        practiceStack.alignment = .leading
+        practiceStack.spacing = 7
 
         messageLabel.textColor = .systemRed
         messageLabel.font = .systemFont(ofSize: 12)
@@ -133,10 +191,12 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
             firstSeparator,
             microphoneRow,
             accessibilityRow,
+            modelSelectionRow,
             modelRow,
             downloadProgress,
             secondSeparator,
             shortcutRow,
+            practiceStack,
             footer,
         ])
         stack.orientation = .vertical
@@ -144,14 +204,18 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         stack.spacing = 14
         stack.setCustomSpacing(7, after: title)
         stack.setCustomSpacing(20, after: privacy)
-        stack.setCustomSpacing(20, after: shortcutRow)
+        stack.setCustomSpacing(16, after: shortcutRow)
+        stack.setCustomSpacing(20, after: practiceStack)
         stack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(stack)
 
-        for view in [privacy, firstSeparator, microphoneRow, accessibilityRow, modelRow,
-                     downloadProgress, secondSeparator, shortcutRow, footer] {
+        for view in [privacy, firstSeparator, microphoneRow, accessibilityRow,
+                     modelSelectionRow, modelRow, downloadProgress, secondSeparator,
+                     shortcutRow, practiceStack, footer] {
             view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
+        practiceField.widthAnchor.constraint(equalTo: practiceStack.widthAnchor).isActive = true
+        practiceHint.widthAnchor.constraint(equalTo: practiceStack.widthAnchor).isActive = true
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 30),
             stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -30),
@@ -181,27 +245,48 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
 
     private func apply(_ models: [ManagedModel]) {
         self.models = models
-        let compact = models.first { $0.key == DictationModel.coreMLCompactKey }
-        if let compact, compact.downloading {
-            downloadProgress.isIndeterminate = compact.progress == nil
-            downloadProgress.doubleValue = (compact.progress ?? 0) * 100
+        let selected = selectedManagedModel
+        if let selected, selected.downloading {
+            downloadProgress.isIndeterminate = selected.progress == nil
+            downloadProgress.doubleValue = (selected.progress ?? 0) * 100
+            downloadProgress.setAccessibilityValue(selected.progress.map {
+                "\(Int(($0 * 100).rounded())) percent"
+            } ?? "Starting")
             downloadProgress.startAnimation(nil)
         } else {
             downloadProgress.stopAnimation(nil)
+            downloadProgress.setAccessibilityValue(nil)
         }
-        let installed = Set(models.lazy.filter { $0.usable && !$0.deleting }.map(\.key))
+        var usable = Set(models.lazy.filter { $0.usable && !$0.deleting }.map(\.key))
+        var selectedModelChanged = false
+        if selected?.usable == true,
+           DictationModel.selected.key != selectedModelKey,
+           let model = selected?.dictationModel {
+            do {
+                try service.select(model: model)
+                selectedModelChanged = true
+                messageLabel.isHidden = true
+            } catch {
+                usable.remove(selectedModelKey)
+                showError(error.localizedDescription)
+            }
+        }
         readiness = SetupReadiness(
             microphoneAllowed: readiness.microphoneAllowed,
             accessibilityAllowed: readiness.accessibilityAllowed,
-            installedModelKeys: installed
+            selectedModelKey: selectedModelKey,
+            usableModelKeys: usable
         )
         onModelsChanged?(models)
         render()
-        if downloadRequested, compact?.installed == true {
-            downloadRequested = false
-            if let model = compact?.dictationModel {
-                try? service.select(model: model)
+        if let requestedKey = downloadRequestedKey,
+           models.first(where: { $0.key == requestedKey })?.usable == true {
+            downloadRequestedKey = nil
+            if requestedKey == selectedModelKey,
+               DictationModel.selected.key == requestedKey {
+                onDownloadCompleted?()
             }
+        } else if selectedModelChanged {
             onDownloadCompleted?()
         }
         if models.contains(where: { $0.operation != nil }) {
@@ -229,24 +314,43 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
             actionTitle: readiness.accessibilityAllowed ? nil : "Open Settings"
         )
 
-        let compact = models.first { $0.key == DictationModel.coreMLCompactKey }
+        let selected = selectedManagedModel
         let activeModel = models.first { $0.operation != nil }
-        if case .downloading(let fraction) = compact?.operation {
+        modelPicker.isEnabled = activeModel == nil
+        if case .downloading(let fraction) = selected?.operation {
             let status = fraction.map {
-                "Downloading Parakeet Compact · \(Int(($0 * 100).rounded()))%"
-            } ?? "Starting Parakeet Compact download..."
+                "Downloading \(selected?.name ?? "model") · \(Int(($0 * 100).rounded()))%"
+            } ?? "Starting download…"
             modelRow.set(status: status, ready: false, actionTitle: "Cancel")
-            modelRow.button.action = #selector(cancelCompactDownload)
-        } else if case .cancelling = compact?.operation {
+            modelRow.button.action = #selector(cancelSelectedDownload)
+        } else if case .cancelling = selected?.operation {
             modelRow.set(status: "Cancelling download...", ready: false, actionTitle: nil)
         } else if let activeModel {
             modelRow.set(
                 status: "Managing \(activeModel.name)...",
-                ready: readiness.hasInstalledModel,
+                ready: readiness.selectedModelReady,
+                actionTitle: activeModel.downloading ? "Cancel" : nil
+            )
+            modelRow.button.action = #selector(cancelActiveDownload)
+        } else if selected?.isSystemManaged == true, selected?.usable == true {
+            modelRow.set(status: "Ready · provided by macOS", ready: true, actionTitle: nil)
+        } else if selected?.isSystemManaged == true, selected?.state == "unavailable" {
+            modelRow.set(
+                status: "Unavailable for this language. Choose another model.",
+                ready: false,
                 actionTitle: nil
             )
-        } else if compact?.installed == false,
-                  let space = compact?.downloadSpace,
+        } else if selected?.isSystemManaged == true {
+            modelRow.set(
+                status: "Speech Recognition permission required",
+                ready: false,
+                actionTitle: SFSpeechRecognizer.authorizationStatus() == .notDetermined
+                    ? "Allow"
+                    : "Open Settings"
+            )
+            modelRow.button.action = #selector(enableAppleSpeech)
+        } else if selected?.installed == false,
+                  let space = selected?.downloadSpace,
                   !space.hasEnoughSpace,
                   let available = space.availableBytes {
             modelRow.set(
@@ -255,20 +359,56 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
                 ready: false,
                 actionTitle: nil
             )
-        } else if compact?.installed == false,
-                  let error = compact?.operationError {
+        } else if selected?.installed == false,
+                  let error = selected?.operationError {
             modelRow.set(status: error, ready: false, actionTitle: "Retry")
-            modelRow.button.action = #selector(downloadCompactModel)
-        } else if readiness.hasInstalledModel {
-            let installedName = models.first(where: {
-                readiness.installedModelKeys.contains($0.key)
-            })?.name ?? "Installed"
-            modelRow.set(status: installedName, ready: true, actionTitle: nil)
+            modelRow.button.action = #selector(downloadSelectedModel)
+        } else if readiness.selectedModelReady {
+            modelRow.set(status: "Ready", ready: true, actionTitle: nil)
         } else {
-            modelRow.set(status: "Parakeet Compact, 220 MB", ready: false, actionTitle: "Download")
-            modelRow.button.action = #selector(downloadCompactModel)
+            modelRow.set(
+                status: selected.map { "\($0.name), \($0.sizeDescription)" } ?? "Checking…",
+                ready: false,
+                actionTitle: selected == nil ? nil : "Download"
+            )
+            modelRow.button.action = #selector(downloadSelectedModel)
         }
         finishButton.isEnabled = readiness.canFinish
+        practiceField.isEnabled = readiness.canFinish
+        if readiness.canFinish, !wasReady {
+            AccessibilityAnnouncements.post(
+                "Tiro is ready. Try a dictation or start using Tiro.",
+                from: practiceField
+            )
+        }
+        wasReady = readiness.canFinish
+    }
+
+    private var starterModels: [DictationModel] {
+        Self.starterModelKeys.compactMap { key in
+            DictationModel.all.first { $0.key == key }
+        }
+    }
+
+    private var selectedManagedModel: ManagedModel? {
+        models.first { $0.key == selectedModelKey }
+    }
+
+    private func starterTitle(for model: DictationModel) -> String {
+        switch model.key {
+        case DictationModel.coreMLCompactKey: "Fast English — Parakeet Compact (228 MB)"
+        case "coreml-parakeet-v2": "Best English — Parakeet 0.6B v2 (500 MB)"
+        case "coreml-parakeet-v3": "Multilingual — Parakeet 0.6B v3 (520 MB)"
+        case DictationModel.appleSpeechKey: "Apple Speech — no Tiro download"
+        default: model.name
+        }
+    }
+
+    private func selectPickerItem(for key: String) {
+        guard let item = modelPicker.itemArray.first(where: {
+            $0.representedObject as? String == key
+        }) else { return }
+        modelPicker.select(item)
     }
 
     private func permissionStatus(_ status: AVAuthorizationStatus) -> String {
@@ -291,17 +431,41 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         onOpenAccessibility?()
     }
 
-    @objc private func retryModels() {
-        messageLabel.isHidden = true
-        modelRow.button.action = #selector(downloadCompactModel)
-        refreshModels()
+    @objc private func modelSelectionChanged() {
+        guard let key = modelPicker.selectedItem?.representedObject as? String else { return }
+        selectedModelKey = key
+        readiness = SetupReadiness(
+            microphoneAllowed: readiness.microphoneAllowed,
+            accessibilityAllowed: readiness.accessibilityAllowed,
+            selectedModelKey: key,
+            usableModelKeys: readiness.usableModelKeys
+        )
+        if let selectedManagedModel, selectedManagedModel.usable,
+           let model = selectedManagedModel.dictationModel {
+            do {
+                try service.select(model: model)
+                messageLabel.isHidden = true
+                onDownloadCompleted?()
+            } catch {
+                var usable = readiness.usableModelKeys
+                usable.remove(key)
+                readiness = SetupReadiness(
+                    microphoneAllowed: readiness.microphoneAllowed,
+                    accessibilityAllowed: readiness.accessibilityAllowed,
+                    selectedModelKey: key,
+                    usableModelKeys: usable
+                )
+                showError(error.localizedDescription)
+            }
+        }
+        render()
     }
 
-    @objc private func downloadCompactModel() {
+    @objc private func downloadSelectedModel() {
         messageLabel.isHidden = true
-        downloadRequested = service.startDownload(
-            key: DictationModel.coreMLCompactKey
-        )
+        downloadRequestedKey = service.startDownload(key: selectedModelKey)
+            ? selectedModelKey
+            : nil
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
             guard let self else { return }
@@ -310,10 +474,29 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         startPolling()
     }
 
-    @objc private func cancelCompactDownload() {
-        downloadRequested = false
-        service.cancelModelOperation(key: DictationModel.coreMLCompactKey)
+    @objc private func cancelSelectedDownload() {
+        downloadRequestedKey = nil
+        service.cancelModelOperation(key: selectedModelKey)
         refreshModels()
+    }
+
+    @objc private func cancelActiveDownload() {
+        guard let activeKey = models.first(where: { $0.downloading })?.key else { return }
+        if downloadRequestedKey == activeKey { downloadRequestedKey = nil }
+        service.cancelModelOperation(key: activeKey)
+        refreshModels()
+    }
+
+    @objc private func enableAppleSpeech() {
+        if SFSpeechRecognizer.authorizationStatus() == .notDetermined {
+            SFSpeechRecognizer.requestAuthorization { [weak self] _ in
+                Task { @MainActor in self?.refreshModels() }
+            }
+        } else if let url = URL(string:
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition"
+        ) {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func startPolling() {
@@ -335,6 +518,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     private func showError(_ message: String) {
         messageLabel.stringValue = message
         messageLabel.isHidden = false
+        AccessibilityAnnouncements.post(message, from: messageLabel)
     }
 
     private func fileSize(_ bytes: Int64) -> String {

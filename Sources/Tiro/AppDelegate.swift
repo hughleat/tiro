@@ -54,6 +54,9 @@ import UniformTypeIdentifiers
     private var destinationSession: DestinationSession?
     private var originApplication: ApplicationIdentity?
     private var shouldAutoPaste = false
+    private var lastFailedPasteText: String?
+    private var pasteRecoveryGeneration = 0
+    private var pasteRetryTask: Task<Void, Never>?
     private var awaitingPrivacyReview = false
     private var isPresentingRecovery = false
 #if TIRO_SPONSORSHIP_ENABLED
@@ -90,6 +93,7 @@ import UniformTypeIdentifiers
         modelStartupTask?.cancel()
         modelSelectionTask?.cancel()
         transcriptionTask?.cancel()
+        pasteRetryTask?.cancel()
         commandTranscriptionTask?.cancel()
         hotkeys.stop()
         PasteEventGate.shared.stop()
@@ -139,7 +143,7 @@ import UniformTypeIdentifiers
         shortcutStatusItem.target = self
         menu.addItem(shortcutStatusItem)
         pasteRecoveryItem = NSMenuItem(
-            title: "Auto-paste needs Accessibility permission...",
+            title: "Auto-paste needs Accessibility permission…",
             action: #selector(showPermissionsSettings),
             keyEquivalent: ""
         )
@@ -157,7 +161,7 @@ import UniformTypeIdentifiers
         privacyNoticeItem.isHidden = !hasLegacyStorage
             || UserDefaults.standard.bool(forKey: "privacyMigrationNoticeReviewed")
         menu.addItem(privacyNoticeItem)
-        let settings = NSMenuItem(title: "Settings & History…", action: #selector(showSettings), keyEquivalent: ",")
+        let settings = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
         let setup = NSMenuItem(title: "Setup…", action: #selector(showSetup), keyEquivalent: "")
@@ -706,9 +710,10 @@ import UniformTypeIdentifiers
         case .available:
             break
         }
-        shouldAutoPaste = UserDefaults.standard.bool(forKey: "autoPaste")
-        originApplication = destinationTracker.captureApplicationIdentity()
-        destinationSession = destinationTracker.capture()
+        let isSetupPractice = onboardingWindow?.isPracticeFieldFocused == true
+        shouldAutoPaste = isSetupPractice || UserDefaults.standard.bool(forKey: "autoPaste")
+        originApplication = isSetupPractice ? nil : destinationTracker.captureApplicationIdentity()
+        destinationSession = destinationTracker.capture(allowTiro: isSetupPractice)
         if shouldAutoPaste, destinationSession == nil {
             NSLog("Could not capture the focused destination; transcription will be copied.")
         }
@@ -859,16 +864,16 @@ import UniformTypeIdentifiers
                 do {
                     let result = try await pasteCoordinator.paste(response.text, to: destination)
                     completionOverlay = result == .confirmed ? .pasted : .pasteSent
-                    pasteRecoveryItem.isHidden = true
+                    clearPasteRecovery()
                 } catch {
                     copyToClipboard(response.text)
                     completionOverlay = .pasteFailed
-                    pasteRecoveryItem.isHidden = ErrorRecovery.presentation(for: error).action
-                        != .openAccessibilitySettings
+                    rememberPasteFailure(response.text, error: error)
                     NSLog("Could not auto-paste transcription: %@", error.localizedDescription)
                 }
             } else {
                 copyToClipboard(response.text)
+                clearPasteRecovery()
             }
         }
         state = .idle
@@ -1174,5 +1179,69 @@ import UniformTypeIdentifiers
     private func copyToClipboard(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func clearPasteRecovery() {
+        pasteRecoveryGeneration += 1
+        pasteRetryTask?.cancel()
+        pasteRetryTask = nil
+        lastFailedPasteText = nil
+        pasteRecoveryItem.isHidden = true
+        pasteRecoveryItem.isEnabled = true
+        pasteRecoveryItem.target = self
+        pasteRecoveryItem.action = #selector(showPermissionsSettings)
+        pasteRecoveryItem.title = "Auto-paste needs Accessibility permission…"
+    }
+
+    private func rememberPasteFailure(_ text: String, error: Error) {
+        pasteRecoveryGeneration += 1
+        pasteRetryTask?.cancel()
+        pasteRetryTask = nil
+        lastFailedPasteText = text
+        pasteRecoveryItem.target = self
+        pasteRecoveryItem.isHidden = false
+        pasteRecoveryItem.isEnabled = true
+        if ErrorRecovery.presentation(for: error).action == .openAccessibilitySettings {
+            pasteRecoveryItem.title = "Fix Auto-paste Permission…"
+            pasteRecoveryItem.action = #selector(showPermissionsSettings)
+        } else {
+            pasteRecoveryItem.title = "Paste Last Dictation Again"
+            pasteRecoveryItem.action = #selector(retryLastPaste)
+        }
+    }
+
+    @objc private func retryLastPaste() {
+        guard pasteRetryTask == nil else { return }
+        guard let text = lastFailedPasteText else {
+            clearPasteRecovery()
+            return
+        }
+        guard let destination = destinationTracker.capture() else {
+            copyToClipboard(text)
+            overlay.show(.pasteFailed)
+            overlay.dismiss(after: 2)
+            return
+        }
+        let generation = pasteRecoveryGeneration
+        pasteRecoveryItem.isEnabled = false
+        pasteRecoveryItem.title = "Pasting Last Dictation…"
+        pasteRetryTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await pasteCoordinator.paste(text, to: destination)
+                guard !Task.isCancelled, generation == pasteRecoveryGeneration else { return }
+                pasteRetryTask = nil
+                clearPasteRecovery()
+                overlay.show(result == .confirmed ? .pasted : .pasteSent)
+                overlay.dismiss(after: 1.2)
+            } catch {
+                guard !Task.isCancelled, generation == pasteRecoveryGeneration else { return }
+                pasteRetryTask = nil
+                copyToClipboard(text)
+                rememberPasteFailure(text, error: error)
+                overlay.show(.pasteFailed)
+                overlay.dismiss(after: 2)
+            }
+        }
     }
 }

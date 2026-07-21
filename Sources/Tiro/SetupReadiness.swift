@@ -1,12 +1,13 @@
 struct SetupReadiness: Equatable {
     let microphoneAllowed: Bool
     let accessibilityAllowed: Bool
-    let installedModelKeys: Set<String>
+    let selectedModelKey: String
+    let usableModelKeys: Set<String>
 
-    var hasInstalledModel: Bool { !installedModelKeys.isEmpty }
+    var selectedModelReady: Bool { usableModelKeys.contains(selectedModelKey) }
 
     var canFinish: Bool {
-        microphoneAllowed && accessibilityAllowed && hasInstalledModel
+        microphoneAllowed && accessibilityAllowed && selectedModelReady
     }
 }
 

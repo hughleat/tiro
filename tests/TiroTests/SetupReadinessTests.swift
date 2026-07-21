@@ -3,28 +3,38 @@ import Testing
 
 struct SetupReadinessTests {
     @Test
-    func setupRequiresBothPermissionsAndAnInstalledModel() {
+    func setupRequiresBothPermissionsAndTheSelectedModel() {
         let ready = SetupReadiness(
             microphoneAllowed: true,
             accessibilityAllowed: true,
-            installedModelKeys: ["compact"]
+            selectedModelKey: "compact",
+            usableModelKeys: ["compact"]
         )
         #expect(ready.canFinish)
 
         #expect(!SetupReadiness(
             microphoneAllowed: false,
             accessibilityAllowed: true,
-            installedModelKeys: ["compact"]
+            selectedModelKey: "compact",
+            usableModelKeys: ["compact"]
         ).canFinish)
         #expect(!SetupReadiness(
             microphoneAllowed: true,
             accessibilityAllowed: false,
-            installedModelKeys: ["compact"]
+            selectedModelKey: "compact",
+            usableModelKeys: ["compact"]
         ).canFinish)
         #expect(!SetupReadiness(
             microphoneAllowed: true,
             accessibilityAllowed: true,
-            installedModelKeys: []
+            selectedModelKey: "compact",
+            usableModelKeys: []
+        ).canFinish)
+        #expect(!SetupReadiness(
+            microphoneAllowed: true,
+            accessibilityAllowed: true,
+            selectedModelKey: "multilingual",
+            usableModelKeys: ["compact"]
         ).canFinish)
     }
 

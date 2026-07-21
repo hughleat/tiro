@@ -242,8 +242,8 @@ final class DestinationTracker: NSObject {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
-    func capture() -> DestinationSession? {
-        guard let application = currentApplication() else { return nil }
+    func capture(allowTiro: Bool = false) -> DestinationSession? {
+        guard let application = currentApplication(allowTiro: allowTiro) else { return nil }
 
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
         AXUIElementSetMessagingTimeout(appElement, 0.05)
@@ -267,7 +267,7 @@ final class DestinationTracker: NSObject {
     }
 
     func captureApplicationIdentity() -> ApplicationIdentity? {
-        guard let application = currentApplication() else { return nil }
+        guard let application = currentApplication(allowTiro: false) else { return nil }
         return ApplicationIdentity(
             bundleIdentifier: application.bundleIdentifier,
             applicationName: application.localizedName
@@ -287,8 +287,13 @@ final class DestinationTracker: NSObject {
         lastNonTiroApplication = application
     }
 
-    private func currentApplication() -> NSRunningApplication? {
+    private func currentApplication(allowTiro: Bool) -> NSRunningApplication? {
         rememberIfEligible(NSWorkspace.shared.frontmostApplication)
+        if allowTiro,
+           let frontmost = NSWorkspace.shared.frontmostApplication,
+           frontmost.processIdentifier == ProcessInfo.processInfo.processIdentifier {
+            return frontmost
+        }
         guard let application = lastNonTiroApplication,
               !application.isTerminated else { return nil }
         return application
