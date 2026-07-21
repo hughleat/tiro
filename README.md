@@ -70,7 +70,7 @@ WhisperKit:
 
 - Apple Speech: Apple's on-device recognizer, with no Tiro-managed download.
 - Parakeet Compact: small, fast, and English-only.
-- Parakeet 0.6B v2: larger English model.
+- Parakeet 0.6B v2: recommended for high-accuracy English transcription.
 - Parakeet 0.6B v3: larger multilingual model with automatic detection.
 - Whisper Tiny, Base, and Small English: English-specialized versions.
 - Whisper Tiny, Base, and Small: progressively more accurate multilingual models.

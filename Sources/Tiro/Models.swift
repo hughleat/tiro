@@ -223,7 +223,7 @@ struct DictationModel: Hashable {
         .init(
             key: "coreml-parakeet-v2",
             name: "Parakeet 0.6B v2",
-            detail: "English · Higher accuracy",
+            detail: "English · Recommended",
             provisioning: .downloadable(bytes: 500_000_000),
             languageSupport: .english,
             isSupported: true
@@ -295,7 +295,7 @@ struct DictationModel: Hashable {
         .init(
             key: "coreml-whisper-large-v3",
             name: "Whisper Large V3",
-            detail: "Multilingual · Highest accuracy",
+            detail: "Multilingual · High accuracy",
             provisioning: .downloadable(bytes: 626_000_000),
             languageSupport: .selectable,
             isSupported: true
