@@ -6,7 +6,7 @@ final class VocabularySuggestionsView: NSStackView, NSTableViewDataSource, NSTab
 
     private let service: TiroService
     private let table = NSTableView()
-    private let stateLabel = NSTextField(labelWithString: "")
+    private let stateView = InlineRetryStateView()
     private var suggestions: [VocabularySuggestion] = []
     private var refreshTask: Task<Void, Never>?
     private var actionTask: Task<Void, Never>?
@@ -39,7 +39,12 @@ final class VocabularySuggestionsView: NSStackView, NSTableViewDataSource, NSTab
                 guard !Task.isCancelled else { return }
                 suggestions = []
                 table.reloadData()
-                showState("Could not load suggestions.\n\(error.localizedDescription)")
+                showState(
+                    "Could not load suggestions.\n\(error.localizedDescription)",
+                    retryLabel: "Retry loading suggestions"
+                ) { [weak self] in
+                    self?.refresh()
+                }
             }
         }
     }
@@ -71,24 +76,20 @@ final class VocabularySuggestionsView: NSStackView, NSTableViewDataSource, NSTab
         scrollView.documentView = table
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
-        stateLabel.alignment = .center
-        stateLabel.textColor = .secondaryLabelColor
-        stateLabel.maximumNumberOfLines = 2
-        stateLabel.lineBreakMode = .byWordWrapping
-        stateLabel.translatesAutoresizingMaskIntoConstraints = false
+        stateView.translatesAutoresizingMaskIntoConstraints = false
 
         let container = NSView()
         container.addSubview(scrollView)
-        container.addSubview(stateLabel)
+        container.addSubview(stateView)
         NSLayoutConstraint.activate([
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: container.topAnchor),
             scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            stateLabel.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 20),
-            stateLabel.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -20),
-            stateLabel.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            stateLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor)
+            stateView.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 20),
+            stateView.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -20),
+            stateView.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            stateView.centerYAnchor.constraint(equalTo: container.centerYAnchor)
         ])
 
         addArrangedSubview(label)
@@ -97,9 +98,12 @@ final class VocabularySuggestionsView: NSStackView, NSTableViewDataSource, NSTab
         container.heightAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
     }
 
-    private func showState(_ message: String?) {
-        stateLabel.stringValue = message ?? ""
-        stateLabel.isHidden = message == nil
+    private func showState(
+        _ message: String?,
+        retryLabel: String = "Retry",
+        retryAction: (() -> Void)? = nil
+    ) {
+        stateView.show(message, retryLabel: retryLabel, retryAction: retryAction)
         table.isHidden = message != nil
     }
 

@@ -19,6 +19,7 @@ final class ShortcutRecorderView: NSStackView {
     private var pendingOrdinaryShortcut: DictationShortcut?
     private var pendingOrdinaryKeyReleased = false
     private var suppressedKeyCodes = Set<UInt16>()
+    private var lastAnnouncement: String?
 
     init(shortcut: DictationShortcut = .load()) {
         self.shortcut = shortcut
@@ -34,6 +35,7 @@ final class ShortcutRecorderView: NSStackView {
 
     func beginCapture() {
         guard eventMonitor == nil else { return }
+        lastAnnouncement = nil
         pressedModifierKeys.removeAll()
         modifierKeysInGesture.removeAll()
         capturedOrdinaryKey = false
@@ -46,6 +48,7 @@ final class ShortcutRecorderView: NSStackView {
         shortcutButton.title = "Recording..."
         shortcutButton.setAccessibilityLabel("Recording dictation shortcut")
         onCaptureStarted?()
+        announce("Shortcut recording started. Press a shortcut.")
 
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown, .keyUp]) {
             [weak self] event in
@@ -146,8 +149,7 @@ final class ShortcutRecorderView: NSStackView {
                 if pressedModifierKeys.isEmpty {
                     accept(candidate)
                 } else {
-                    validationLabel.stringValue = "Release modifiers to save"
-                    validationLabel.textColor = .secondaryLabelColor
+                    showInstruction("Release modifiers to save.")
                 }
                 return nil
             }
@@ -170,9 +172,7 @@ final class ShortcutRecorderView: NSStackView {
         } else {
             pendingOrdinaryShortcut = candidate
             pendingOrdinaryKeyReleased = false
-            validationLabel.stringValue = "Release shortcut to save"
-            validationLabel.textColor = .secondaryLabelColor
-            validationLabel.isHidden = false
+            showInstruction("Release shortcut to save.")
         }
         return nil
     }
@@ -182,6 +182,7 @@ final class ShortcutRecorderView: NSStackView {
         validationLabel.isHidden = true
         endCapture()
         onShortcutChanged?(candidate)
+        announce("Dictation shortcut set to \(candidate.displayName).")
     }
 
     private func showValidation(_ message: String) {
@@ -189,6 +190,20 @@ final class ShortcutRecorderView: NSStackView {
         validationLabel.textColor = .systemRed
         validationLabel.isHidden = false
         shortcutButton.title = "Recording..."
+        announce(message)
+    }
+
+    private func showInstruction(_ message: String) {
+        validationLabel.stringValue = message
+        validationLabel.textColor = .secondaryLabelColor
+        validationLabel.isHidden = false
+        announce(message)
+    }
+
+    private func announce(_ message: String) {
+        guard message != lastAnnouncement else { return }
+        lastAnnouncement = message
+        AccessibilityAnnouncements.post(message, from: shortcutButton)
     }
 
     private func updateButtonTitle() {
@@ -205,5 +220,7 @@ final class ShortcutRecorderView: NSStackView {
         shortcut = .default
         validationLabel.isHidden = true
         onShortcutChanged?(shortcut)
+        lastAnnouncement = nil
+        announce("Dictation shortcut reset to \(shortcut.displayName).")
     }
 }

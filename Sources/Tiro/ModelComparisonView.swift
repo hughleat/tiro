@@ -1,5 +1,31 @@
 import AppKit
 
+enum ModelComparisonHistoryLoadState: Equatable {
+    case loaded(entryCount: Int)
+    case failed(String)
+
+    var message: String {
+        switch self {
+        case .loaded(0): return "No saved recordings are available."
+        case .loaded: return "No comparison results."
+        case .failed(let detail): return "Could not load recordings.\n\(detail)"
+        }
+    }
+
+    var pickerToolTip: String? {
+        switch self {
+        case .loaded(0): return "No saved recordings are available"
+        case .loaded: return nil
+        case .failed: return "Could not load recordings. Retry to try again."
+        }
+    }
+
+    var canRetry: Bool {
+        if case .failed = self { return true }
+        return false
+    }
+}
+
 @MainActor
 final class ModelComparisonView: NSStackView {
     private let service: TiroService
@@ -10,7 +36,7 @@ final class ModelComparisonView: NSStackView {
     private let resultsContainer = NSView()
     private let resultsScrollView = NSScrollView()
     private let resultsStack = NSStackView()
-    private let stateLabel = NSTextField(labelWithString: "No comparison results.")
+    private let stateView = InlineRetryStateView()
     private var history: [HistoryEntry] = []
     private var installedModels: [ManagedModel] = []
     private var selectedModelKeys: Set<String> = []
@@ -35,17 +61,20 @@ final class ModelComparisonView: NSStackView {
     func refresh() {
         historyTask?.cancel()
         recordingPicker.isEnabled = false
+        if history.isEmpty {
+            showState("Loading recordings…")
+        }
         historyTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let entries = try await service.searchHistory(limit: 200).filter(\.audio_available)
                 guard !Task.isCancelled else { return }
                 history = entries
-                rebuildRecordingPicker()
+                applyHistoryLoadState(.loaded(entryCount: entries.count))
             } catch {
                 guard !Task.isCancelled else { return }
                 history = []
-                rebuildRecordingPicker()
+                applyHistoryLoadState(.failed(error.localizedDescription))
             }
         }
     }
@@ -128,20 +157,18 @@ final class ModelComparisonView: NSStackView {
         resultsScrollView.drawsBackground = false
         resultsScrollView.translatesAutoresizingMaskIntoConstraints = false
 
-        stateLabel.alignment = .center
-        stateLabel.textColor = .secondaryLabelColor
-        stateLabel.translatesAutoresizingMaskIntoConstraints = false
+        stateView.translatesAutoresizingMaskIntoConstraints = false
         resultsContainer.addSubview(resultsScrollView)
-        resultsContainer.addSubview(stateLabel)
+        resultsContainer.addSubview(stateView)
         NSLayoutConstraint.activate([
             resultsScrollView.leadingAnchor.constraint(equalTo: resultsContainer.leadingAnchor),
             resultsScrollView.trailingAnchor.constraint(equalTo: resultsContainer.trailingAnchor),
             resultsScrollView.topAnchor.constraint(equalTo: resultsContainer.topAnchor),
             resultsScrollView.bottomAnchor.constraint(equalTo: resultsContainer.bottomAnchor),
-            stateLabel.centerXAnchor.constraint(equalTo: resultsContainer.centerXAnchor),
-            stateLabel.centerYAnchor.constraint(equalTo: resultsContainer.centerYAnchor),
-            stateLabel.leadingAnchor.constraint(greaterThanOrEqualTo: resultsContainer.leadingAnchor, constant: 16),
-            stateLabel.trailingAnchor.constraint(lessThanOrEqualTo: resultsContainer.trailingAnchor, constant: -16)
+            stateView.centerXAnchor.constraint(equalTo: resultsContainer.centerXAnchor),
+            stateView.centerYAnchor.constraint(equalTo: resultsContainer.centerYAnchor),
+            stateView.leadingAnchor.constraint(greaterThanOrEqualTo: resultsContainer.leadingAnchor, constant: 16),
+            stateView.trailingAnchor.constraint(lessThanOrEqualTo: resultsContainer.trailingAnchor, constant: -16)
         ])
 
         addArrangedSubview(recordingRow)
@@ -154,7 +181,21 @@ final class ModelComparisonView: NSStackView {
         updateCompareButton()
     }
 
-    private func rebuildRecordingPicker() {
+    private func applyHistoryLoadState(_ state: ModelComparisonHistoryLoadState) {
+        rebuildRecordingPicker(toolTip: state.pickerToolTip)
+        if case .loaded(let entryCount) = state,
+           entryCount > 0,
+           !resultsStack.arrangedSubviews.isEmpty {
+            return
+        }
+        showState(
+            state.message,
+            retryLabel: "Retry loading recordings",
+            retryAction: state.canRetry ? { [weak self] in self?.refresh() } : nil
+        )
+    }
+
+    private func rebuildRecordingPicker(toolTip: String? = nil) {
         let selectedID = selectedHistoryEntry?.id
         recordingPicker.removeAllItems()
         recordingPicker.addItems(withTitles: history.map(Self.recordingTitle))
@@ -162,7 +203,7 @@ final class ModelComparisonView: NSStackView {
             recordingPicker.selectItem(at: index)
         }
         recordingPicker.isEnabled = !history.isEmpty && comparisonTask == nil
-        recordingPicker.toolTip = history.isEmpty ? "No saved recordings are available" : nil
+        recordingPicker.toolTip = toolTip
         updateCompareButton()
     }
 
@@ -291,14 +332,17 @@ final class ModelComparisonView: NSStackView {
             column.widthAnchor.constraint(greaterThanOrEqualToConstant: 230).isActive = true
             column.heightAnchor.constraint(equalTo: resultsStack.heightAnchor).isActive = true
         }
-        stateLabel.isHidden = true
+        stateView.show(nil)
         resultsScrollView.isHidden = false
     }
 
-    private func showState(_ message: String) {
+    private func showState(
+        _ message: String,
+        retryLabel: String = "Retry",
+        retryAction: (() -> Void)? = nil
+    ) {
         clearResults()
-        stateLabel.stringValue = message
-        stateLabel.isHidden = false
+        stateView.show(message, retryLabel: retryLabel, retryAction: retryAction)
         resultsScrollView.isHidden = true
     }
 

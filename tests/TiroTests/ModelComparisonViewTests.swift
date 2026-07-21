@@ -3,6 +3,19 @@ import Testing
 @testable import Tiro
 
 struct ModelComparisonViewTests {
+    @Test
+    func historyLoadingStatesDistinguishFailureFromEmptyHistory() {
+        let empty = ModelComparisonHistoryLoadState.loaded(entryCount: 0)
+        #expect(empty.message == "No saved recordings are available.")
+        #expect(empty.pickerToolTip == "No saved recordings are available")
+        #expect(!empty.canRetry)
+
+        let failed = ModelComparisonHistoryLoadState.failed("Store unavailable")
+        #expect(failed.message == "Could not load recordings.\nStore unavailable")
+        #expect(failed.pickerToolTip == "Could not load recordings. Retry to try again.")
+        #expect(failed.canRetry)
+    }
+
     @Test @MainActor
     func resultUsesAppKitsConfiguredScrollableTextView() throws {
         _ = NSApplication.shared

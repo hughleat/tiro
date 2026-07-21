@@ -328,7 +328,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 let result = try await UpdateChecker.check(currentTag: currentTag)
                 self?.showUpdateResult(result)
             } catch {
-                self?.updateStatusLabel.stringValue = "Could not check for updates: \(error.localizedDescription)"
+                self?.showUpdateStatus(
+                    "Could not check for updates: \(error.localizedDescription)"
+                )
             }
             self?.checkUpdatesButton.isEnabled = true
         }
@@ -339,13 +341,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         switch result {
         case .updateAvailable(let available):
             release = available
-            updateStatusLabel.stringValue = "\(available.tagName) is available."
+            showUpdateStatus("\(available.tagName) is available.")
         case .current(let current):
             release = current
-            updateStatusLabel.stringValue = "Tiro is up to date (\(current.tagName))."
+            showUpdateStatus("Tiro is up to date (\(current.tagName)).")
         case .untaggedBuild(let latest):
             release = latest
-            updateStatusLabel.stringValue = "Latest published release: \(latest.tagName). This is an untagged build."
+            showUpdateStatus(
+                "Latest published release: \(latest.tagName). This is an untagged build."
+            )
         }
         checkedReleaseURL = release.pageURL
         openReleaseButton.isHidden = false
@@ -357,7 +361,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func copyDiagnostics() {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(DiagnosticsReport.text(), forType: .string)
+        let copied = NSPasteboard.general.setString(DiagnosticsReport.text(), forType: .string)
+        AccessibilityAnnouncements.post(
+            copied ? "Diagnostics copied." : "Diagnostics could not be copied.",
+            from: window?.contentView ?? updateStatusLabel
+        )
+    }
+
+    private func showUpdateStatus(_ message: String) {
+        updateStatusLabel.stringValue = message
+        AccessibilityAnnouncements.post(message, from: updateStatusLabel)
     }
 
     @objc private func reportIssue() {
@@ -372,5 +385,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func refreshLaunchAtLogin() {
         launchAtLoginButton.state = LoginItemManager.isEnabled ? .on : .off
+    }
+}
+
+enum AccessibilityAnnouncements {
+    static func post(_ message: String, from element: Any) {
+        NSAccessibility.post(
+            element: element,
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: message,
+                .priority: NSAccessibilityPriorityLevel.high.rawValue,
+            ]
+        )
     }
 }

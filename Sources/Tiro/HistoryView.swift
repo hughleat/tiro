@@ -2,6 +2,54 @@ import AppKit
 import AVFoundation
 
 @MainActor
+final class InlineRetryStateView: NSStackView {
+    private let messageLabel = NSTextField(labelWithString: "")
+    private let retryButton = NSButton(title: "Retry", target: nil, action: nil)
+    private var retryAction: (() -> Void)?
+
+    var displayedMessage: String { messageLabel.stringValue }
+    var offersRetry: Bool { !retryButton.isHidden }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        orientation = .vertical
+        alignment = .centerX
+        spacing = 8
+
+        messageLabel.alignment = .center
+        messageLabel.textColor = .secondaryLabelColor
+        messageLabel.maximumNumberOfLines = 3
+        messageLabel.lineBreakMode = .byWordWrapping
+        retryButton.bezelStyle = .rounded
+        retryButton.target = self
+        retryButton.action = #selector(retry)
+
+        addArrangedSubview(messageLabel)
+        addArrangedSubview(retryButton)
+        isHidden = true
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func show(
+        _ message: String?,
+        retryLabel: String = "Retry",
+        retryAction: (() -> Void)? = nil
+    ) {
+        self.retryAction = retryAction
+        messageLabel.stringValue = message ?? ""
+        retryButton.title = retryLabel
+        retryButton.setAccessibilityLabel(retryLabel)
+        retryButton.isHidden = retryAction == nil
+        isHidden = message == nil
+    }
+
+    @objc private func retry() {
+        retryAction?()
+    }
+}
+
+@MainActor
 final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSource,
     NSTableViewDelegate, AVAudioPlayerDelegate {
     var onCorrectionSaved: (() -> Void)?
@@ -9,7 +57,7 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
     private let service: TiroService
     private let searchField = NSSearchField()
     private let table = NSTableView()
-    private let stateLabel = NSTextField(labelWithString: "")
+    private let stateView = InlineRetryStateView()
     private var entries: [HistoryEntry] = []
     private var searchTask: Task<Void, Never>?
     private var audioTask: Task<Void, Never>?
@@ -68,25 +116,21 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
         scrollView.borderType = .bezelBorder
         scrollView.documentView = table
 
-        stateLabel.alignment = .center
-        stateLabel.textColor = .secondaryLabelColor
-        stateLabel.maximumNumberOfLines = 3
-        stateLabel.lineBreakMode = .byWordWrapping
-        stateLabel.translatesAutoresizingMaskIntoConstraints = false
+        stateView.translatesAutoresizingMaskIntoConstraints = false
 
         let tableContainer = NSView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         tableContainer.addSubview(scrollView)
-        tableContainer.addSubview(stateLabel)
+        tableContainer.addSubview(stateView)
         NSLayoutConstraint.activate([
             scrollView.leadingAnchor.constraint(equalTo: tableContainer.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: tableContainer.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: tableContainer.topAnchor),
             scrollView.bottomAnchor.constraint(equalTo: tableContainer.bottomAnchor),
-            stateLabel.leadingAnchor.constraint(greaterThanOrEqualTo: tableContainer.leadingAnchor, constant: 24),
-            stateLabel.trailingAnchor.constraint(lessThanOrEqualTo: tableContainer.trailingAnchor, constant: -24),
-            stateLabel.centerXAnchor.constraint(equalTo: tableContainer.centerXAnchor),
-            stateLabel.centerYAnchor.constraint(equalTo: tableContainer.centerYAnchor)
+            stateView.leadingAnchor.constraint(greaterThanOrEqualTo: tableContainer.leadingAnchor, constant: 24),
+            stateView.trailingAnchor.constraint(lessThanOrEqualTo: tableContainer.trailingAnchor, constant: -24),
+            stateView.centerXAnchor.constraint(equalTo: tableContainer.centerXAnchor),
+            stateView.centerYAnchor.constraint(equalTo: tableContainer.centerYAnchor)
         ])
 
         addArrangedSubview(controls)
@@ -125,7 +169,12 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
                 guard !Task.isCancelled, generation == requestGeneration else { return }
                 entries = []
                 table.reloadData()
-                showState("Could not load history.\n\(error.localizedDescription)")
+                showState(
+                    "Could not load history.\n\(error.localizedDescription)",
+                    retryLabel: "Retry loading history"
+                ) { [weak self] in
+                    self?.refresh()
+                }
             }
         }
     }
@@ -139,9 +188,12 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
         }.map(\.element)
     }
 
-    private func showState(_ message: String?) {
-        stateLabel.stringValue = message ?? ""
-        stateLabel.isHidden = message == nil
+    private func showState(
+        _ message: String?,
+        retryLabel: String = "Retry",
+        retryAction: (() -> Void)? = nil
+    ) {
+        stateView.show(message, retryLabel: retryLabel, retryAction: retryAction)
         table.isHidden = message != nil
     }
 
@@ -177,7 +229,11 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
         guard entries.indices.contains(sender.tag) else { return }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(entries[sender.tag].displayText, forType: .string)
+        let copied = pasteboard.setString(entries[sender.tag].displayText, forType: .string)
+        AccessibilityAnnouncements.post(
+            copied ? "Transcript copied." : "Transcript could not be copied.",
+            from: sender
+        )
     }
 
     @objc fileprivate func correctEntry(_ sender: NSButton) {

@@ -6,6 +6,49 @@ import Testing
 @Suite
 struct SettingsConstructionTests {
     @Test @MainActor
+    func inlineErrorStateOffersAnAccessibleRetryActionOnlyWhenRequested() throws {
+        _ = NSApplication.shared
+        let state = InlineRetryStateView()
+
+        state.show("Nothing here yet.")
+        #expect(state.displayedMessage == "Nothing here yet.")
+        #expect(!state.offersRetry)
+
+        var retryCount = 0
+        state.show("Could not load history.", retryLabel: "Retry loading history") {
+            retryCount += 1
+        }
+        let retry = try #require(state.arrangedSubviews.compactMap { $0 as? NSButton }.first)
+        #expect(state.offersRetry)
+        #expect(retry.accessibilityLabel() == "Retry loading history")
+
+        retry.performClick(nil)
+        #expect(retryCount == 1)
+    }
+
+    @Test @MainActor
+    func shortcutRecorderExposesCaptureInstructionsAccessibly() throws {
+        _ = NSApplication.shared
+        let recorder = ShortcutRecorderView(shortcut: .default)
+        recorder.beginCapture()
+        defer { recorder.endCapture() }
+
+        let button = try #require(
+            recorder.arrangedSubviews
+                .compactMap { $0 as? NSStackView }
+                .flatMap(\.arrangedSubviews)
+                .compactMap { $0 as? NSButton }
+                .first
+        )
+        let instruction = try #require(
+            recorder.arrangedSubviews.compactMap { $0 as? NSTextField }.first
+        )
+        #expect(button.accessibilityLabel() == "Recording dictation shortcut")
+        #expect(instruction.stringValue == "Press a shortcut")
+        #expect(!instruction.isHidden)
+    }
+
+    @Test @MainActor
     func settingsWindowCanBeConstructedDuringLaunch() {
         _ = NSApplication.shared
         let controller = SettingsWindowController(service: TiroService())
