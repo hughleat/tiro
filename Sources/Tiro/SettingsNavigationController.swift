@@ -39,6 +39,12 @@ final class SettingsNavigationController: NSSplitViewController, NSTableViewData
 
     required init?(coder: NSCoder) { nil }
 
+    static func configureSidebarIcon(_ imageView: NSImageView, symbolName: String) {
+        imageView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
+        imageView.setAccessibilityElement(false)
+        imageView.contentTintColor = .secondaryLabelColor
+    }
+
     func show(_ section: SettingsSection) {
         guard let index = items.firstIndex(where: { $0.section == section }) else { return }
         loadViewIfNeeded()
@@ -131,8 +137,7 @@ final class SettingsNavigationController: NSSplitViewController, NSTableViewData
         }
 
         let item = items[row]
-        imageView.image = NSImage(systemSymbolName: item.symbolName, accessibilityDescription: nil)
-        imageView.contentTintColor = .secondaryLabelColor
+        Self.configureSidebarIcon(imageView, symbolName: item.symbolName)
         textField.stringValue = item.title
         return cell
     }

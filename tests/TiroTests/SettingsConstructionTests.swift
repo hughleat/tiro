@@ -14,6 +14,33 @@ struct SettingsConstructionTests {
     }
 
     @Test
+    func historyActionLabelsIncludeConciseTranscriptContext() {
+        #expect(
+            HistoryAccessibility.actionLabel(
+                "Copy transcript",
+                transcript: "  A   short\ntranscript  "
+            ) == "Copy transcript, A short transcript"
+        )
+        let long = String(repeating: "word ", count: 20)
+        let label = HistoryAccessibility.actionLabel("Play recording", transcript: long)
+        #expect(label.hasPrefix("Play recording, "))
+        #expect(label.hasSuffix("..."))
+        #expect(label.count == "Play recording, ".count + 60)
+        #expect(
+            HistoryAccessibility.actionLabel("Delete transcription", transcript: "")
+                == "Delete transcription, Untitled transcription"
+        )
+    }
+
+    @Test @MainActor
+    func settingsSidebarIconsAreDecorative() {
+        let imageView = NSImageView()
+        SettingsNavigationController.configureSidebarIcon(imageView, symbolName: "gearshape")
+
+        #expect(imageView.isAccessibilityElement() == false)
+    }
+
+    @Test
     func commandLineInstallerRejectsRegularFileAndUnrelatedLink() throws {
         let fixture = try CommandLineInstallerFixture()
         defer { fixture.remove() }

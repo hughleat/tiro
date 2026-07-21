@@ -8,6 +8,8 @@
     <string>Tiro</string>
     <key>CFBundleExecutable</key>
     <string>Tiro</string>
+    <key>CFBundleIconFile</key>
+    <string>Tiro.icns</string>
     <key>CFBundleIdentifier</key>
     <string>local.tiro.dictation</string>
     <key>CFBundleInfoDictionaryVersion</key>

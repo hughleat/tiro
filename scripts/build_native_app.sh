@@ -17,11 +17,13 @@ SKIP_NOTARIZATION=0
 SPONSORSHIP_ENABLED=0
 DEPLOYMENT_TARGET="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$ROOT/native/Info.plist")"
 TARGET_ARCHITECTURE="arm64"
+DMG_TEMPLATE_SHA256="d4dde813f3fe08e56783a99a75ae4e729f2dc401f4eeb812bd658fcb0b90f277"
 BUILD_LOCK="$ROOT/.build/native-build.lock"
 SUBMISSION_ARCHIVE=""
 DMG_MOUNT_POINT=""
 DMG_PARTIAL=""
 DMG_STAGING=""
+DMG_LAYOUT_EXPECTED=""
 PENDING_ARTIFACT=""
 
 usage() {
@@ -218,25 +220,52 @@ create_archive() {
     mv -f "$partial" "$archive"
 }
 
+detach_dmg() {
+    local mount_point="$1"
+
+    hdiutil detach -quiet "$mount_point" >/dev/null 2>&1 \
+        || hdiutil detach -quiet -force "$mount_point" >/dev/null 2>&1
+}
+
 create_dmg() {
     local image="$1"
 
-    DMG_STAGING="$ROOT/.build/dmg-root"
+    DMG_STAGING="$ROOT/.build/Tiro-dmg-work.dmg"
     DMG_MOUNT_POINT="$ROOT/.build/dmg-mount"
+    DMG_LAYOUT_EXPECTED="$ROOT/.build/Tiro-dmg-layout.expected"
     DMG_PARTIAL="${image:r}.partial.dmg"
+    if mount | grep -F " on $DMG_MOUNT_POINT (" >/dev/null; then
+        detach_dmg "$DMG_MOUNT_POINT" \
+            || fail "could not detach stale DMG mount at $DMG_MOUNT_POINT"
+    fi
     rm -rf "$DMG_STAGING" "$DMG_MOUNT_POINT"
-    rm -f "$image" "$image.sha256" "$DMG_PARTIAL"
-    mkdir -p "$DMG_STAGING" "$DMG_MOUNT_POINT"
-    ditto "$APP" "$DMG_STAGING/Tiro.app"
-    ln -s /Applications "$DMG_STAGING/Applications"
+    rm -f "$image" "$image.sha256" "$DMG_PARTIAL" "$DMG_LAYOUT_EXPECTED"
+    mkdir -p "$DMG_MOUNT_POINT"
 
-    hdiutil create -quiet \
-        -fs HFS+ \
-        -volname Tiro \
-        -srcfolder "$DMG_STAGING" \
-        -format UDZO \
-        -ov "$DMG_PARTIAL"
+    local template="$ROOT/native/Assets/TiroDMGTemplate.dmg"
+    local template_sha256="$(shasum -a 256 "$template" | awk '{ print $1 }')"
+    [[ "$template_sha256" == "$DMG_TEMPLATE_SHA256" ]] \
+        || fail "DMG template checksum does not match its reviewed layout"
+    hdiutil convert -quiet "$ROOT/native/Assets/TiroDMGTemplate.dmg" \
+        -format UDRW -o "$DMG_STAGING"
+    hdiutil resize -quiet -size 128m "$DMG_STAGING"
+    hdiutil attach -quiet -nobrowse -mountpoint "$DMG_MOUNT_POINT" \
+        "$DMG_STAGING"
+    cp "$DMG_MOUNT_POINT/.DS_Store" "$DMG_LAYOUT_EXPECTED"
+    strings "$DMG_LAYOUT_EXPECTED" | grep -Fx '{{200, 120}, {660, 420}}' >/dev/null \
+        || fail "DMG template has unexpected Finder window bounds"
+    cmp -s "$DMG_MOUNT_POINT/.background.png" \
+        "$ROOT/native/Assets/TiroDMGBackground.png" \
+        || fail "DMG template background does not match its source asset"
+    rm -rf "$DMG_MOUNT_POINT/Tiro.app"
+    ditto "$APP" "$DMG_MOUNT_POINT/Tiro.app"
+    detach_dmg "$DMG_MOUNT_POINT"
+    rmdir "$DMG_MOUNT_POINT"
+    DMG_MOUNT_POINT=""
+    hdiutil convert -quiet "$DMG_STAGING" -format UDZO -o "$DMG_PARTIAL"
     hdiutil verify "$DMG_PARTIAL" >/dev/null
+    DMG_MOUNT_POINT="$ROOT/.build/dmg-mount"
+    mkdir -p "$DMG_MOUNT_POINT"
     hdiutil attach -quiet -readonly -nobrowse \
         -mountpoint "$DMG_MOUNT_POINT" "$DMG_PARTIAL"
 
@@ -245,6 +274,10 @@ create_dmg() {
     [[ -L "$DMG_MOUNT_POINT/Applications" \
         && "$(readlink "$DMG_MOUNT_POINT/Applications")" == "/Applications" ]] \
         || fail "DMG does not contain the Applications shortcut"
+    [[ -f "$DMG_MOUNT_POINT/.background.png" ]] \
+        || fail "DMG does not contain its generated background"
+    cmp -s "$DMG_MOUNT_POINT/.DS_Store" "$DMG_LAYOUT_EXPECTED" \
+        || fail "DMG does not contain the expected Finder layout"
     "$ROOT/scripts/smoke_release.sh" \
         --app "$DMG_MOUNT_POINT/Tiro.app" \
         --ad-hoc-only \
@@ -254,13 +287,15 @@ create_dmg() {
         --expected-release-tag "$RELEASE_TAG" \
         --expected-sponsorship "$sponsorship_value"
 
-    hdiutil detach -quiet "$DMG_MOUNT_POINT"
+    detach_dmg "$DMG_MOUNT_POINT"
     rmdir "$DMG_MOUNT_POINT"
     DMG_MOUNT_POINT=""
     mv -f "$DMG_PARTIAL" "$image"
     DMG_PARTIAL=""
     rm -rf "$DMG_STAGING"
     DMG_STAGING=""
+    rm -f "$DMG_LAYOUT_EXPECTED"
+    DMG_LAYOUT_EXPECTED=""
 }
 
 write_checksum() {
@@ -296,13 +331,14 @@ release_build_lock() {
     local mount_detached=1
 
     if [[ -n "$DMG_MOUNT_POINT" ]]; then
-        if ! hdiutil detach -quiet "$DMG_MOUNT_POINT" >/dev/null 2>&1; then
+        if ! detach_dmg "$DMG_MOUNT_POINT"; then
             print -u2 "warning: could not detach DMG at $DMG_MOUNT_POINT"
             mount_detached=0
         fi
     fi
     [[ -z "$DMG_PARTIAL" ]] || rm -f "$DMG_PARTIAL" || true
     [[ -z "$DMG_STAGING" ]] || rm -rf "$DMG_STAGING" || true
+    [[ -z "$DMG_LAYOUT_EXPECTED" ]] || rm -f "$DMG_LAYOUT_EXPECTED" || true
     if [[ -n "$DMG_MOUNT_POINT" && "$mount_detached" -eq 1 ]]; then
         rm -rf "$DMG_MOUNT_POINT" || true
     fi
@@ -347,6 +383,7 @@ cp "$ROOT/.build/release/Tiro" "$APP/Contents/MacOS/Tiro"
 cp "$ROOT/.build/release/TiroCommand" "$APP/Contents/Helpers/tiro"
 chmod 755 "$APP/Contents/Helpers/tiro"
 cp "$ROOT/native/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/native/Assets/Tiro.icns" "$APP/Contents/Resources/Tiro.icns"
 mkdir -p "$APP/Contents/Resources/Licenses"
 cp "$ROOT/LICENSE" "$APP/Contents/Resources/Licenses/Tiro-MIT.txt"
 cp "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/Licenses/THIRD_PARTY_NOTICES.md"

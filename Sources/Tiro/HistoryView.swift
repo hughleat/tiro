@@ -330,6 +330,18 @@ final class HistoryView: NSStackView, NSSearchFieldDelegate, NSTableViewDataSour
     }()
 }
 
+enum HistoryAccessibility {
+    static func actionLabel(_ action: String, transcript: String) -> String {
+        let text = transcript.isEmpty ? "Untitled transcription" : transcript
+        let normalized = text.split(whereSeparator: \Character.isWhitespace)
+            .joined(separator: " ")
+        let excerpt = normalized.count > 60
+            ? "\(normalized.prefix(57))..."
+            : normalized
+        return "\(action), \(excerpt)"
+    }
+}
+
 private final class HistoryRowView: NSTableCellView {
     private let excerptLabel = NSTextField(labelWithString: "")
     private let metadataLabel = NSTextField(labelWithString: "")
@@ -389,17 +401,22 @@ private final class HistoryRowView: NSTableCellView {
         isPlaying: Bool,
         target: HistoryView
     ) {
-        excerptLabel.stringValue = entry.displayText.isEmpty ? "Untitled transcription" : entry.displayText
+        let excerpt = entry.displayText.isEmpty ? "Untitled transcription" : entry.displayText
+        excerptLabel.stringValue = excerpt
         metadataLabel.stringValue = metadata
-        configure(copyButton, symbol: "doc.on.doc", label: "Copy transcript", row: row, target: target,
+        configure(copyButton, symbol: "doc.on.doc", label: "Copy transcript",
+                  transcript: excerpt, row: row, target: target,
                   action: #selector(HistoryView.copyEntry(_:)))
-        configure(correctButton, symbol: "square.and.pencil", label: "Correct transcript", row: row,
+        configure(correctButton, symbol: "square.and.pencil", label: "Correct transcript",
+                  transcript: excerpt, row: row,
                   target: target, action: #selector(HistoryView.correctEntry(_:)))
         configure(playButton, symbol: isPlaying ? "stop.fill" : "play.fill",
-                  label: isPlaying ? "Stop playback" : "Play recording", row: row, target: target,
+                  label: isPlaying ? "Stop playback" : "Play recording",
+                  transcript: excerpt, row: row, target: target,
                   action: #selector(HistoryView.togglePlayback(_:)))
         playButton.isEnabled = entry.audio_available
-        configure(deleteButton, symbol: "trash", label: "Delete transcription", row: row, target: target,
+        configure(deleteButton, symbol: "trash", label: "Delete transcription",
+                  transcript: excerpt, row: row, target: target,
                   action: #selector(HistoryView.deleteEntry(_:)))
     }
 
@@ -407,6 +424,7 @@ private final class HistoryRowView: NSTableCellView {
         _ button: NSButton,
         symbol: String,
         label: String,
+        transcript: String,
         row: Int,
         target: AnyObject,
         action: Selector
@@ -419,7 +437,9 @@ private final class HistoryRowView: NSTableCellView {
         button.target = target
         button.action = action
         button.toolTip = label
-        button.setAccessibilityLabel(label)
+        button.setAccessibilityLabel(
+            HistoryAccessibility.actionLabel(label, transcript: transcript)
+        )
     }
 }
 

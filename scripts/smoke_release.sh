@@ -9,6 +9,12 @@ EXPECTED_BUILD=""
 EXPECTED_RELEASE_TAG=""
 EXPECTED_SPONSORSHIP=""
 EXPECTED_ENTITLEMENTS="$ROOT/native/Tiro.entitlements"
+TEMP_ROOT=""
+
+cleanup() {
+    [[ -z "$TEMP_ROOT" ]] || rm -rf "$TEMP_ROOT"
+}
+trap cleanup EXIT
 
 usage() {
     cat <<'USAGE'
@@ -78,8 +84,26 @@ done
 [[ -d "$APP" ]] || fail "app bundle not found: $APP"
 [[ -f "$EXPECTED_ENTITLEMENTS" ]] \
     || fail "expected entitlements not found: $EXPECTED_ENTITLEMENTS"
+TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/tiro-release-smoke.XXXXXX")"
 INFO="$APP/Contents/Info.plist"
 [[ -f "$INFO" ]] || fail "Info.plist not found in app bundle"
+icon_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$INFO" 2>/dev/null || true)"
+[[ "$icon_name" == "Tiro.icns" ]] || fail "bundle icon metadata is missing"
+[[ -s "$APP/Contents/Resources/$icon_name" ]] || fail "bundle icon is missing"
+icon_width="$(sips -g pixelWidth "$APP/Contents/Resources/$icon_name" | awk '/pixelWidth:/ { print $2 }')"
+[[ "$icon_width" == "1024" ]] || fail "bundle icon is missing its 1024-pixel representation"
+iconutil -c iconset -o "$TEMP_ROOT/Tiro.iconset" \
+    "$APP/Contents/Resources/$icon_name"
+for representation in \
+    icon_16x16@2x.png \
+    icon_32x32@2x.png \
+    icon_128x128.png \
+    icon_128x128@2x.png \
+    icon_256x256@2x.png \
+    icon_512x512@2x.png; do
+    [[ -s "$TEMP_ROOT/Tiro.iconset/$representation" ]] \
+        || fail "bundle icon is missing representation: $representation"
+done
 CLI="$APP/Contents/Helpers/tiro"
 [[ -f "$CLI" && -x "$CLI" ]] || fail "Tiro command-line helper is missing or not executable"
 cmp -s "$APP/Contents/MacOS/Tiro" "$CLI" \
@@ -178,13 +202,6 @@ if [[ "$SIGNING_LEVEL" == "notarized" ]]; then
     xcrun stapler validate "$APP"
     spctl --assess --type execute --verbose=4 "$APP"
 fi
-
-TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/tiro-release-smoke.XXXXXX")"
-
-cleanup() {
-    rm -rf "$TEMP_ROOT"
-}
-trap cleanup EXIT
 
 codesign -d --entitlements - --xml "$APP" \
     >"$TEMP_ROOT/entitlements.plist" 2>/dev/null

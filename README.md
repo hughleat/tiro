@@ -1,4 +1,8 @@
-# Tiro
+<p align="center">
+  <img src="native/Assets/TiroIcon.png" width="128" alt="Tiro app icon">
+</p>
+
+<h1 align="center">Tiro</h1>
 
 <p align="center"><strong>Private, fast speech-to-text for Apple Silicon Macs.</strong></p>
 
