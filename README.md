@@ -6,6 +6,7 @@
   <a href="https://github.com/hughleat/tiro/releases">Download Tiro</a>
   · <a href="#install">Install</a>
   · <a href="#command-line">Command line</a>
+  · <a href="https://github.com/hughleat/tiro/issues/new/choose">Feedback</a>
   · <a href="LICENSE">MIT License</a>
 </p>
 
@@ -42,6 +43,11 @@ you open each downloaded version, macOS will block it:
 During setup, grant Microphone access for recording and Accessibility access
 for the global shortcut and automatic paste. Speech Recognition access is
 needed only when Apple Speech is selected.
+
+Tiro checks for updates only when **Settings > About > Check for Updates** is
+clicked. That page can also copy a privacy-safe diagnostics report for bug
+reports; it excludes transcripts, audio, clipboard contents, vocabulary, file
+paths, and application names.
 
 Models are never bundled with the app. Tiro downloads only models selected by
 the user, and all transcription remains local. Apple Speech uses macOS-managed

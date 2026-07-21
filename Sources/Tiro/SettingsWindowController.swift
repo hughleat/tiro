@@ -22,6 +22,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let permissionSettingsView = PermissionSettingsView()
     private let commandLineToolView = CommandLineToolSettingsView()
     private let privacySettingsView: PrivacySettingsView
+    private let updateStatusLabel = NSTextField(wrappingLabelWithString: "Updates are checked only when you ask.")
+    private let checkUpdatesButton = NSButton()
+    private let openReleaseButton = NSButton()
+    private var checkedReleaseURL: URL?
     private var navigationController: SettingsNavigationController?
 
     init(service: TiroService) {
@@ -237,9 +241,45 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 18
-        let stack = NSStackView(views: [row, NSView()])
+        let updatesLabel = sectionLabel("Updates")
+        updateStatusLabel.textColor = .secondaryLabelColor
+        checkUpdatesButton.title = "Check for Updates"
+        checkUpdatesButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
+        checkUpdatesButton.imagePosition = .imageLeading
+        checkUpdatesButton.bezelStyle = .rounded
+        checkUpdatesButton.target = self
+        checkUpdatesButton.action = #selector(checkForUpdates)
+        openReleaseButton.title = "View Release"
+        openReleaseButton.image = NSImage(systemSymbolName: "arrow.up.right.square", accessibilityDescription: nil)
+        openReleaseButton.imagePosition = .imageLeading
+        openReleaseButton.bezelStyle = .rounded
+        openReleaseButton.target = self
+        openReleaseButton.action = #selector(openCheckedRelease)
+        openReleaseButton.isHidden = true
+        let updateButtons = NSStackView(views: [checkUpdatesButton, openReleaseButton])
+        updateButtons.orientation = .horizontal
+        updateButtons.spacing = 8
+
+        let helpLabel = sectionLabel("Help")
+        let copyDiagnostics = NSButton(title: "Copy Diagnostics", target: self, action: #selector(copyDiagnostics))
+        copyDiagnostics.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
+        copyDiagnostics.imagePosition = .imageLeading
+        copyDiagnostics.bezelStyle = .rounded
+        let reportIssue = NSButton(title: "Report an Issue", target: self, action: #selector(reportIssue))
+        reportIssue.image = NSImage(systemSymbolName: "exclamationmark.bubble", accessibilityDescription: nil)
+        reportIssue.imagePosition = .imageLeading
+        reportIssue.bezelStyle = .rounded
+        let helpButtons = NSStackView(views: [copyDiagnostics, reportIssue])
+        helpButtons.orientation = .horizontal
+        helpButtons.spacing = 8
+
+        let stack = NSStackView(views: [row, updatesLabel, updateStatusLabel, updateButtons, helpLabel, helpButtons, NSView()])
         stack.orientation = .vertical
         stack.alignment = .leading
+        stack.spacing = 8
+        stack.setCustomSpacing(26, after: row)
+        stack.setCustomSpacing(24, after: updateButtons)
+        updateStatusLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 520).isActive = true
         return stack
     }
 
@@ -276,6 +316,52 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             refreshLaunchAtLogin()
             window?.presentError(error)
         }
+    }
+
+    @objc private func checkForUpdates() {
+        checkUpdatesButton.isEnabled = false
+        updateStatusLabel.stringValue = "Checking GitHub Releases…"
+        openReleaseButton.isHidden = true
+        let currentTag = Bundle.main.object(forInfoDictionaryKey: "TiroReleaseTag") as? String
+        Task { [weak self] in
+            do {
+                let result = try await UpdateChecker.check(currentTag: currentTag)
+                self?.showUpdateResult(result)
+            } catch {
+                self?.updateStatusLabel.stringValue = "Could not check for updates: \(error.localizedDescription)"
+            }
+            self?.checkUpdatesButton.isEnabled = true
+        }
+    }
+
+    private func showUpdateResult(_ result: UpdateCheckResult) {
+        let release: GitHubRelease
+        switch result {
+        case .updateAvailable(let available):
+            release = available
+            updateStatusLabel.stringValue = "\(available.tagName) is available."
+        case .current(let current):
+            release = current
+            updateStatusLabel.stringValue = "Tiro is up to date (\(current.tagName))."
+        case .untaggedBuild(let latest):
+            release = latest
+            updateStatusLabel.stringValue = "Latest published release: \(latest.tagName). This is an untagged build."
+        }
+        checkedReleaseURL = release.pageURL
+        openReleaseButton.isHidden = false
+    }
+
+    @objc private func openCheckedRelease() {
+        NSWorkspace.shared.open(checkedReleaseURL ?? BuildFeatures.releasesURL)
+    }
+
+    @objc private func copyDiagnostics() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(DiagnosticsReport.text(), forType: .string)
+    }
+
+    @objc private func reportIssue() {
+        NSWorkspace.shared.open(BuildFeatures.newIssueURL)
     }
 
 #if TIRO_SPONSORSHIP_ENABLED

@@ -40,6 +40,7 @@ jobs:
         env:
           TIRO_RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
           TIRO_RELEASE_BUILD_NUMBER: ${{ steps.metadata.outputs.build_number }}
+          TIRO_RELEASE_TAG: ${{ github.ref_name }}
         run: ./scripts/test_all.sh
 
       - name: Publish GitHub release

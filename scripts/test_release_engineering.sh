@@ -83,6 +83,9 @@ rg -q -F 'gh release upload "$GITHUB_REF_NAME"' "$RELEASE_WORKFLOW"
 rg -q -F -- '--clobber' "$RELEASE_WORKFLOW"
 rg -q -F 'gh release edit "$GITHUB_REF_NAME"' "$RELEASE_WORKFLOW"
 rg -q -F 'TIRO_RELEASE_BUILD_NUMBER' "$ROOT/scripts/test_all.sh"
+rg -q -F 'TIRO_RELEASE_TAG' "$ROOT/scripts/test_all.sh"
+rg -q -F 'TIRO_RELEASE_TAG: ${{ github.ref_name }}' "$RELEASE_WORKFLOW"
+rg -q -F 'TiroReleaseTag' "$ROOT/scripts/build_native_app.sh"
 
 product_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/native/Info.plist")"
 product_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$ROOT/native/Info.plist")"
@@ -121,6 +124,7 @@ print -r -- "$help" | rg -q 'distribution'
 print -r -- "$help" | rg -q 'dmg'
 print -r -- "$help" | rg -q -- '--notary-profile'
 print -r -- "$help" | rg -q -- '--build-number'
+print -r -- "$help" | rg -q -- '--release-tag'
 print -r -- "$help" | rg -q -- '--enable-sponsorship'
 print -r -- "$help" | rg -q 'setup_local_signing.sh'
 

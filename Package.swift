@@ -55,6 +55,7 @@ let package = Package(
             ],
             sources: [
                 "BuildFeaturesTests.swift",
+                "DiagnosticsReportTests.swift",
                 "CommandLineToolInstallerTests.swift",
                 "DictationModelCatalogTests.swift",
                 "ErrorRecoveryTests.swift",
@@ -70,6 +71,7 @@ let package = Package(
                 "SupportPromptPolicyTests.swift",
                 "TranscriptionJobGateTests.swift",
                 "TranscriptExportTests.swift",
+                "UpdateCheckerTests.swift",
             ]
         ),
         .testTarget(

@@ -6,6 +6,7 @@ APP="$ROOT/dist/Tiro.app"
 SIGNING_LEVEL="any"
 EXPECTED_VERSION=""
 EXPECTED_BUILD=""
+EXPECTED_RELEASE_TAG=""
 EXPECTED_SPONSORSHIP=""
 EXPECTED_ENTITLEMENTS="$ROOT/native/Tiro.entitlements"
 
@@ -20,6 +21,7 @@ Options:
   --notarized                Also require a staple and Gatekeeper acceptance
   --expected-version VERSION Assert CFBundleShortVersionString
   --expected-build NUMBER    Assert CFBundleVersion
+  --expected-release-tag TAG Assert the embedded GitHub release tag
   --expected-sponsorship BOOL
                              Assert whether sponsorship UI was compiled in
   --expected-entitlements PATH
@@ -35,7 +37,7 @@ fail() {
 
 while (( $# > 0 )); do
     case "$1" in
-        --app|--expected-version|--expected-build|--expected-sponsorship|--expected-entitlements)
+        --app|--expected-version|--expected-build|--expected-release-tag|--expected-sponsorship|--expected-entitlements)
             (( $# >= 2 )) || fail "$1 requires a value"
             option="$1"
             value="$2"
@@ -44,6 +46,7 @@ while (( $# > 0 )); do
                 --app) APP="${value:A}" ;;
                 --expected-version) EXPECTED_VERSION="$value" ;;
                 --expected-build) EXPECTED_BUILD="$value" ;;
+                --expected-release-tag) EXPECTED_RELEASE_TAG="$value" ;;
                 --expected-sponsorship) EXPECTED_SPONSORSHIP="$value" ;;
                 --expected-entitlements) EXPECTED_ENTITLEMENTS="${value:A}" ;;
             esac
@@ -99,6 +102,7 @@ plutil -lint "$INFO" >/dev/null
 
 actual_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")"
 actual_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")"
+actual_release_tag="$(/usr/libexec/PlistBuddy -c 'Print :TiroReleaseTag' "$INFO" 2>/dev/null || true)"
 sponsorship_enabled="$(/usr/libexec/PlistBuddy -c 'Print :TiroSponsorshipEnabled' "$INFO")"
 reported_features="$("$APP/Contents/MacOS/Tiro" --print-build-features)"
 case "$reported_features" in
@@ -111,6 +115,8 @@ esac
     || fail "expected version $EXPECTED_VERSION, found $actual_version"
 [[ -z "$EXPECTED_BUILD" || "$actual_build" == "$EXPECTED_BUILD" ]] \
     || fail "expected build $EXPECTED_BUILD, found $actual_build"
+[[ -z "$EXPECTED_RELEASE_TAG" || "$actual_release_tag" == "$EXPECTED_RELEASE_TAG" ]] \
+    || fail "expected release tag $EXPECTED_RELEASE_TAG, found ${actual_release_tag:-none}"
 [[ -z "$EXPECTED_SPONSORSHIP" || "$sponsorship_enabled" == "$EXPECTED_SPONSORSHIP" ]] \
     || fail "expected sponsorship $EXPECTED_SPONSORSHIP, found $sponsorship_enabled"
 [[ "$executable_sponsorship" == "$sponsorship_enabled" ]] \

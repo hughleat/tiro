@@ -1,0 +1,53 @@
+name: Bug report
+description: Tell us about a reproducible problem in Tiro
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Tiro. Please do not attach private recordings or transcripts. About > Copy Diagnostics produces a report that excludes them.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe what you expected and what Tiro did instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Select ...
+        2. Record ...
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Tiro diagnostics
+      description: Paste the output from Tiro Settings > About > Copy Diagnostics.
+      render: text
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where did the problem occur?
+      options:
+        - Shortcut or recording
+        - Transcription
+        - Clipboard or automatic paste
+        - Model download or deletion
+        - Audio file transcription
+        - Command line
+        - Setup, permissions, or updates
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed private speech, transcripts, file paths, and application names from this report.
+          required: true

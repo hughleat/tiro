@@ -5,6 +5,7 @@ ROOT="${0:A:h:h}"
 MODE="development"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/native/Info.plist")"
 BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$ROOT/native/Info.plist")"
+RELEASE_TAG=""
 OUTPUT_DIR="$ROOT/dist"
 ARCHIVE_DIR="$ROOT/dist/releases"
 SIGNING_IDENTITY="${TIRO_SIGNING_IDENTITY:-}"
@@ -36,6 +37,7 @@ Modes:
 Options:
   --version VERSION          CFBundleShortVersionString (for example 1.2.0)
   --build-number NUMBER      CFBundleVersion (for example 42)
+  --release-tag TAG          Published release tag (for example v1.2.0-beta.1)
   --output-dir PATH          App output directory (default: dist)
   --archive-dir PATH         Distribution archive directory (default: dist/releases)
   --signing-identity NAME    Developer ID Application identity
@@ -71,7 +73,7 @@ fi
 
 while (( $# > 0 )); do
     case "$1" in
-        --version|--build-number|--output-dir|--archive-dir|--signing-identity|--entitlements|--notary-profile)
+        --version|--build-number|--release-tag|--output-dir|--archive-dir|--signing-identity|--entitlements|--notary-profile)
             (( $# >= 2 )) || fail "$1 requires a value"
             option="$1"
             value="$2"
@@ -79,6 +81,7 @@ while (( $# > 0 )); do
             case "$option" in
                 --version) VERSION="$value" ;;
                 --build-number) BUILD_NUMBER="$value" ;;
+                --release-tag) RELEASE_TAG="$value" ;;
                 --output-dir) OUTPUT_DIR="${value:A}" ;;
                 --archive-dir) ARCHIVE_DIR="${value:A}" ;;
                 --signing-identity) SIGNING_IDENTITY="$value" ;;
@@ -112,6 +115,8 @@ done
     || fail "--build-number must begin with an integer and contain only integers and periods"
 [[ "$BUILD_NUMBER" != *[^0-9.]* && "$BUILD_NUMBER" != *..* && "$BUILD_NUMBER" != *. ]] \
     || fail "--build-number must begin with an integer and contain only integers and periods"
+[[ -z "$RELEASE_TAG" || "$RELEASE_TAG" == "v$VERSION" || "$RELEASE_TAG" == "v$VERSION-beta."<-> ]] \
+    || fail "--release-tag must match --version"
 [[ -f "$ENTITLEMENTS" ]] || fail "entitlements file not found: $ENTITLEMENTS"
 
 if [[ "$MODE" == "development" || "$MODE" == "release" ]]; then
@@ -246,6 +251,7 @@ create_dmg() {
         --expected-entitlements "$ENTITLEMENTS" \
         --expected-version "$VERSION" \
         --expected-build "$BUILD_NUMBER" \
+        --expected-release-tag "$RELEASE_TAG" \
         --expected-sponsorship "$sponsorship_value"
 
     hdiutil detach -quiet "$DMG_MOUNT_POINT"
@@ -352,6 +358,9 @@ cp "$ROOT/.build/checkouts/argmax-oss-swift/NOTICES" \
     "$APP/Contents/Resources/Licenses/Argmax-OSS-NOTICES.txt"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP/Contents/Info.plist"
+if [[ -n "$RELEASE_TAG" ]]; then
+    /usr/libexec/PlistBuddy -c "Add :TiroReleaseTag string $RELEASE_TAG" "$APP/Contents/Info.plist"
+fi
 if (( SPONSORSHIP_ENABLED )); then
     sponsorship_value=true
 else

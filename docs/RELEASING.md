@@ -97,5 +97,7 @@ Before publishing, test the DMG on an Apple Silicon Mac running macOS 14:
 4. Test tap-to-toggle, push-to-talk, Escape, clipboard preservation, and auto-paste.
 5. Test launch at login and replacing the app with the next build.
 
+The complete hands-on checklist is in [`BETA_TESTING.md`](BETA_TESTING.md).
+
 The bundle identifier remains `local.tiro.dictation`; changing it resets the
 app identity and permission history.

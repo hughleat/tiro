@@ -3,14 +3,15 @@ set -euo pipefail
 
 ROOT="${0:A:h:h}"
 dmg_args=()
-if [[ -n "${TIRO_RELEASE_VERSION:-}" || -n "${TIRO_RELEASE_BUILD_NUMBER:-}" ]]; then
-    [[ -n "${TIRO_RELEASE_VERSION:-}" && -n "${TIRO_RELEASE_BUILD_NUMBER:-}" ]] || {
-        print -u2 "TIRO_RELEASE_VERSION and TIRO_RELEASE_BUILD_NUMBER must be set together"
+if [[ -n "${TIRO_RELEASE_VERSION:-}" || -n "${TIRO_RELEASE_BUILD_NUMBER:-}" || -n "${TIRO_RELEASE_TAG:-}" ]]; then
+    [[ -n "${TIRO_RELEASE_VERSION:-}" && -n "${TIRO_RELEASE_BUILD_NUMBER:-}" && -n "${TIRO_RELEASE_TAG:-}" ]] || {
+        print -u2 "TIRO_RELEASE_VERSION, TIRO_RELEASE_BUILD_NUMBER, and TIRO_RELEASE_TAG must be set together"
         exit 1
     }
     dmg_args=(
         --version "$TIRO_RELEASE_VERSION"
         --build-number "$TIRO_RELEASE_BUILD_NUMBER"
+        --release-tag "$TIRO_RELEASE_TAG"
     )
 fi
 
