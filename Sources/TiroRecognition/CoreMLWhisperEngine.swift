@@ -381,30 +381,23 @@ private actor WhisperKitSession: WhisperCoreMLSession {
             throw CoreMLWhisperError.emptyTranscription
         }
 
-        let text = results
-            .map { WhisperTextSanitizer.clean($0.text) }
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
+        let text = results.map(\.text).joined(separator: " ")
         let audioSeconds = results.reduce(0) {
             $0 + $1.timings.inputAudioSeconds
         }
         let language = results.lazy
             .map(\.language)
             .first(where: { !$0.isEmpty })
-        let segments: [TranscriptSegment] = results.flatMap(\.segments).compactMap { segment in
-            let text = WhisperTextSanitizer.clean(segment.text)
-            let words: [TranscriptWord] = (segment.words ?? []).compactMap {
-                let text = WhisperTextSanitizer.clean($0.word)
-                guard !text.isEmpty else { return nil }
-                return TranscriptWord(
-                    text: text,
+        let segments: [TranscriptSegment] = results.flatMap(\.segments).map { segment in
+            let words: [TranscriptWord] = (segment.words ?? []).map {
+                TranscriptWord(
+                    text: $0.word,
                     startSeconds: Double($0.start),
                     endSeconds: Double($0.end)
                 )
             }
-            guard !text.isEmpty || !words.isEmpty else { return nil }
             return TranscriptSegment(
-                text: text,
+                text: segment.text,
                 startSeconds: Double(segment.start),
                 endSeconds: Double(segment.end),
                 words: words
@@ -431,15 +424,124 @@ enum WhisperTextSanitizer {
     private static let controlToken = try! NSRegularExpression(
         pattern: #"<\|[^|]*\|>"#
     )
+    private static let blankAudioSuffix = try! NSRegularExpression(
+        pattern: #"(?:(?<![\p{L}\p{N}_])\[BLANK_AUDIO\][.,!?;:…]*\s*)+$"#,
+        options: [.caseInsensitive]
+    )
+    private static let blankAudioWord = try! NSRegularExpression(
+        pattern: #"^\[BLANK_AUDIO\][.,!?;:…]*$"#,
+        options: [.caseInsensitive]
+    )
+    private static let terminalPunctuationWord = try! NSRegularExpression(
+        pattern: #"^[.,!?;:…]+$"#
+    )
 
     static func clean(_ text: String) -> String {
+        cleanText(text, removingBlankAudioSuffix: true)
+    }
+
+    static func clean(_ transcript: WhisperRuntimeTranscript) -> WhisperRuntimeTranscript {
+        WhisperRuntimeTranscript(
+            text: clean(transcript.text),
+            language: transcript.language,
+            audioSeconds: transcript.audioSeconds,
+            transcriptionSeconds: transcript.transcriptionSeconds,
+            timesFasterThanRealtime: transcript.timesFasterThanRealtime,
+            segments: cleanSegments(transcript.segments)
+        )
+    }
+
+    private static func cleanText(
+        _ text: String,
+        removingBlankAudioSuffix: Bool
+    ) -> String {
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         let stripped = controlToken.stringByReplacingMatches(
             in: text,
             range: range,
             withTemplate: " "
         )
-        return stripped.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard removingBlankAudioSuffix else {
+            return normalizedWhitespace(stripped)
+        }
+        let strippedRange = NSRange(stripped.startIndex..<stripped.endIndex, in: stripped)
+        let withoutBlankAudio = blankAudioSuffix.stringByReplacingMatches(
+            in: stripped,
+            range: strippedRange,
+            withTemplate: ""
+        )
+        return normalizedWhitespace(withoutBlankAudio)
+    }
+
+    private static func cleanSegments(_ segments: [TranscriptSegment]) -> [TranscriptSegment] {
+        var result = segments.compactMap { segment -> TranscriptSegment? in
+            let text = cleanText(segment.text, removingBlankAudioSuffix: false)
+            let words = segment.words.compactMap { word -> TranscriptWord? in
+                let text = cleanText(word.text, removingBlankAudioSuffix: false)
+                guard !text.isEmpty else { return nil }
+                return TranscriptWord(
+                    text: text,
+                    startSeconds: word.startSeconds,
+                    endSeconds: word.endSeconds
+                )
+            }
+            guard !text.isEmpty || !words.isEmpty else { return nil }
+            return TranscriptSegment(
+                text: text,
+                startSeconds: segment.startSeconds,
+                endSeconds: segment.endSeconds,
+                speakerID: segment.speakerID,
+                words: words
+            )
+        }
+
+        while let last = result.last {
+            let text = clean(last.text)
+            guard !text.isEmpty else {
+                result.removeLast()
+                continue
+            }
+            var words = last.words
+            var suffixStart = words.endIndex
+            var foundMarker = false
+            while suffixStart > words.startIndex {
+                while suffixStart > words.startIndex,
+                      isTerminalPunctuationWord(words[words.index(before: suffixStart)].text) {
+                    suffixStart = words.index(before: suffixStart)
+                }
+                guard suffixStart > words.startIndex else { break }
+                let markerIndex = words.index(before: suffixStart)
+                guard isBlankAudioWord(words[markerIndex].text) else { break }
+                suffixStart = markerIndex
+                foundMarker = true
+            }
+            if foundMarker {
+                words.removeSubrange(suffixStart..<words.endIndex)
+            }
+            result[result.count - 1] = TranscriptSegment(
+                text: text,
+                startSeconds: last.startSeconds,
+                endSeconds: last.endSeconds,
+                speakerID: last.speakerID,
+                words: words
+            )
+            break
+        }
+        return result
+    }
+
+    private static func isBlankAudioWord(_ text: String) -> Bool {
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return blankAudioWord.firstMatch(in: text, range: range)?.range == range
+    }
+
+    private static func isTerminalPunctuationWord(_ text: String) -> Bool {
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return terminalPunctuationWord.firstMatch(in: text, range: range)?.range == range
+    }
+
+    private static func normalizedWhitespace(_ text: String) -> String {
+        text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 }
 
@@ -690,10 +792,10 @@ public actor CoreMLWhisperEngine: RecognitionEngine {
         defer { activity = .idle }
         lastError = nil
         do {
-            let result = try await session.transcribe(
+            let result = WhisperTextSanitizer.clean(try await session.transcribe(
                 audioURL,
                 options: options
-            )
+            ))
             return WhisperTranscript(
                 text: result.text,
                 model: model,

@@ -152,6 +152,7 @@ final class TiroService {
             contextualStrings: contextualStrings
         )
         try Task.checkCancellation()
+        try Self.requireDetectedSpeech(in: raw.text)
         let finalizationOptions = NativeTranscriptionOptions(
             mode: NativeDictationMode(rawValue: preferences.mode.rawValue) ?? .standard,
             punctuation: NativePunctuationMode(rawValue: preferences.punctuation.rawValue)
@@ -958,6 +959,12 @@ final class TiroService {
         .joined(separator: "\n\n")
     }
 
+    static func requireDetectedSpeech(in text: String) throws {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw TiroError.noSpeechDetected
+        }
+    }
+
     private func finalizedSegments(
         _ segments: [TranscriptSegment],
         options: NativeTranscriptionOptions,
@@ -1018,10 +1025,12 @@ enum SuggestionScope: String {
 }
 
 enum TiroError: LocalizedError {
+    case noSpeechDetected
     case message(String)
 
     var errorDescription: String? {
         switch self {
+        case .noSpeechDetected: "No speech was detected."
         case .message(let message): message
         }
     }

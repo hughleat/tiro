@@ -795,6 +795,10 @@ import UniformTypeIdentifiers
                     if self.transcriptionID == transcriptionID {
                         finishCancelledTranscription()
                     }
+                } catch TiroError.noSpeechDetected {
+                    if self.transcriptionID == transcriptionID {
+                        finishNoSpeechTranscription()
+                    }
                 } catch {
                     if self.transcriptionID == transcriptionID {
                         await MainActor.run { self.presentError(error) }
@@ -836,6 +840,17 @@ import UniformTypeIdentifiers
     }
 
     private func finishCancelledTranscription() {
+        resetAfterTranscription()
+        overlay.dismiss()
+    }
+
+    private func finishNoSpeechTranscription() {
+        resetAfterTranscription()
+        overlay.show(.noSpeech)
+        overlay.dismiss(after: 1.2)
+    }
+
+    private func resetAfterTranscription() {
         transcriptionTask = nil
         transcriptionID = nil
         destinationSession = nil
@@ -847,7 +862,6 @@ import UniformTypeIdentifiers
             accessibilityDescription: "Tiro"
         )
         statusItem.button?.contentTintColor = nil
-        overlay.dismiss()
     }
 
     private func complete(_ response: TranscriptionResponse, model: DictationModel) async {

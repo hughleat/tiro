@@ -89,6 +89,27 @@ struct NativeTiroStoreTests {
     }
 
     @Test
+    func finalizedTextPreservesDictatedLineBreaks() async throws {
+        try await withStore { store, _ in
+            let entry = try await store.finalize(NativeFinalizationRequest(
+                rawText: "Hello\n",
+                modelID: "model",
+                transcriptionSeconds: 0.1,
+                textIsFinalized: true
+            ))
+            let lineOnly = try await store.finalize(NativeFinalizationRequest(
+                rawText: "\n",
+                modelID: "model",
+                transcriptionSeconds: 0.1,
+                textIsFinalized: true
+            ))
+
+            #expect(entry.text == "Hello\n")
+            #expect(lineOnly.text == "\n")
+        }
+    }
+
+    @Test
     func individualJobCanAvoidHistoryAndRetainSourceMetadataInItsResult() async throws {
         try await withStore { store, root in
             _ = try await store.updatePrivacySettings(NativePrivacySettings(

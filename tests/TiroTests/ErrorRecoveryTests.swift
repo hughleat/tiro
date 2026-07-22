@@ -96,6 +96,7 @@ struct ErrorRecoveryTests {
         )
         #expect(ErrorRecovery.presentation(for: TiroError.message("Model is not installed.")).action == .openModels)
         #expect(ErrorRecovery.presentation(for: TiroError.message("Could not decode audio.")).action == .retryTranscription)
+        #expect(TiroError.noSpeechDetected.errorDescription == "No speech was detected.")
         #expect(ErrorRecovery.presentation(for: PasteCoordinator.PasteError.keyboardEventRejected).action == .openAccessibilitySettings)
         #expect(ErrorRecovery.presentation(for: PasteCoordinator.PasteError.secureDestination).action == .retryTranscription)
     }
@@ -103,11 +104,31 @@ struct ErrorRecoveryTests {
     @Test
     func everyOverlayStateHasAConciseAnnouncement() {
         let states: [OverlayState] = [
-            .recording, .startingUp, .transcribing, .pasted, .pasteSent, .copied, .pasteFailed, .error,
+            .recording, .startingUp, .transcribing, .pasted, .pasteSent, .copied,
+            .noSpeech, .pasteFailed, .error,
         ]
         for state in states {
             #expect(!state.announcement.isEmpty)
             #expect(state.announcement.count < 60)
+        }
+    }
+
+    @Test
+    func emptyFinalTranscriptIsRejectedAsNoSpeech() {
+        do {
+            try TiroService.requireDetectedSpeech(in: " \n\t ")
+            Issue.record("Expected a no-speech error")
+        } catch TiroError.noSpeechDetected {
+            // Expected.
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        do {
+            try TiroService.requireDetectedSpeech(in: "spoken words")
+            try TiroService.requireDetectedSpeech(in: "new line")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
         }
     }
 }

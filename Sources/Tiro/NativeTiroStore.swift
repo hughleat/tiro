@@ -35,7 +35,9 @@ actor NativeTiroStore {
 
     func finalize(_ request: NativeFinalizationRequest) throws -> NativeHistoryEntry {
         try Task.checkCancellation()
-        let raw = request.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = request.textIsFinalized
+            ? request.rawText.trimmingCharacters(in: CharacterSet(charactersIn: " \t\r"))
+            : request.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard raw.count <= Limits.transcript else {
             throw NativeStoreError.invalidData("Transcription text is too long.")
         }

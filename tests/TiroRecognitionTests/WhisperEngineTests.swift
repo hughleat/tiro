@@ -14,6 +14,74 @@ struct WhisperEngineTests {
     }
 
     @Test
+    func removesOnlyTrailingBlankAudioMarkers() {
+        #expect(WhisperTextSanitizer.clean("[BLANK_AUDIO]").isEmpty)
+        #expect(WhisperTextSanitizer.clean("Hello. [BLANK_AUDIO]") == "Hello.")
+        #expect(WhisperTextSanitizer.clean("Hello.[BLANK_AUDIO]") == "Hello.")
+        #expect(WhisperTextSanitizer.clean("hello [blank_audio]") == "hello")
+        #expect(WhisperTextSanitizer.clean("[BLANK_AUDIO].").isEmpty)
+        #expect(WhisperTextSanitizer.clean("Hello [BLANK_AUDIO]...") == "Hello")
+        #expect(WhisperTextSanitizer.clean("Hello [BLANK_AUDIO]…") == "Hello")
+        #expect(WhisperTextSanitizer.clean("Hello [BLANK_AUDIO],") == "Hello")
+        #expect(
+            WhisperTextSanitizer.clean("Hello [BLANK_AUDIO] [BLANK_AUDIO]") == "Hello"
+        )
+        #expect(
+            WhisperTextSanitizer.clean("Say [BLANK_AUDIO] now.")
+                == "Say [BLANK_AUDIO] now."
+        )
+        #expect(WhisperTextSanitizer.clean("Keep [music]") == "Keep [music]")
+    }
+
+    @Test
+    func sanitizesBlankAudioOnlyAtTheEndOfTimestampedResults() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let session = WhisperSessionStub(transcript: WhisperRuntimeTranscript(
+            text: "Say [BLANK_AUDIO] now. Done. [BLANK_AUDIO]",
+            language: "en",
+            audioSeconds: 4,
+            transcriptionSeconds: 0.1,
+            timesFasterThanRealtime: 40,
+            segments: [
+                TranscriptSegment(
+                    text: "Say [BLANK_AUDIO] now.",
+                    startSeconds: 0,
+                    endSeconds: 2,
+                    words: [
+                        TranscriptWord(text: "Say", startSeconds: 0, endSeconds: 0.2),
+                        TranscriptWord(text: "[BLANK_AUDIO]", startSeconds: 0.3, endSeconds: 0.5),
+                        TranscriptWord(text: "now.", startSeconds: 0.6, endSeconds: 1),
+                    ]
+                ),
+                TranscriptSegment(
+                    text: "Done. [BLANK_AUDIO]",
+                    startSeconds: 2,
+                    endSeconds: 4,
+                    words: [
+                        TranscriptWord(text: "Done.", startSeconds: 2, endSeconds: 2.5),
+                        TranscriptWord(text: "[BLANK_AUDIO]", startSeconds: 3, endSeconds: 4),
+                        TranscriptWord(text: ".", startSeconds: 4, endSeconds: 4),
+                    ]
+                ),
+            ]
+        ))
+        let engine = CoreMLWhisperEngine(
+            model: .turbo,
+            modelsRootDirectory: root,
+            runtime: WhisperRuntimeStub(installed: true, session: session)
+        )
+
+        try await engine.load()
+        let transcript = try await engine.transcribe(URL(fileURLWithPath: "/tmp/voice.wav"))
+
+        #expect(transcript.text == "Say [BLANK_AUDIO] now. Done.")
+        #expect(transcript.segments.map(\.text) == ["Say [BLANK_AUDIO] now.", "Done."])
+        #expect(transcript.segments[0].words.map(\.text) == ["Say", "[BLANK_AUDIO]", "now."])
+        #expect(transcript.segments[1].words.map(\.text) == ["Done."])
+    }
+
+    @Test
     func curatedCatalogHasStableExplicitSpecs() {
         #expect(WhisperModel.allCases == [
             .tinyEnglish,
@@ -471,6 +539,18 @@ private actor WhisperSessionStub: WhisperCoreMLSession {
 
     private(set) var lastOptions: WhisperDecodingOptions?
     private(set) var unloadCount = 0
+    private let transcript: WhisperRuntimeTranscript
+
+    init(transcript: WhisperRuntimeTranscript? = nil) {
+        self.transcript = transcript ?? WhisperRuntimeTranscript(
+            text: "Hello from WhisperKit.",
+            language: "en",
+            audioSeconds: 4,
+            transcriptionSeconds: 0.1,
+            timesFasterThanRealtime: 40,
+            segments: Self.segments
+        )
+    }
 
     func transcribe(
         _ audioURL: URL,
@@ -478,12 +558,12 @@ private actor WhisperSessionStub: WhisperCoreMLSession {
     ) -> WhisperRuntimeTranscript {
         lastOptions = options
         return WhisperRuntimeTranscript(
-            text: "Hello from WhisperKit.",
-            language: options.language ?? "en",
-            audioSeconds: 4,
-            transcriptionSeconds: 0.1,
-            timesFasterThanRealtime: 40,
-            segments: Self.segments
+            text: transcript.text,
+            language: options.language ?? transcript.language,
+            audioSeconds: transcript.audioSeconds,
+            transcriptionSeconds: transcript.transcriptionSeconds,
+            timesFasterThanRealtime: transcript.timesFasterThanRealtime,
+            segments: transcript.segments
         )
     }
 
