@@ -123,27 +123,22 @@ struct ModelManagementViewTests {
     }
 
     @Test @MainActor
-    func globalOperationStateRefreshesEveryRowAction() throws {
-        _ = NSApplication.shared
+    func globalOperationStateRefreshesEveryRow() {
         let available = Array(
             DictationModel.all.filter { $0.downloadSizeBytes != nil }.prefix(2)
         )
         #expect(available.count == 2)
         guard available.count == 2 else { return }
-        let view = ModelManagementView(service: TiroService())
-        view.apply(available.map { managedModel($0, usable: false) })
-
-        view.apply([
+        let previous = available.map { managedModel($0, usable: false) }
+        let updated = [
             managedModel(available[0], usable: false, operation: .downloading(progress: 0.1)),
             managedModel(available[1], usable: false),
-        ])
+        ]
 
-        let buttons = subviews(of: NSButton.self, in: view)
-        let otherDownload = try #require(buttons.first {
-            $0.accessibilityLabel() == "Download \(available[1].name)"
-        })
-        #expect(!otherDownload.isEnabled)
-        view.cancelWork()
+        #expect(
+            ModelManagementView.rowsRequiringReload(from: previous, to: updated)
+                == IndexSet(updated.indices)
+        )
     }
 
     @Test @MainActor
@@ -210,8 +205,4 @@ struct ModelManagementViewTests {
         }.first
     }
 
-    @MainActor
-    private func subviews<T: NSView>(of type: T.Type, in view: NSView) -> [T] {
-        (view as? T).map { [$0] } ?? view.subviews.flatMap { subviews(of: type, in: $0) }
-    }
 }

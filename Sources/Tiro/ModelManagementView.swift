@@ -153,20 +153,15 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         } else {
             storageLabel.isHidden = true
         }
-        if previous.map(\.key) != updated.map(\.key) {
-            table.reloadData()
-        } else {
-            let globalOperationChanged = previous.contains { $0.operation != nil }
-                != updated.contains { $0.operation != nil }
-            let changedRows = globalOperationChanged
-                ? IndexSet(updated.indices)
-                : IndexSet(updated.indices.filter { previous[$0] != updated[$0] })
+        if let changedRows = Self.rowsRequiringReload(from: previous, to: updated) {
             if !changedRows.isEmpty {
                 table.reloadData(
                     forRowIndexes: changedRows,
                     columnIndexes: IndexSet(integer: 0)
                 )
             }
+        } else {
+            table.reloadData()
         }
         showState(
             models.isEmpty ? "No models are available." : nil,
@@ -371,6 +366,18 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         modelUseInProgress = updated
         table.reloadData()
         restoreSafeSelection()
+    }
+
+    static func rowsRequiringReload(
+        from previous: [ManagedModel],
+        to updated: [ManagedModel]
+    ) -> IndexSet? {
+        guard previous.map(\.key) == updated.map(\.key) else { return nil }
+        if previous.contains(where: { $0.operation != nil })
+            != updated.contains(where: { $0.operation != nil }) {
+            return IndexSet(updated.indices)
+        }
+        return IndexSet(updated.indices.filter { previous[$0] != updated[$0] })
     }
 
     private func startPolling() {
