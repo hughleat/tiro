@@ -1039,7 +1039,7 @@ final class TiroService {
         .joined(separator: "\n\n")
     }
 
-    static func requireDetectedSpeech(in text: String) throws {
+    nonisolated static func requireDetectedSpeech(in text: String) throws {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw TiroError.noSpeechDetected
         }
