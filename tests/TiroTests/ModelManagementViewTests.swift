@@ -107,6 +107,67 @@ struct ModelManagementViewTests {
         view.cancelWork()
     }
 
+    @Test @MainActor
+    func downloadProgressDoesNotRebuildModelInventoryConsumers() {
+        _ = NSApplication.shared
+        let model = DictationModel.all.first { $0.downloadSizeBytes != nil }!
+        let view = ModelManagementView(service: TiroService())
+        var inventoryUpdates = 0
+        view.onModelsChanged = { _ in inventoryUpdates += 1 }
+
+        view.apply([managedModel(model, operation: .downloading(progress: 0.1))])
+        view.apply([managedModel(model, operation: .downloading(progress: 0.2))])
+
+        #expect(inventoryUpdates == 1)
+        view.cancelWork()
+    }
+
+    @Test @MainActor
+    func globalOperationStateRefreshesEveryRowAction() throws {
+        _ = NSApplication.shared
+        let available = Array(
+            DictationModel.all.filter { $0.downloadSizeBytes != nil }.prefix(2)
+        )
+        #expect(available.count == 2)
+        guard available.count == 2 else { return }
+        let view = ModelManagementView(service: TiroService())
+        view.apply(available.map { managedModel($0, usable: false) })
+
+        view.apply([
+            managedModel(available[0], usable: false, operation: .downloading(progress: 0.1)),
+            managedModel(available[1], usable: false),
+        ])
+
+        let buttons = subviews(of: NSButton.self, in: view)
+        let otherDownload = try #require(buttons.first {
+            $0.accessibilityLabel() == "Download \(available[1].name)"
+        })
+        #expect(!otherDownload.isEnabled)
+        view.cancelWork()
+    }
+
+    @Test @MainActor
+    func progressUpdatePreservesSelection() throws {
+        _ = NSApplication.shared
+        let available = Array(
+            DictationModel.all.filter { $0.downloadSizeBytes != nil }.prefix(2)
+        )
+        #expect(available.count == 2)
+        guard available.count == 2 else { return }
+        DictationModel.select(available[0])
+        let view = ModelManagementView(service: TiroService())
+        view.apply(available.map { managedModel($0) })
+        let table = try #require(firstSubview(of: NSTableView.self, in: view))
+
+        view.apply([
+            managedModel(available[0], operation: .downloading(progress: 0.2)),
+            managedModel(available[1]),
+        ])
+
+        #expect(table.selectedRow == 0)
+        view.cancelWork()
+    }
+
     private func restoreSelection(
         _ selection: String?,
         in defaults: UserDefaults
@@ -122,14 +183,15 @@ struct ModelManagementViewTests {
     private func managedModel(
         _ model: DictationModel,
         usable: Bool = true,
-        deleting: Bool = false
+        deleting: Bool = false,
+        operation: ManagedModelOperation? = nil
     ) -> ManagedModel {
         ManagedModel(
             key: model.key,
             installedSizeBytes: 1,
             installed: true,
             usable: usable,
-            operation: deleting ? .deleting : nil,
+            operation: deleting ? .deleting : operation,
             loaded: false,
             operationError: nil,
             downloadSpace: nil,
@@ -146,5 +208,10 @@ struct ModelManagementViewTests {
         return view.subviews.lazy.compactMap {
             firstSubview(of: type, in: $0)
         }.first
+    }
+
+    @MainActor
+    private func subviews<T: NSView>(of type: T.Type, in view: NSView) -> [T] {
+        (view as? T).map { [$0] } ?? view.subviews.flatMap { subviews(of: type, in: $0) }
     }
 }

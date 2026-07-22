@@ -105,7 +105,7 @@ struct ErrorRecoveryTests {
     func everyOverlayStateHasAConciseAnnouncement() {
         let states: [OverlayState] = [
             .recording, .startingUp, .transcribing, .pasted, .pasteSent, .copied,
-            .noSpeech, .pasteFailed, .error,
+            .noSpeech, .modelBusy, .pasteFailed, .error,
         ]
         for state in states {
             #expect(!state.announcement.isEmpty)

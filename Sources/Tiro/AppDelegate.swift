@@ -42,6 +42,8 @@ import UniformTypeIdentifiers
     private var modelSelectionTask: Task<Void, Never>?
     private var transcriptionTask: Task<Void, Never>?
     private var transcriptionID: UUID?
+    private var recordingModelUseReserved = false
+    private var recordingModel: DictationModel?
     private var commandRecording: CommandRecording?
     private var commandTranscriptionTask: Task<TranscriptionResponse, Error>?
     private var externalOperationID: UUID?
@@ -338,6 +340,7 @@ import UniformTypeIdentifiers
             model: model,
             saveToHistory: arguments?.saveHistory ?? true
         )
+        try reserveRecordingModelUse()
         commandRecording = recording
         destinationSession = nil
         originApplication = nil
@@ -346,7 +349,7 @@ import UniformTypeIdentifiers
         menuToggleItem.title = "Recording from Command Line"
         do {
             try await withTaskCancellationHandler {
-                try await service.preload(model: model)
+                try await service.preload(model: model, usingRecordingReservation: true)
             } onCancel: { [weak self] in
                 Task { @MainActor in
                     await self?.cancelCommandRecording(session: recording.session)
@@ -415,7 +418,8 @@ import UniformTypeIdentifiers
                 audioURL: audioURL,
                 model: recording.model,
                 archiveAudio: recording.saveToHistory,
-                saveToHistory: recording.saveToHistory
+                saveToHistory: recording.saveToHistory,
+                usingRecordingReservation: true
             )
         }
         commandTranscriptionTask = task
@@ -691,6 +695,14 @@ import UniformTypeIdentifiers
     @discardableResult
     private func startRecording(playStartSound: Bool = true) -> Bool {
         guard state == .idle else { return false }
+        do {
+            try reserveRecordingModelUse()
+        } catch {
+            overlay.show(.modelBusy)
+            overlay.dismiss(after: 1.5)
+            return false
+        }
+        recordingModel = DictationModel.selected
 #if TIRO_SPONSORSHIP_ENABLED
         supportPromptWindow.close()
 #endif
@@ -699,12 +711,15 @@ import UniformTypeIdentifiers
             modelStatusItem.title = "Model: Checking Installed Models..."
             overlay.show(.startingUp)
             overlay.dismiss(after: 1.2)
+            releaseRecordingModelUse()
             return false
         case .unavailable:
+            releaseRecordingModelUse()
             presentRecovery(ErrorRecovery.presentation(for: .modelServiceUnavailable))
             return false
         case .missing:
             modelStatusItem.title = "Model: Download One in Settings"
+            releaseRecordingModelUse()
             presentRecovery(ErrorRecovery.presentation(for: .missingModel))
             return false
         case .available:
@@ -748,6 +763,7 @@ import UniformTypeIdentifiers
                 commandRecording = nil
                 state = .idle
                 menuToggleItem.title = "Start Recording"
+                releaseRecordingModelUse()
                 NSLog("Could not start command-line recording: %@", error.localizedDescription)
             }
         }
@@ -766,7 +782,7 @@ import UniformTypeIdentifiers
             state = .transcribing
             menuToggleItem.title = "Transcribing…"
             overlay.show(.transcribing)
-            let model = DictationModel.selected
+            let model = recordingModel ?? DictationModel.selected
             let originBundleID = originApplication?.bundleIdentifier
             let originName = originApplication?.applicationName
 
@@ -786,7 +802,8 @@ import UniformTypeIdentifiers
                         audioURL: wavURL,
                         model: model,
                         originBundleID: originBundleID,
-                        originName: originName
+                        originName: originName,
+                        usingRecordingReservation: true
                     )
                     try Task.checkCancellation()
                     guard self.transcriptionID == transcriptionID else { return }
@@ -824,6 +841,7 @@ import UniformTypeIdentifiers
             originApplication = nil
             state = .idle
             menuToggleItem.title = "Start Recording"
+            releaseRecordingModelUse()
             return
         }
         guard state == .recording else { return }
@@ -836,6 +854,7 @@ import UniformTypeIdentifiers
         menuToggleItem.title = "Start Recording"
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Tiro")
         statusItem.button?.contentTintColor = nil
+        releaseRecordingModelUse()
         overlay.dismiss()
     }
 
@@ -862,6 +881,22 @@ import UniformTypeIdentifiers
             accessibilityDescription: "Tiro"
         )
         statusItem.button?.contentTintColor = nil
+        releaseRecordingModelUse()
+    }
+
+    private func reserveRecordingModelUse() throws {
+        guard !recordingModelUseReserved else { return }
+        try service.beginRecordingModelUse()
+        recordingModelUseReserved = true
+        updateModelChecks()
+    }
+
+    private func releaseRecordingModelUse() {
+        guard recordingModelUseReserved else { return }
+        recordingModelUseReserved = false
+        recordingModel = nil
+        service.endRecordingModelUse()
+        updateModelChecks()
     }
 
     private func complete(_ response: TranscriptionResponse, model: DictationModel) async {
@@ -894,6 +929,7 @@ import UniformTypeIdentifiers
         menuToggleItem.title = "Start Recording"
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Tiro")
         statusItem.button?.contentTintColor = nil
+        releaseRecordingModelUse()
         settingsWindow.refreshHistory()
         overlay.show(completionOverlay)
         overlay.dismiss(after: 0.8)
@@ -911,6 +947,7 @@ import UniformTypeIdentifiers
         menuToggleItem.title = "Start Recording"
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Tiro")
         statusItem.button?.contentTintColor = nil
+        releaseRecordingModelUse()
         overlay.show(.error)
         overlay.dismiss(after: 2.0)
         NSLog("Tiro error: %@", error.localizedDescription)
@@ -1131,7 +1168,7 @@ import UniformTypeIdentifiers
         for item in modelMenuItems {
             let key = item.representedObject as? String
             let isInstalled = key.map(installedModelKeys.contains) ?? false
-            item.isEnabled = isInstalled
+            item.isEnabled = isInstalled && !service.modelUseInProgress
             item.state = isInstalled && key == selected.key ? .on : .off
         }
         menuToggleItem.isEnabled = installedModelKeys.contains(selected.key)

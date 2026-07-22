@@ -50,4 +50,23 @@ struct ModelDownloadStateTests {
             ) == nil
         )
     }
+
+    @Test @MainActor
+    func recordingReservationBlocksModelDownloads() throws {
+        let service = TiroService(availableModelCapacity: { Int64.max })
+        try service.beginRecordingModelUse()
+        defer { service.endRecordingModelUse() }
+
+        #expect(!service.startDownload(key: DictationModel.coreMLCompactKey))
+        #expect(
+            service.modelOperationError(for: DictationModel.coreMLCompactKey)
+                == "Wait for the current model operation to finish."
+        )
+        do {
+            try service.select(model: .coreMLCompact)
+            Issue.record("Expected model selection to be blocked during recording")
+        } catch {
+            #expect(error.localizedDescription.contains("Wait for recording"))
+        }
+    }
 }

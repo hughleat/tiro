@@ -8,6 +8,7 @@ enum OverlayState: Equatable {
     case pasteSent
     case copied
     case noSpeech
+    case modelBusy
     case pasteFailed
     case error
 
@@ -20,6 +21,7 @@ enum OverlayState: Equatable {
         case .pasteSent: return "Paste sent"
         case .copied: return "Copied"
         case .noSpeech: return "No speech detected"
+        case .modelBusy: return "Models are being updated"
         case .pasteFailed: return "Copied, paste failed"
         case .error: return "Transcription failed"
         }
@@ -28,7 +30,7 @@ enum OverlayState: Equatable {
     var color: NSColor {
         switch self {
         case .recording, .error: return NSColor.systemRed
-        case .startingUp, .transcribing, .pasteSent, .noSpeech, .pasteFailed:
+        case .startingUp, .transcribing, .pasteSent, .noSpeech, .modelBusy, .pasteFailed:
             return NSColor.systemOrange
         case .pasted, .copied: return NSColor.systemGreen
         }
@@ -43,6 +45,7 @@ enum OverlayState: Equatable {
         case .pasteSent: return "Paste sent."
         case .copied: return "Dictation copied to the clipboard."
         case .noSpeech: return "No speech detected."
+        case .modelBusy: return "Wait for the current model operation to finish."
         case .pasteFailed: return "Automatic paste failed. Dictation copied to the clipboard."
         case .error: return "Dictation failed."
         }

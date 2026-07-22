@@ -20,16 +20,36 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
     private var pollTask: Task<Void, Never>?
     private var pollGeneration = 0
     private var isApplyingSelection = false
+    private var modelUseObserver: NSObjectProtocol?
+    private var modelUseInProgress = false
+    private var notifiedInventory: [ModelInventoryState] = []
+
+    private struct ModelInventoryState: Equatable {
+        let key: String
+        let installed: Bool
+        let usable: Bool
+        let loaded: Bool
+        let deleting: Bool
+    }
 
     init(service: TiroService) {
         self.service = service
         super.init(frame: .zero)
         buildContent()
+        modelUseInProgress = service.modelUseInProgress
+        modelUseObserver = NotificationCenter.default.addObserver(
+            forName: .tiroModelUseDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.modelUseChanged() }
+        }
     }
 
     required init?(coder: NSCoder) { nil }
 
     deinit {
+        if let modelUseObserver { NotificationCenter.default.removeObserver(modelUseObserver) }
         loadTask?.cancel()
         selectionTask?.cancel()
         pollTask?.cancel()
@@ -122,21 +142,49 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         let order = Dictionary(uniqueKeysWithValues: DictationModel.all.enumerated().map {
             ($0.element.key, $0.offset)
         })
-        models = loaded.sorted {
+        let updated = loaded.sorted {
             (order[$0.key] ?? Int.max, $0.name) < (order[$1.key] ?? Int.max, $1.name)
         }
+        let previous = models
+        models = updated
         if let available = models.lazy.compactMap({ $0.downloadSpace?.availableBytes }).first {
             storageLabel.stringValue = "\(Self.fileSize(available)) available for models"
             storageLabel.isHidden = false
         } else {
             storageLabel.isHidden = true
         }
-        table.reloadData()
+        if previous.map(\.key) != updated.map(\.key) {
+            table.reloadData()
+        } else {
+            let globalOperationChanged = previous.contains { $0.operation != nil }
+                != updated.contains { $0.operation != nil }
+            let changedRows = globalOperationChanged
+                ? IndexSet(updated.indices)
+                : IndexSet(updated.indices.filter { previous[$0] != updated[$0] })
+            if !changedRows.isEmpty {
+                table.reloadData(
+                    forRowIndexes: changedRows,
+                    columnIndexes: IndexSet(integer: 0)
+                )
+            }
+        }
         showState(
             models.isEmpty ? "No models are available." : nil,
             action: models.isEmpty ? .retry : nil
         )
-        onModelsChanged?(models)
+        let inventory = models.map {
+            ModelInventoryState(
+                key: $0.key,
+                installed: $0.installed,
+                usable: $0.usable,
+                loaded: $0.loaded,
+                deleting: $0.deleting
+            )
+        }
+        if inventory != notifiedInventory {
+            notifiedInventory = inventory
+            onModelsChanged?(models)
+        }
         restoreSafeSelection()
         models.contains(where: { $0.operation != nil }) ? startPolling() : stopPolling()
     }
@@ -167,6 +215,7 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
     }
 
     private func selectTableRow(_ row: Int?) {
+        if table.selectedRow == row { return }
         isApplyingSelection = true
         defer { isApplyingSelection = false }
         if let row {
@@ -207,7 +256,8 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
             ?? ModelRowView(identifier: identifier)
         cell.configure(
             model: models[row],
-            mutationInProgress: models.contains { $0.operation != nil },
+            mutationInProgress: modelUseInProgress || models.contains { $0.operation != nil },
+            modelUseInProgress: modelUseInProgress,
             isSelectedModel: DictationModel.selected.key == models[row].key,
             row: row,
             target: self
@@ -218,7 +268,8 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !isApplyingSelection else { return }
         let row = table.selectedRow
-        guard models.indices.contains(row),
+        guard !modelUseInProgress,
+              models.indices.contains(row),
               models[row].usable || (models[row].isSystemManaged && models[row].installed),
               models[row].operation == nil,
               let model = models[row].dictationModel else {
@@ -308,8 +359,18 @@ final class ModelManagementView: NSStackView, NSTableViewDataSource, NSTableView
         loadTask?.cancel()
         loadTask = Task { [weak self] in
             guard let self else { return }
-            apply(await service.models())
+            let snapshot = await service.models()
+            guard !Task.isCancelled else { return }
+            apply(snapshot)
         }
+    }
+
+    private func modelUseChanged() {
+        let updated = service.modelUseInProgress
+        guard updated != modelUseInProgress else { return }
+        modelUseInProgress = updated
+        table.reloadData()
+        restoreSafeSelection()
     }
 
     private func startPolling() {
@@ -405,6 +466,7 @@ private final class ModelRowView: NSTableCellView {
     func configure(
         model: ManagedModel,
         mutationInProgress: Bool,
+        modelUseInProgress: Bool,
         isSelectedModel: Bool,
         row: Int,
         target: ModelManagementView
@@ -428,6 +490,7 @@ private final class ModelRowView: NSTableCellView {
         configureAction(
             for: model,
             mutationInProgress: mutationInProgress,
+            modelUseInProgress: modelUseInProgress,
             selected: isSelectedModel,
             row: row,
             target: target
@@ -508,6 +571,7 @@ private final class ModelRowView: NSTableCellView {
     private func configureAction(
         for model: ManagedModel,
         mutationInProgress: Bool,
+        modelUseInProgress: Bool,
         selected: Bool,
         row: Int,
         target: ModelManagementView
@@ -563,7 +627,9 @@ private final class ModelRowView: NSTableCellView {
                 && !deletionBlocked
                 && !insufficientSpace
         }
-        if model.loaded && !selected {
+        if modelUseInProgress && !isActiveDownload {
+            actionButton.toolTip = "Wait for recording or transcription to finish"
+        } else if model.loaded && !selected {
             actionButton.toolTip =
                 "The loaded model cannot be deleted until another model is used"
         } else if isDelete && selected {

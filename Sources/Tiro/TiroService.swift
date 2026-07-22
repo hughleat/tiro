@@ -1,6 +1,10 @@
 import Foundation
 import TiroRecognition
 
+extension Notification.Name {
+    static let tiroModelUseDidChange = Notification.Name("TiroModelUseDidChange")
+}
+
 @MainActor
 final class TiroService {
     private static let speakerDiarizationKey = "coreml-speaker-diarization"
@@ -13,7 +17,9 @@ final class TiroService {
     private let speakerDiarizationEngine: SpeakerDiarizationEngine
     private let availableModelCapacity: () -> Int64?
     private let transcriptionGate = TranscriptionJobGate()
-    private var activeTranscriptionRequests = 0
+    private var activeModelUses = 0
+    private var exclusiveModelUse = false
+    private var recordingModelUse = false
     private var comparisonTasks: [String: Task<[ModelComparisonResult], Error>] = [:]
     private var mutatingModelKey: String?
     private var modelOperation: (key: String, operation: ManagedModelOperation)?
@@ -25,6 +31,27 @@ final class TiroService {
     private var cleanupRetryAfter: Date?
     private var cleanupRetryTask: Task<Void, Never>?
     private var automaticCleanupRetryUsed = false
+
+    var modelOperationInProgress: Bool {
+        mutatingModelKey != nil || cleanupInProgress
+    }
+
+    var modelUseInProgress: Bool { activeModelUses > 0 || exclusiveModelUse }
+
+    func beginRecordingModelUse() throws {
+        guard !modelOperationInProgress, !modelUseInProgress else {
+            throw TiroError.message("Wait for the current model operation to finish.")
+        }
+        recordingModelUse = true
+        activeModelUses = 1
+        postModelUseChange()
+    }
+
+    func endRecordingModelUse() {
+        guard recordingModelUse else { return }
+        recordingModelUse = false
+        endModelUse()
+    }
 
     init(
         availableModelCapacity: @escaping () -> Int64? = {
@@ -94,13 +121,11 @@ final class TiroService {
         sourceFilename: String? = nil,
         archiveAudio: Bool = true,
         identifySpeakers: Bool = false,
-        saveToHistory: Bool = true
+        saveToHistory: Bool = true,
+        usingRecordingReservation: Bool = false
     ) async throws -> TranscriptionResponse {
-        guard mutatingModelKey == nil, !cleanupInProgress else {
-            throw TiroError.message("Wait for the current model operation to finish.")
-        }
-        activeTranscriptionRequests += 1
-        defer { activeTranscriptionRequests -= 1 }
+        try beginModelUse(allowingRecordingReservation: usingRecordingReservation)
+        defer { endModelUse() }
         try await transcriptionGate.acquire()
         do {
             let response = try await performTranscription(
@@ -234,7 +259,22 @@ final class TiroService {
         )
     }
 
-    func preload(model: DictationModel) async throws {
+    func preload(
+        model: DictationModel,
+        usingRecordingReservation: Bool = false
+    ) async throws {
+        if usingRecordingReservation {
+            try beginModelUse(allowingRecordingReservation: true)
+        } else {
+            try beginExclusiveModelUse()
+        }
+        defer {
+            if usingRecordingReservation {
+                endModelUse()
+            } else {
+                endExclusiveModelUse()
+            }
+        }
         try await unloadModels(except: model.key)
         if model.key == DictationModel.appleSpeechKey {
             let locale = DictationPreferences.language(for: model).appleLocaleIdentifier
@@ -257,13 +297,15 @@ final class TiroService {
 
     func activate(model: DictationModel) async throws {
         guard DictationModel.selected.key == model.key else { return }
+        try beginExclusiveModelUse()
+        defer { endExclusiveModelUse() }
         try await unloadModels(except: model.key)
     }
 
     func select(model: DictationModel) throws {
-        guard mutatingModelKey != model.key else {
+        guard !modelUseInProgress, mutatingModelKey != model.key else {
             throw TiroError.message(
-                "Wait for the \(model.name) operation to finish before selecting it."
+                "Wait for recording, transcription, or the \(model.name) operation to finish."
             )
         }
         DictationModel.select(model)
@@ -506,12 +548,56 @@ final class TiroService {
     private func beginModelMutation(key: String) throws {
         guard mutatingModelKey == nil,
               !cleanupInProgress,
-              activeTranscriptionRequests == 0 else {
+              !modelUseInProgress else {
             throw TiroError.message(
                 "Wait for the current model operation to finish."
             )
         }
         mutatingModelKey = key
+    }
+
+    private func beginModelUse(allowingRecordingReservation: Bool = false) throws {
+        let mayUseRecordingReservation = allowingRecordingReservation && recordingModelUse
+        guard !modelOperationInProgress,
+              !exclusiveModelUse,
+              !recordingModelUse || mayUseRecordingReservation else {
+            throw TiroError.message("Wait for the current model operation to finish.")
+        }
+        activeModelUses += 1
+        postModelUseChange()
+    }
+
+    private func endModelUse() {
+        activeModelUses = max(0, activeModelUses - 1)
+        postModelUseChange()
+        schedulePendingCleanupIfIdle()
+    }
+
+    private func beginExclusiveModelUse() throws {
+        guard !modelOperationInProgress, !modelUseInProgress else {
+            throw TiroError.message("Wait for the current model operation to finish.")
+        }
+        exclusiveModelUse = true
+        postModelUseChange()
+    }
+
+    private func endExclusiveModelUse() {
+        exclusiveModelUse = false
+        postModelUseChange()
+        schedulePendingCleanupIfIdle()
+    }
+
+    private func postModelUseChange() {
+        NotificationCenter.default.post(name: .tiroModelUseDidChange, object: nil)
+    }
+
+    private func schedulePendingCleanupIfIdle() {
+        guard !modelUseInProgress, !pendingCleanupKeys.isEmpty else { return }
+        cleanupRetryAfter = nil
+        automaticCleanupRetryUsed = false
+        cleanupRetryTask?.cancel()
+        cleanupRetryTask = nil
+        scheduleAutomaticCleanupRetry(delay: 0)
     }
 
     private func finishModelMutation(key: String) {
@@ -526,11 +612,8 @@ final class TiroService {
         guard !cleanupInProgress,
               !pendingCleanupKeys.isEmpty,
               cleanupRetryAfter.map({ $0 <= Date() }) ?? true else { return }
-        guard mutatingModelKey == nil else {
+        guard mutatingModelKey == nil, !modelUseInProgress else {
             cleanupRetryAfter = Date().addingTimeInterval(5)
-            cleanupRetryTask?.cancel()
-            cleanupRetryTask = nil
-            automaticCleanupRetryUsed = false
             scheduleAutomaticCleanupRetry(delay: 5)
             return
         }
@@ -606,11 +689,8 @@ final class TiroService {
         modelKeys: [String],
         comparisonID: String
     ) async throws -> [ModelComparisonResult] {
-        guard mutatingModelKey == nil, !cleanupInProgress else {
-            throw TiroError.message("Wait for the current model operation to finish.")
-        }
-        activeTranscriptionRequests += 1
-        defer { activeTranscriptionRequests -= 1 }
+        try beginModelUse()
+        defer { endModelUse() }
         let store = try requireStore()
         let audio = try await store.audio(forHistoryID: historyID)
         let temporaryURL = AppPaths.transientRecordingsDirectory
