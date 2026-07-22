@@ -7,7 +7,7 @@
 <p align="center"><strong>Private, fast speech-to-text for Apple Silicon Macs.</strong></p>
 
 <p align="center">
-  <strong><a href="https://github.com/hughleat/tiro/releases/download/v0.1.0-beta.4/Tiro-0.1.0-beta.4-4-macOS-arm64.dmg">Download Tiro Public Beta (.dmg, 6.1 MB)</a></strong>
+  <strong><a href="https://github.com/hughleat/tiro/releases/download/v0.1.0-beta.5/Tiro-0.1.0-beta.5-5-macOS-arm64.dmg">Download Tiro Public Beta (.dmg, 6.1 MB)</a></strong>
   · <a href="#install">Install</a>
   · <a href="#your-first-dictation">First dictation</a>
   · <a href="https://github.com/hughleat/tiro/issues/new/choose">Feedback</a>
@@ -32,7 +32,7 @@ open source.
 for its global shortcut and paste workflow. The table below explains exactly
 how Tiro uses this broad permission.
 
-1. [Download beta 4](https://github.com/hughleat/tiro/releases/download/v0.1.0-beta.4/Tiro-0.1.0-beta.4-4-macOS-arm64.dmg), open the DMG, and drag Tiro to Applications.
+1. [Download beta 5](https://github.com/hughleat/tiro/releases/download/v0.1.0-beta.5/Tiro-0.1.0-beta.5-5-macOS-arm64.dmg), open the DMG, and drag Tiro to Applications.
 2. Try to open Tiro. When macOS shows its unidentified-developer warning, open **System Settings > Privacy & Security**, choose **Open Anyway**, then confirm **Open**.
 3. In Tiro's setup, allow the required permissions and select **Fast English — Parakeet Compact**. Choose **Download**, wait for it to finish, try a dictation in the setup field, then select **Start Using Tiro**.
 
@@ -78,11 +78,11 @@ receives security fixes.
 <summary>Verify the downloaded DMG (optional)</summary>
 
 Download the `.sha256` file beside the DMG on the
-[release page](https://github.com/hughleat/tiro/releases/tag/v0.1.0-beta.4), then
+[release page](https://github.com/hughleat/tiro/releases/tag/v0.1.0-beta.5), then
 run:
 
 ```sh
-shasum -a 256 ~/Downloads/Tiro-0.1.0-beta.4-4-macOS-arm64.dmg
+shasum -a 256 ~/Downloads/Tiro-0.1.0-beta.5-5-macOS-arm64.dmg
 ```
 
 The long value printed by `shasum` should match the value in the `.sha256`
